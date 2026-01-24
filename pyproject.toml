@@ -1,0 +1,8 @@
+[project]
+name = "risearch-pipeline"
+version = "0.1.0"
+description = "Pipeline for the analysis of the results of the RIsearch project"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["ViennaRNA", "Polars", "Typer"]
+dev-dependencies = ["pytest", "ruff", "pre-commit"]
