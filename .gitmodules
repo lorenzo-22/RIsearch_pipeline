@@ -1,0 +1,3 @@
+[submodule "risearch"]
+	path = risearch
+	url = https://github.com/saiden89/risearch.git
