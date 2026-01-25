@@ -40,7 +40,6 @@ def analyze(
     expression_metric: str = typer.Option(
         "RPKM",
         "--expression-metric",
-        "-e",
         help="Attribute to use for expression score (default: RPKM).",
     ),
 ) -> None:
@@ -70,6 +69,9 @@ def analyze(
             from RIsearch_pipeline.services.transcriptome_parser import (
                 TranscriptomeParser,
             )
+            from RIsearch_pipeline.services.intersection_service import (
+                IntersectionService,
+            )
 
             if not isinstance(gtf_file, Path):
                 gtf_file = Path(gtf_file)
@@ -83,14 +85,33 @@ def analyze(
             typer.echo(
                 f"✓ Loaded {summary_trans['row_count']} {feature_type}s from {gtf_file.name}"
             )
-            typer.echo(f"  Genes: {summary_trans['genes']}")
-            typer.echo(f"  Transcripts: {summary_trans['transcripts']}")
 
-            typer.echo("\nFirst 5 rows (Transcriptome):")
-            typer.echo(df_trans.head(5))
+            # Perform intersection
+            typer.echo("  Intersecting predictions with transcriptome...")
+            intersector = IntersectionService()
+            df_intersect = intersector.intersect(df_risearch, df_trans)
 
-        typer.echo("\nFirst 5 rows (Predictions):")
-        typer.echo(df_risearch.head(5))
+            typer.echo(
+                f"✓ Found {df_intersect.height} intersecting off-target candidates"
+            )
+
+            if df_intersect.height > 0:
+                typer.echo("\nFirst 5 intersecting candidates:")
+                # Select useful columns to show
+                display_cols = [
+                    "sirna_id",
+                    "chrom",
+                    "start",
+                    "end",
+                    "gene_id",
+                    "transcript_id",
+                    "energy",
+                    "exp_value",
+                ]
+                typer.echo(df_intersect.select(display_cols).head(5))
+        else:
+            typer.echo("\nFirst 5 rows (Predictions):")
+            typer.echo(df_risearch.head(5))
 
     except FileNotFoundError as e:
         typer.echo(f"✗ Error: {e}", err=True)
