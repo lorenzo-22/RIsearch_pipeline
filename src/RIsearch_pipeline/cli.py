@@ -12,7 +12,7 @@ app = typer.Typer(
     help="siRNA off-target discovery pipeline — analyze RIsearch2 predictions.",
     add_completion=False,
 )
-app.add_typer(accessibility.app, name="accessibility")
+app.command(name="accessibility")(accessibility.run)
 
 
 @app.callback(invoke_without_command=True)

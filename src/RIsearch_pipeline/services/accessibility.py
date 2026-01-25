@@ -82,7 +82,7 @@ class GenomeAccessibilityService:
                 md.window_size = window_size
                 md.max_bp_span = max_span
 
-                fc = RNA.fold_compound(sequence, md)
+                fc = RNA.fold_compound(sequence, md, RNA.OPTION_WINDOW)
 
                 # Callback to capture probabilities
                 # Signature: (probs, size, i, max_bg, data)

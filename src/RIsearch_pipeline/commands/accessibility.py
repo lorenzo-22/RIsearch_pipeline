@@ -3,19 +3,19 @@ from pathlib import Path
 import typer
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
 
-app = typer.Typer()
 logger = logging.getLogger(__name__)
 
 
-@app.command(name="precompute")
-def precompute(
+def run(
     genome: Path = typer.Option(..., "--fasta", "-f", help="Path to genome FASTA file"),
     output_dir: Path = typer.Option(
         ..., "--output", "-o", help="Directory to save accessibility profiles"
     ),
-    window_size: int = typer.Option(80, help="Window size (W)"),
-    max_span: int = typer.Option(40, help="Max base pair span (L)"),
-    unpaired_prob: int = typer.Option(30, help="Unpaired probability length (u)"),
+    window_size: int = typer.Option(80, "--window", "-W", help="Window size (W)"),
+    max_span: int = typer.Option(40, "--span", "-L", help="Max base pair span (L)"),
+    unpaired_prob: int = typer.Option(
+        30, "--unpaired", "-u", help="Unpaired probability length (u)"
+    ),
 ):
     """
     Pre-compute accessibility profiles for a whole genome.
