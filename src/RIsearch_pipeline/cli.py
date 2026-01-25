@@ -5,19 +5,21 @@ from pathlib import Path
 import typer
 
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+from RIsearch_pipeline.commands import accessibility
 
 app = typer.Typer(
     name="risearch-pipeline",
     help="siRNA off-target discovery pipeline — analyze RIsearch2 predictions.",
     add_completion=False,
 )
+app.add_typer(accessibility.app, name="accessibility")
 
 
 @app.callback(invoke_without_command=True)
 def analyze(
     ctx: typer.Context,
     risearch_file: Path = typer.Option(
-        ...,
+        None,
         "-r",
         "--risearch-file",
         help="Path to RIsearch2 output TSV file.",
@@ -42,10 +44,28 @@ def analyze(
         "--expression-metric",
         help="Attribute to use for expression score (default: RPKM).",
     ),
+    accessibility_dir: Path = typer.Option(
+        None,
+        "-a",
+        "--accessibility-dir",
+        help="Directory containing pre-computed accessibility profiles to calculate P(OT).",
+        exists=True,
+        file_okay=False,
+    ),
+    output_file: Path = typer.Option(
+        None,
+        "-o",
+        "--output",
+        help="Path to save the analysis results (TSV).",
+    ),
 ) -> None:
     """Analyze siRNA off-target predictions."""
     if ctx.invoked_subcommand is not None:
         return
+
+    if risearch_file is None:
+        typer.echo("Error: Missing option '-r' / '--risearch-file'.", err=True)
+        raise typer.Exit(code=2)
 
     risearch_parser = RIsearchParser()
 
@@ -54,8 +74,8 @@ def analyze(
         if not isinstance(risearch_file, Path):
             risearch_file = Path(risearch_file)
 
-        df_risearch = risearch_parser.load(risearch_file)
-        summary_ris = risearch_parser.summary(df_risearch)
+        df = risearch_parser.load(risearch_file)
+        summary_ris = risearch_parser.summary(df)
 
         typer.echo(
             f"✓ Loaded {summary_ris['row_count']} predictions from {risearch_file.name}"
@@ -89,29 +109,60 @@ def analyze(
             # Perform intersection
             typer.echo("  Intersecting predictions with transcriptome...")
             intersector = IntersectionService()
-            df_intersect = intersector.intersect(df_risearch, df_trans)
+            df = intersector.intersect(df, df_trans)
 
+            typer.echo(f"✓ Found {df.height} intersecting off-target candidates")
+
+        # Accessibility and Probability Calculation
+        from RIsearch_pipeline.services.probability import ProbabilityService
+        from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+
+        if accessibility_dir:
             typer.echo(
-                f"✓ Found {df_intersect.height} intersecting off-target candidates"
+                f"  Calculating probabilities using accessibility profiles from {accessibility_dir}..."
             )
-
-            if df_intersect.height > 0:
-                typer.echo("\nFirst 5 intersecting candidates:")
-                # Select useful columns to show
-                display_cols = [
-                    "sirna_id",
-                    "chrom",
-                    "start",
-                    "end",
-                    "gene_id",
-                    "transcript_id",
-                    "energy",
-                    "exp_value",
-                ]
-                typer.echo(df_intersect.select(display_cols).head(5))
+            acc_service = GenomeAccessibilityService(accessibility_dir)
+            prob_service = ProbabilityService(acc_service)
         else:
-            typer.echo("\nFirst 5 rows (Predictions):")
-            typer.echo(df_risearch.head(5))
+            prob_service = ProbabilityService(None)
+
+        # Calculate P(OT)
+        df = prob_service.calculate_probabilities(df)
+
+        # Display Results
+        if df.height > 0:
+            if "P_off_target" in df.columns:
+                # Sort by Probability desc
+                df = df.sort("P_off_target", descending=True)
+                typer.echo("\nTop 10 candidates (Sorted by P(OT)):")
+            else:
+                typer.echo("\nFirst 5 rows (Predictions):")
+
+            # Select useful columns to show
+            potential_cols = [
+                "sirna_id",
+                "chrom",
+                "start",
+                "end",
+                "gene_id",
+                "transcript_id",
+                "energy",
+                "opening_energy",
+                "dG_total",
+                "P_off_target",
+                "exp_value",
+            ]
+            # specific intersection selection
+            display_cols = [c for c in potential_cols if c in df.columns]
+
+            typer.echo(df.select(display_cols).head(10))
+
+        # Save to Output File
+        if output_file:
+            # Determine format? Default to TSV as per original pipeline
+            # Polars write_csv with separator='\t'
+            df.write_csv(output_file, separator="\t")
+            typer.echo(f"\n✓ Results saved to {output_file}")
 
     except FileNotFoundError as e:
         typer.echo(f"✗ Error: {e}", err=True)
