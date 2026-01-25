@@ -25,3 +25,11 @@ def read_fasta(path: Path) -> Generator[Tuple[str, str], None, None]:
 
         if header:
             yield header, "".join(sequence)
+
+
+def reverse_complement(sequence: str) -> str:
+    """
+    Return the reverse complement of a DNA sequence.
+    """
+    complement_map = str.maketrans("ATCGatcg", "TAGCtagc")
+    return sequence.translate(complement_map)[::-1]

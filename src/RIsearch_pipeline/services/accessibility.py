@@ -32,8 +32,10 @@ class GenomeAccessibilityService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._profiles: Dict[str, np.memmap] = {}
 
-    def get_profile_path(self, chrom: str) -> Path:
-        return self.data_dir / f"{chrom}.access.npy"
+    def get_profile_path(self, chrom: str, strand: str = "+") -> Path:
+        """Get path for accessibility profile. Strand can be '+' or '-'."""
+        suffix = "plus" if strand == "+" else "minus"
+        return self.data_dir / f"{chrom}_{suffix}.access.npy"
 
     def compute_genome_accessibility(
         self,
@@ -44,6 +46,7 @@ class GenomeAccessibilityService:
     ) -> Dict[str, Path]:
         """
         Compute accessibility for all sequences in the genome FASTA.
+        Computes profiles for both forward (+) and reverse (-) strands.
 
         Args:
             genome_path: Path to genome FASTA file.
@@ -60,9 +63,7 @@ class GenomeAccessibilityService:
                 "Please install ViennaRNA or use the CLI fallback (not yet implemented)."
             )
 
-        # We need a FASTA parser. Using a simple generator to avoid heavy dependencies if possible,
-        # but pysam is better. We'll use a simple parser for now to minimize dependnecies.
-        from RIsearch_pipeline.services.helpers import read_fasta
+        from RIsearch_pipeline.services.helpers import read_fasta, reverse_complement
 
         results = {}
 
@@ -72,68 +73,91 @@ class GenomeAccessibilityService:
             seq_len = len(sequence)
             logger.info(f"Processing {chrom} (length {seq_len})...")
 
-            # Create profile array (initialized to 0.0)
-            # Use float32 for compact storage but decent precision
-            profile = np.zeros(seq_len, dtype=np.float32)
+            # Process both strands
+            for strand in ["+", "-"]:
+                logger.info(f"  Computing {strand} strand...")
 
-            try:
-                # Configure Model
-                md = RNA.md()
-                md.window_size = window_size
-                md.max_bp_span = max_span
+                # Use reverse complement for minus strand
+                seq_to_process = (
+                    sequence if strand == "+" else reverse_complement(sequence)
+                )
 
-                fc = RNA.fold_compound(sequence, md, RNA.OPTION_WINDOW)
+                # Create profile array for opening energies
+                profile = np.zeros(seq_len, dtype=np.float32)
+                RT = 0.616  # kcal/mol at 37°C
 
-                # Callback to capture probabilities
-                # Signature: (probs, size, i, max_bg, data)
-                # probs: list of probabilities. probs[k] is P(unpaired) for length k.
-                # i: current position (1-based, ending position of the window)
-                def prob_callback(probs, size, i, *args):
-                    if i <= seq_len:
-                        # Capture the probability for the specific length 'unpaired_prob'
-                        # i is 1-based, so use i-1 for 0-based index
-                        if (
-                            unpaired_prob < len(probs)
-                            and probs[unpaired_prob] is not None
+                try:
+                    # Use RNA.pfl_fold_up - direct equivalent of RNAplfold -u
+                    # Returns 2D array: result[i][u] = P(segment of size u starting at position i is unpaired)
+                    # Note: result is 1-based indexing
+                    probs_matrix = RNA.pfl_fold_up(
+                        seq_to_process, unpaired_prob, window_size, max_span
+                    )
+
+                    # Extract probabilities for our target unpaired length
+                    # probs_matrix[i][u] is probability for segment of length u at position i
+                    for i in range(1, seq_len + 1):
+                        if i < len(probs_matrix) and unpaired_prob < len(
+                            probs_matrix[i]
                         ):
-                            profile[i - 1] = probs[unpaired_prob]
+                            p = probs_matrix[i][unpaired_prob]
+                            if p is not None and p > 0:
+                                # Convert probability to opening energy: E = -RT * ln(P)
+                                profile[i - 1] = -RT * np.log(p)
+                            else:
+                                profile[i - 1] = 25.5  # Max storable value
+                        else:
+                            profile[i - 1] = 0.0
 
-                # Run sliding window
-                fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, prob_callback)
+                except Exception as e:
+                    logger.error(f"Error calling ViennaRNA on {chrom} {strand}: {e}")
+                    raise
 
-            except Exception as e:
-                logger.error(f"Error calling ViennaRNA on {chrom}: {e}")
-                raise
+                # For minus strand, reverse the profile like old pipeline does
+                if strand == "-":
+                    profile = profile[::-1]
 
-            # Save to disk
-            out_path = self.get_profile_path(chrom)
-            np.save(out_path, profile)
-            results[chrom] = out_path
+                # Save to disk
+                out_path = self.get_profile_path(chrom, strand)
+                np.save(out_path, profile)
+                results[f"{chrom}_{strand}"] = out_path
 
         return results
 
-    def query(self, chrom: str, start: int, end: int) -> np.ndarray:
+    def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:
         """
         Query accessibility for a region (0-based, half-open [start, end)).
+
+        Args:
+            chrom: Chromosome name
+            start: Start position (0-based)
+            end: End position (0-based, exclusive)
+            strand: Strand ('+' or '-')
 
         Returns:
             Numpy array of probabilities.
         """
-        if chrom not in self._profiles:
+        profile_key = f"{chrom}_{strand}"
+
+        if profile_key not in self._profiles:
             # Try to load
-            path = self.get_profile_path(chrom)
+            path = self.get_profile_path(chrom, strand)
             if not path.exists():
-                raise AccessibilityError(f"Profile for {chrom} not found at {path}")
+                raise AccessibilityError(
+                    f"Profile for {chrom} {strand} not found at {path}"
+                )
 
             # Memory map
-            self._profiles[chrom] = np.load(path, mmap_mode="r")
+            self._profiles[profile_key] = np.load(path, mmap_mode="r")
 
-        profile = self._profiles[chrom]
+        profile = self._profiles[profile_key]
+        seq_len = len(profile)
 
         # Check bounds
-        if start < 0 or end > len(profile):
+        if start < 0 or end > seq_len:
             raise AccessibilityError(
-                f"Query {start}-{end} out of bounds for {chrom} (len {len(profile)})"
+                f"Query {start}-{end} out of bounds for {chrom} {strand} (len {seq_len})"
             )
 
+        # Profiles are already oriented correctly (minus strand reversed during compute)
         return profile[start:end]

@@ -57,6 +57,27 @@ def run(
     unpaired_prob: int = typer.Option(
         30, "--unpaired", "-u", help="Unpaired probability length (u)"
     ),
+    on_target_file: Path = typer.Option(
+        None,
+        "-on",
+        "--on-target",
+        help="Path to On-Target sequence FASTA (for Partition Function).",
+        exists=True,
+        readable=True,
+    ),
+    query_file: Path = typer.Option(
+        None,
+        "-q",
+        "--query",
+        help="Path to siRNA query FASTA (required if --on-target is used).",
+        exists=True,
+        readable=True,
+    ),
+    on_target_expression: float = typer.Option(
+        1000.0,
+        "--on-target-expression",
+        help="Expression level for On-Target (default: 1000.0).",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
@@ -152,7 +173,12 @@ def run(
             prob_service = ProbabilityService(None)
 
         # Calculate P(OT)
-        df = prob_service.calculate_probabilities(df)
+        df = prob_service.calculate_probabilities(
+            df,
+            on_target_path=on_target_file,
+            query_path=query_file,
+            on_target_expression=on_target_expression,
+        )
 
         # Display Results
         if df.height > 0:

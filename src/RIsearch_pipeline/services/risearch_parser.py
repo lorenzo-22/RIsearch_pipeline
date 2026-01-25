@@ -36,7 +36,14 @@ class RIsearchParser:
             path,
             separator="\t",
             has_header=False,
-            columns=[0, 3, 4, 5, 6, 7],  # Select only required columns by index
+            columns=[
+                0,
+                3,
+                4,
+                5,
+                6,
+                7,
+            ],  # Select only required columns by index
             new_columns=RISEARCH_COLUMNS,
             schema_overrides=RISEARCH_SCHEMA,
             truncate_ragged_lines=True,
