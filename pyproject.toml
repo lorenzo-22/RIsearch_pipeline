@@ -4,5 +4,14 @@ version = "0.1.0"
 description = "Pipeline for the analysis of the results of the RIsearch project"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["ViennaRNA", "Polars", "Typer"]
-dev-dependencies = ["pytest", "ruff", "pre-commit"]
+dependencies = ["Polars", "Typer", "ViennaRNA"]
+
+[project.scripts]
+risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
+
+[dependency-groups]
+dev = ["pre-commit", "pytest", "ruff"]
+
+[tool.pytest]
+pythonpath = ["src"]
+testpaths = ["tests"]
