@@ -35,6 +35,8 @@ class ProbabilityService:
         on_target_path: Optional[Path] = None,
         query_path: Optional[Path] = None,
         on_target_expression: float = 1000.0,
+        on_target_accessibility_path: Optional[Path] = None,
+        on_target_risearch_path: Optional[Path] = None,
     ) -> pl.DataFrame:
         """
         Calculate P(OT) for each candidate using Partition Function (Z).
@@ -82,10 +84,21 @@ class ProbabilityService:
         z_partial = df["boltzmann_weight"].sum()
 
         # 5. Calculate On-Target Weight (W_on)
+        # 5. Calculate On-Target Weight (W_on)
         w_on = 0.0
+        dG_total_on = 0.0
+        dG_open_on = 0.0
+        dG_hyb_on = 0.0
+
         if on_target_path and query_path:
             logger.info("Calculating On-Target weight...")
-            dG_total_on = self._calculate_on_target_dg(on_target_path, query_path)
+            dG_hyb_on, dG_open_on = self._calculate_on_target_components(
+                on_target_path,
+                query_path,
+                on_target_accessibility_path,
+                on_target_risearch_path,
+            )
+            dG_total_on = dG_hyb_on + dG_open_on
             w_on = on_target_expression * np.exp(-dG_total_on / RT)
             logger.info(f"On-Target dG_total={dG_total_on:.2f}, Weight={w_on:.2e}")
 
@@ -103,12 +116,357 @@ class ProbabilityService:
         else:
             df = df.with_columns(pl.lit(0.0).alias("P_off_target"))
 
+        # Append On-Target candidate to DataFrame (to match legacy output behavior)
+        if on_target_path and query_path:
+            # Re-run to get metadata (or fetch from parsed file again - slightly inefficient but consistent)
+            if on_target_risearch_path:
+                _hyb, _start, _end, _strand = self._parse_risearch_file(
+                    on_target_risearch_path
+                )
+            else:
+                _hyb, _start, _end, _strand = self._run_risearch_binary(
+                    query_path, on_target_path
+                )
+
+            # P_on = W_on / Z
+            p_on_val = w_on / z_total if z_total > 0 else 0.0
+
+            # Construct row
+            row_dict = {
+                "chrom": "onTarget",
+                "start": _start,
+                "end": _end,
+                "strand": _strand,
+                "transcript_id": "onTarget",
+                "gene_id": "onTarget",
+                "energy": _hyb,
+                "opening_energy": dG_open_on,
+                "dG_total": dG_total_on,
+                "exp_value": on_target_expression,
+                "P_off_target": p_on_val,
+            }
+
+            ont_df = pl.DataFrame([row_dict])
+
+            # Align schema with main df
+            for col in df.columns:
+                if col not in ont_df.columns:
+                    # Determine type from df
+                    dtype = df.schema[col]
+                    ont_df = ont_df.with_columns(pl.lit(None, dtype=dtype).alias(col))
+                else:
+                    # Cast existing column to match (e.g. Int64 -> Int32)
+                    target_dtype = df.schema[col]
+                    current_dtype = ont_df.schema[col]
+                    if target_dtype != current_dtype:
+                        ont_df = ont_df.with_columns(pl.col(col).cast(target_dtype))
+
+            ont_df = ont_df.select(df.columns)
+            df = pl.concat([df, ont_df], how="vertical")
+
         return df
+
+    def calculate_legacy_format(
+        self,
+        df: pl.DataFrame,
+        sirna_id: str = "siRNA",
+        on_target_path: Optional[Path] = None,
+        query_path: Optional[Path] = None,
+        on_target_expression: float = 1000.0,
+        on_target_accessibility_path: Optional[Path] = None,
+        on_target_risearch_path: Optional[Path] = None,
+        alpha_gamma_pairs: list[tuple[float, float]] = [(1.0, 1.0), (0.8, 0.8)],
+        verbose: bool = False,
+    ) -> str:
+        """
+        Calculate probabilities in legacy output format.
+
+        Groups by transcript and applies multiple alpha/gamma scaling factors.
+        Returns formatted string matching old pipeline gw.results format.
+        """
+        if "energy" not in df.columns:
+            return "# Error: No energy column found\n"
+
+        # Annotate with opening energy if service available
+        if self.accessibility_service:
+            df = self._annotate_opening_energy(df)
+
+        # Ensure opening_energy exists
+        if "opening_energy" not in df.columns:
+            df = df.with_columns(pl.lit(0.0).alias("opening_energy"))
+
+        # Ensure exp_value exists
+        if "exp_value" not in df.columns:
+            df = df.with_columns(pl.lit(1.0).alias("exp_value"))
+
+        # Calculate on-target dG components
+        dG_hyb_on = 0.0
+        dG_open_on = 0.0
+        if on_target_path and query_path:
+            dG_hyb_on, dG_open_on = self._calculate_on_target_components(
+                on_target_path,
+                query_path,
+                on_target_accessibility_path,
+                on_target_risearch_path,
+            )
+
+        results_by_ag = {}
+        on_target_stats = {}
+
+        # Get minimum energy for clamping logic (old pipeline feature)
+        # Old pipeline uses the minimum HYBRIDIZATION energy (noacc) for clamping condition
+        # and includes both off-targets and on-target in this minimum finding.
+
+        current_min = dG_hyb_on if (on_target_path and query_path) else 0.0
+
+        if df.height > 0:
+            off_min = df["energy"].min()
+            if off_min < current_min:
+                current_min = off_min
+
+        min_energy = current_min
+        # min_energy_noacc is effectively the same as min_energy in this context
+        # (both refer to hybridization energy minimum)
+
+        import sys
+
+        # CHECKPOINT DEBUG: Print minimum energy and prediction count
+        print(
+            f"\n=== NEW PIPELINE CHECKPOINT: calculate_legacy_format() ===",
+            file=sys.stderr,
+        )
+        print(f"Minimum energy (with acc): {min_energy:.2f}", file=sys.stderr)
+        print(f"Minimum energy (no acc): {min_energy:.2f}", file=sys.stderr)
+        print(f"RT = {RT:.6f}", file=sys.stderr)
+        print(f"Total predictions: {df.height}", file=sys.stderr)
+
+        # Filter out on-target row if it exists (added by calculate_probabilities)
+        df = df.filter(pl.col("transcript_id") != "onTarget")
+
+        for alpha, gamma in alpha_gamma_pairs:
+            # --- WITH ACCESSIBILITY ---
+            # OLD PIPELINE FORMULA (for tuple alpha,gamma):
+            #   assigned_energy = energy + open_eng
+            #   if energy < alpha * minimum: assigned_energy = gamma * minimum + open_eng
+            # The alpha/gamma are for CLAMPING, not multiplication!
+
+            df_scaled = df.with_columns(
+                [
+                    # Apply clamping: if energy < alpha * min_energy, use gamma * min_energy
+                    pl.when(pl.col("energy") < alpha * min_energy)
+                    .then(gamma * min_energy + pl.col("opening_energy"))
+                    .otherwise(pl.col("energy") + pl.col("opening_energy"))
+                    .alias("dG_scaled"),
+                    # NoAcc version: same clamping but without opening_energy
+                    pl.when(pl.col("energy") < alpha * min_energy)
+                    .then(gamma * min_energy)
+                    .otherwise(pl.col("energy"))
+                    .alias("dG_scaled_noacc"),
+                ]
+            )
+
+            # Boltzmann weight per row (WITH ACC)
+            df_scaled = df_scaled.with_columns(
+                [
+                    (pl.col("exp_value") * ((-pl.col("dG_scaled") / RT).exp())).alias(
+                        "W"
+                    ),
+                    (
+                        pl.col("exp_value") * ((-pl.col("dG_scaled_noacc") / RT).exp())
+                    ).alias("W_noacc"),
+                ]
+            )
+
+            # CHECKPOINT DEBUG: Print sample weights (ALL SAMPLES)
+            sample_rows = df_scaled.select(
+                [
+                    "transcript_id",
+                    "energy",
+                    "opening_energy",
+                    "dG_scaled",
+                    "dG_scaled_noacc",
+                    "exp_value",
+                    "W",
+                    "W_noacc",
+                ]
+            )
+            for i, row in enumerate(sample_rows.iter_rows(named=True)):
+                clamped = "YES" if row["energy"] < alpha * min_energy else "NO"
+                print(
+                    f"Sample {i + 1} (alpha={alpha}, gamma={gamma}): tid={row['transcript_id']}, energy={row['energy']:.2f}, open_eng={row['opening_energy']:.2f}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  assigned_energy={row['dG_scaled']:.2f}, assigned_noacc={row['dG_scaled_noacc']:.2f}, clamped={clamped}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  exp={row['exp_value']:.1f}, W={row['W']:.4e}, W_noacc={row['W_noacc']:.4e}",
+                    file=sys.stderr,
+                )
+
+            # Aggregate by transcript (sum weights)
+            df_agg = df_scaled.group_by(["chrom", "transcript_id"]).agg(
+                [
+                    pl.col("W").sum().alias("W_transcript"),
+                    pl.col("W_noacc").sum().alias("W_transcript_noacc"),
+                ]
+            )
+
+            # Z_off = sum of all off-target weights
+            z_off = df_agg["W_transcript"].sum()
+            z_off_noacc = df_agg["W_transcript_noacc"].sum()
+
+            # CHECKPOINT DEBUG: Print Z values
+            print(
+                f"\n=== NEW PIPELINE CHECKPOINT: Z values (alpha={alpha}, gamma={gamma}) ===",
+                file=sys.stderr,
+            )
+            print(f"  Z_off (with acc): {z_off:.4e}", file=sys.stderr)
+            print(f"  Z_off (no acc):   {z_off_noacc:.4e}", file=sys.stderr)
+
+            # On-target weight (apply same clamping logic)
+            if dG_hyb_on < alpha * min_energy:
+                dG_total_on = gamma * min_energy + dG_open_on
+                dG_on_noacc = gamma * min_energy
+            else:
+                dG_total_on = dG_hyb_on + dG_open_on
+                dG_on_noacc = dG_hyb_on
+
+            w_on = on_target_expression * np.exp(-dG_total_on / RT)
+            w_on_noacc = on_target_expression * np.exp(-dG_on_noacc / RT)
+
+            # Total partition function
+            z_total = z_off + w_on
+            z_total_noacc = z_off_noacc + w_on_noacc
+
+            # P(on) and P(off)
+            p_on = w_on / z_total if z_total > 0 else 0.0
+            p_off_total = z_off / z_total if z_total > 0 else 0.0
+            p_on_noacc = w_on_noacc / z_total_noacc if z_total_noacc > 0 else 0.0
+            p_off_total_noacc = (
+                z_off_noacc / z_total_noacc if z_total_noacc > 0 else 0.0
+            )
+
+            on_target_stats[(alpha, gamma)] = {
+                "Pon": p_on,
+                "Pon_noacc": p_on_noacc,
+                "Poff": p_off_total,
+                "Poff_noacc": p_off_total_noacc,
+                "Z": w_on,
+                "Z_noacc": w_on_noacc,
+                "Zoff": z_off,
+                "Zoff_noacc": z_off_noacc,
+            }
+
+            # Per-transcript probabilities (With Acc and NoAcc)
+            df_agg = df_agg.with_columns(
+                [
+                    (pl.col("W_transcript") / z_total).alias("P_transcript")
+                    if z_total > 0
+                    else pl.lit(0.0).alias("P_transcript"),
+                    (pl.col("W_transcript_noacc") / z_total_noacc).alias(
+                        "P_transcript_noacc"
+                    )
+                    if z_total_noacc > 0
+                    else pl.lit(0.0).alias("P_transcript_noacc"),
+                ]
+            )
+
+            results_by_ag[(alpha, gamma)] = df_agg
+
+        # Build output string
+        lines = []
+
+        # On-target header
+        lines.append(f"# On-target info for {sirna_id} #")
+        for (alpha, gamma), stats in on_target_stats.items():
+            line = f"# For alpha={alpha} and gamma={gamma}; "
+            line += f"Pon: {stats['Pon']:.12g}; Pon_noacc: {stats['Pon_noacc']:.12g}; "
+            line += (
+                f"Poff: {stats['Poff']:.12g}; Poff_noacc: {stats['Poff_noacc']:.12g}; "
+            )
+            line += f"Z: {stats['Z']:.12g}; Z_noacc: {stats['Z_noacc']:.12g}; "
+            line += (
+                f"Zoff: {stats['Zoff']:.12g}; Zoff_noacc: {stats['Zoff_noacc']:.12g}"
+            )
+            lines.append(line)
+        lines.append("## End of on-target info ##")
+
+        # Off-target section
+        if verbose:
+            lines.append("# Off-target info#")
+
+            # Column headers
+            header_parts = ["# ID1", "ID2"]
+            for alpha, gamma in alpha_gamma_pairs:
+                header_parts.append(f"alpha:{alpha},gamma:{gamma}")
+                header_parts.append(f"alpha:{alpha},gamma:{gamma}(NoAcc)")
+            lines.append("\t".join(header_parts))
+
+            # Merge all (alpha, gamma) results
+            # Calculate base set from first pair
+            first_ag = alpha_gamma_pairs[0]
+            merged = (
+                results_by_ag[first_ag]
+                .select(
+                    ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
+                )
+                .rename(
+                    {
+                        "P_transcript": f"P_{first_ag[0]}_{first_ag[1]}",
+                        "P_transcript_noacc": f"P_{first_ag[0]}_{first_ag[1]}_noacc",
+                    }
+                )
+            )
+
+            for ag in alpha_gamma_pairs[1:]:
+                other = (
+                    results_by_ag[ag]
+                    .select(
+                        ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
+                    )
+                    .rename(
+                        {
+                            "P_transcript": f"P_{ag[0]}_{ag[1]}",
+                            "P_transcript_noacc": f"P_{ag[0]}_{ag[1]}_noacc",
+                        }
+                    )
+                )
+                merged = merged.join(other, on=["chrom", "transcript_id"], how="outer")
+
+            # Sort by chrom, transcript_id
+            merged = merged.sort(["chrom", "transcript_id"])
+
+            # Output rows
+            for row in merged.iter_rows(named=True):
+                parts = [row["chrom"], row["transcript_id"]]
+                for ag in alpha_gamma_pairs:
+                    # With Acc
+                    col = f"P_{ag[0]}_{ag[1]}"
+                    val = row.get(col, 0.0) or 0.0
+                    parts.append(f"{val:.12g}")
+
+                    # No Acc
+                    col_noacc = f"P_{ag[0]}_{ag[1]}_noacc"
+                    val_noacc = row.get(col_noacc, 0.0) or 0.0
+                    parts.append(f"{val_noacc:.12g}")
+
+                lines.append("\t".join(parts))
+
+            lines.append("## End of off-target info")
+
+        lines.append("")
+
+        return "\n".join(lines)
 
     def _annotate_opening_energy(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         Lookup opening energy for each row using the AccessibilityService.
         """
+        if df.height == 0:
+            return df
+
         if not self.accessibility_service:
             return df
 
@@ -183,40 +541,79 @@ class ProbabilityService:
 
         for row in rows:
             chrom = row["chrom"]
-            start = row["start"]
-            end = row["end"]
+            start_in = row["start"]
+            end_in = row["end"]
             strand = row["strand"]
 
+            # Convert 1-based RIsearch coords to 0-based for internal query
+            start0 = start_in - 1
+
             try:
-                # Query range with strand information
-                # Now returns opening energies directly (not probabilities)
+                # Query region
                 opening_energies = self.accessibility_service.query(
-                    chrom, start, end, strand
+                    chrom, start0, end_in, strand
                 )
-                # Take mean opening energy for the region
-                mean_e_open = (
-                    np.mean(opening_energies) if len(opening_energies) > 0 else 10.0
-                )
+
+                # Interaction length 'u'
+                interaction_len = end_in - start0
+
+                # Check for 2D (matrix) profile
+                if opening_energies.ndim == 2:
+                    # Matrix: rows = positions, cols = u-lengths
+                    # We want the column corresponding to our interaction length 'u'
+                    # col_idx = u - 1
+                    matrix_width = opening_energies.shape[1]
+                    col_idx = min(interaction_len, matrix_width) - 1
+                    if col_idx < 0:
+                        col_idx = 0
+
+                    # Pick 3' end value
+                    if len(opening_energies) > 0:
+                        row_idx = -1 if strand == "+" else 0
+                        val = opening_energies[row_idx, col_idx]
+                        mean_e_open = int(round(float(val) * 10.0)) / 10.0
+                    else:
+                        mean_e_open = 10.0
+                else:
+                    # 1D Legacy/Simplified (Assumes fixed large u, e.g. 30)
+                    if len(opening_energies) > 0:
+                        val = (
+                            opening_energies[-1]
+                            if strand == "+"
+                            else opening_energies[0]
+                        )
+                        mean_e_open = int(round(float(val) * 10.0)) / 10.0
+                    else:
+                        mean_e_open = 10.0
 
                 results.append(
                     {
                         "chrom": chrom,
-                        "start": start,
-                        "end": end,
+                        "start": start_in,
+                        "end": end_in,
                         "strand": strand,
                         "opening_energy": mean_e_open,
                     }
                 )
-            except AccessibilityError:
-                # Missing chrom or data
+            except AccessibilityError as e:
+                # Log first few errors per chromosome to avoid spam
+                result_key = f"acc_error_{chrom}"
+                if not hasattr(self, "_logged_errors"):
+                    self._logged_errors = set()
+
+                if result_key not in self._logged_errors:
+                    logger.warning(
+                        f"Accessibility lookup failed for {chrom}:{start_in}-{end_in} ({strand}): {e}. Defaulting to 10.0"
+                    )
+                    self._logged_errors.add(result_key)
+
                 results.append(
                     {
                         "chrom": chrom,
-                        "start": start,
-                        "end": end,
+                        "start": start_in,
+                        "end": end_in,
                         "strand": strand,
-                        "P_u_mean": 0.0,
-                        "opening_energy": 10.0,  # High penalty for unknown
+                        "opening_energy": 10.0,
                     }
                 )
 
@@ -226,24 +623,148 @@ class ProbabilityService:
         # Join on keys
         return df.join(df_acc, on=["chrom", "start", "end", "strand"], how="left")
 
-    def _calculate_on_target_dg(self, on_target_path: Path, query_path: Path) -> float:
+    def _calculate_on_target_dg(
+        self,
+        on_target_path: Path,
+        query_path: Path,
+        accessibility_path: Optional[Path] = None,
+        risearch_path: Optional[Path] = None,
+    ) -> float:
         """
         Calculate dG_total for the on-target sequence.
-
-        dG_total = dG_hyb (RIsearch) + dG_open (Accessibility)
         """
-        # 1. Hybridization Energy using RIsearch binary
-        dG_hyb = self._run_risearch_binary(query_path, on_target_path)
-
-        # 2. Accessibility Energy (Assumed 0.0 for now as per plan/constraints)
-        dG_open = 0.0
-
+        dG_hyb, dG_open = self._calculate_on_target_components(
+            on_target_path, query_path, accessibility_path, risearch_path
+        )
         return dG_hyb + dG_open
 
-    def _run_risearch_binary(self, query_path: Path, target_path: Path) -> float:
+    def _calculate_on_target_components(
+        self,
+        on_target_path: Path,
+        query_path: Path,
+        accessibility_path: Optional[Path] = None,
+        risearch_path: Optional[Path] = None,
+    ) -> tuple[float, float]:
         """
-        Run RIsearch binary to get hybridization energy.
-        Requires indexing the target first.
+        Calculate (dG_hyb, dG_open) for On-Target.
+        """
+        # 1. Hybridization Energy + Coords
+        if risearch_path:
+            dG_hyb, t_start, t_end, strand = self._parse_risearch_file(risearch_path)
+        else:
+            dG_hyb, t_start, t_end, strand = self._run_risearch_binary(
+                query_path, on_target_path
+            )
+
+        # 2. Accessibility Energy
+        dG_open = 0.0
+        if accessibility_path and accessibility_path.exists() and t_end > 0:
+            try:
+                # Manual parsing of the accessibility file (Text or Binary)
+                # Since we don't have a service instance pointing here necessarily.
+                # Use AccessibilityService static-like logic?
+                # For now, implement simplified text parser if file is text.
+                # Assuming text format from tests/output/old_accessibility.
+
+                # We need to reuse the sophisticated logic from AccessibilityService for matrix/coords.
+                # Best way: Check if we have a service. If not, separate logic.
+
+                # Use a temp service to parse/query
+                temp_service = GenomeAccessibilityService(accessibility_path.parent)
+                # Force load this specific file into cache with a known key
+                # Query using the file stem as "chrom"?
+                # If accessibility_path is "path/to/onTarget_openen", stem is "onTarget_openen".
+                # The user "onTarget" ID might be "onTarget".
+                # RIsearch target ID is "onTarget" (from FASTA).
+
+                # Hack: Determine "chrom" name expected by query.
+                # The _run_risearch_binary returns target ID e.g. "onTarget".
+
+                # If we use temp_service.query("onTarget", ...):
+                # It will look for various files.
+                # If we rename/symlink? No.
+
+                # Direct parse:
+                if "openen" in accessibility_path.name:
+                    profile = temp_service._parse_openen_text(accessibility_path)
+                elif accessibility_path.suffix == ".npy":
+                    profile = np.load(accessibility_path, mmap_mode="r")
+                elif accessibility_path.suffix == ".bin":
+                    # Legacy binary format: flattened 2D matrix (Nx30)
+                    raw_data = np.memmap(accessibility_path, dtype=np.uint8, mode="r")
+                    # Reshape to 2D: each row has 30 columns (u-values from 1 to 30)
+                    if len(raw_data) % 30 == 0:
+                        profile = raw_data.reshape(-1, 30)
+                    else:
+                        logger.warning(
+                            f"Binary file size not divisible by 30, using as 1D"
+                        )
+                        profile = raw_data
+                else:
+                    profile = np.array([])
+
+                # Now replicate the _annotate_opening_energy logic
+                # Profile is likely 2D (Nx30) or 1D.
+                # Coords: t_start (1-based), t_end (1-based).
+                start0 = t_start - 1
+                interaction_len = t_end - start0
+
+                if profile.size > 0:
+                    if profile.ndim == 2:
+                        matrix_width = profile.shape[1]
+                        col_idx = min(interaction_len, matrix_width) - 1
+                        if col_idx < 0:
+                            col_idx = 0
+
+                        row_idx = -1 if strand == "+" else 0  # OnTarget usually +?
+                        # Wait, strand from RIsearch.
+
+                        # Bounds check
+                        if start0 >= 0 and t_end <= profile.shape[0]:
+                            # Slice rows
+                            # region = profile[start0:t_end, :] # Not needed, just need endpoint
+
+                            # Endpoint index
+                            # If +, end of site (t_end-1).
+                            # If -, start of site (start0).
+                            target_idx = (t_end - 1) if strand == "+" else start0
+
+                            if 0 <= target_idx < profile.shape[0]:
+                                val = profile[target_idx, col_idx]
+                                # Binary files store uint8 * 10, so divide by 10
+                                if profile.dtype == np.uint8:
+                                    dG_open = int(round(float(val))) / 10.0
+                                else:
+                                    dG_open = int(round(float(val) * 10.0)) / 10.0
+                            else:
+                                dG_open = 10.0
+                        else:
+                            dG_open = 10.0
+                    else:
+                        # 1D
+                        target_idx = (t_end - 1) if strand == "+" else start0
+                        if 0 <= target_idx < profile.shape[0]:
+                            val = profile[target_idx]
+                            # If legacy bin (uint8)
+                            if profile.dtype == np.uint8:
+                                val = float(val) / 10.0
+
+                            dG_open = int(round(float(val) * 10.0)) / 10.0
+                        else:
+                            dG_open = 10.0
+
+            except Exception as e:
+                logger.error(f"Failed to calculate on-target accessibility: {e}")
+                dG_open = 0.0  # Fallback
+
+        return dG_hyb, dG_open
+
+    def _run_risearch_binary(
+        self, query_path: Path, target_path: Path
+    ) -> tuple[float, int, int, str]:
+        """
+        Run RIsearch binary to get hybridization energy and coordinates.
+        Returns (energy, start, end, strand).
         """
         import subprocess
         import tempfile
@@ -252,7 +773,7 @@ class ProbabilityService:
         binary_path = "/Users/lorenzo/.cargo/bin/RIsearch"
         if not Path(binary_path).exists():
             logger.error(f"RIsearch binary not found at {binary_path}")
-            return 0.0
+            return 0.0, 0, 0, "+"
 
         with tempfile.NamedTemporaryFile(suffix=".sa", delete=False) as tmp_index:
             index_path = Path(tmp_index.name)
@@ -286,35 +807,81 @@ class ProbabilityService:
                 if line.startswith("#"):
                     continue
                 parts = line.split()
-                # Default format is likely:
-                # Query Target ... Energy (at end?)
-                # We look for negative floats.
-                for p in parts:
+                # Output format (8 cols): QueryID, QStart, QEnd, TargetID, TStart, TEnd, Strand, Energy
+                parts = line.split()
+                if len(parts) >= 8:
                     try:
-                        f = float(p)
-                        if f < 0:
-                            energies.append(f)
+                        energy = float(parts[7])
+                        # If energy < 0, it's a candidate
+                        # We want the BEST (lowest) energy
+
+                        # Store tuple
+                        t_start = int(parts[4])
+                        t_end = int(parts[5])
+                        strand = parts[6]
+
+                        energies.append((energy, t_start, t_end, strand))
                     except ValueError:
                         pass
 
             if energies:
-                # Assuming most negative (min) is the best binding energy
-                return min(energies)
+                # Find min energy
+                best = min(energies, key=lambda x: x[0])
+                return best
             else:
                 logger.warning(
                     "Could not parse energy from RIsearch output for On-Target."
                 )
-                return 0.0
+                return 0.0, 0, 0, "+"
 
         except subprocess.CalledProcessError as e:
             logger.error(f"RIsearch binary execution failed: {e.stderr}")
             if e.stdout:
                 logger.error(f"Stdout: {e.stdout}")
-            return 0.0
+            return 0.0, 0, 0, "+"
         except Exception as e:
             logger.error(f"Error running RIsearch: {e}")
-            return 0.0
+            return 0.0, 0, 0, "+"
         finally:
             # Cleanup index
             if index_path.exists():
                 os.unlink(index_path)
+
+    def _parse_risearch_file(self, path: Path) -> tuple[float, int, int, str]:
+        """
+        Parse a pre-computed RIsearch output file.
+        Returns (best_energy, start, end, strand).
+        """
+        if not path.exists():
+            logger.error(f"Provided RIsearch file not found: {path}")
+            return 0.0, 0, 0, "+"
+
+        energies = []
+        try:
+            with open(path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    # Output format (8 cols): QueryID, QStart, QEnd, TargetID, TStart, TEnd, Strand, Energy
+                    parts = line.split()
+                    if len(parts) >= 8:
+                        try:
+                            energy = float(parts[7])
+                            t_start = int(parts[4])
+                            t_end = int(parts[5])
+                            strand = parts[6]
+                            energies.append((energy, t_start, t_end, strand))
+                        except ValueError:
+                            pass
+        except Exception as e:
+            logger.error(f"Error reading RIsearch file {path}: {e}")
+            return 0.0, 0, 0, "+"
+
+        if energies:
+            # Find min energy
+            return min(energies, key=lambda x: x[0])
+        else:
+            logger.warning(f"No valid predictions found in {path}")
+            return 0.0, 0, 0, "+"

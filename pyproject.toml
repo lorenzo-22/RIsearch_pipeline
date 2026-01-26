@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = ["numpy", "polars", "typer", "viennaRNA"]
 
 [project.scripts]
+gw = "RIsearch_pipeline.cli:entrypoint"
 risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
 
 [dependency-groups]
@@ -15,3 +16,6 @@ dev = ["pre-commit", "pytest", "ruff"]
 [tool.pytest]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.uv]
+package = true

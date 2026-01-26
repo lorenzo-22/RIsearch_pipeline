@@ -14,15 +14,15 @@ class TranscriptomeParser:
     def load_gtf(
         self, path: Path, feature: str = "exon", score_col: str = "RPKM"
     ) -> pl.DataFrame:
-        """Load GTF file and extract fields.
+        """Load GTF/GFF or BED file and extract fields.
 
         Args:
-            path: Path to .gtf or .gff file
-            feature: Feature type to filter by (e.g. 'exon', 'transcript')
-            score_col: Name of the attribute to use as expression score (e.g. 'RPKM', 'FPKM')
+            path: Path to .gtf, .gff, or .bed file
+            feature: Feature type to filter by (GTF only, e.g. 'exon')
+            score_col: Attribute for score (GTF) or use score column (BED)
 
         Returns:
-            DataFrame with columns: chrom, start, end, strand, gene_id, transcript_id, score
+            DataFrame with columns: chrom, start, end, strand, gene_id, transcript_id, exp_value
         """
         if not isinstance(path, Path):
             path = Path(path)
@@ -30,6 +30,54 @@ class TranscriptomeParser:
         if not path.exists():
             raise FileNotFoundError(f"Transcriptome file not found: {path}")
 
+        # Detect format by suffix
+        if path.suffix.lower() in [".bed", ".bed.gz"]:
+            return self._load_bed(path)
+        else:
+            return self._load_gtf_impl(path, feature, score_col)
+
+    def _load_bed(self, path: Path) -> pl.DataFrame:
+        """Load BED file (7 columns expected)."""
+        # User format: chrom, start, end, transcript_id, score_placeholder, strand, exp_value
+        headers = [
+            "chrom",
+            "start",
+            "end",
+            "transcript_id",
+            "score_placeholder",
+            "strand",
+            "exp_value",
+        ]
+
+        # Read 7 columns
+        df = pl.read_csv(
+            path,
+            separator="\t",
+            has_header=False,
+            columns=range(7),
+            new_columns=headers,
+            truncate_ragged_lines=True,
+        )
+
+        # Select and cast
+        df = df.select(
+            [
+                pl.col("chrom"),
+                pl.col("start"),
+                pl.col("end"),
+                pl.col("strand"),
+                pl.col("transcript_id").alias(
+                    "gene_id"
+                ),  # Use transcript_id as gene_id for BED
+                pl.col("transcript_id"),
+                pl.col("exp_value").cast(pl.Float32, strict=False).fill_null(0.0),
+            ]
+        )
+
+        return df
+
+    def _load_gtf_impl(self, path: Path, feature: str, score_col: str) -> pl.DataFrame:
+        """Internal GTF loading logic."""
         # Load raw GTF (9 columns)
         # We rename them immediately to match schema names
         df = pl.read_csv(

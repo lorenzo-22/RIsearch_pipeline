@@ -7,59 +7,73 @@ class IntersectionService:
     """Service to intersect off-target predictions with genomic features."""
 
     def intersect(
-        self, risearch_df: pl.DataFrame, transcriptome_df: pl.DataFrame
+        self,
+        risearch_df: pl.DataFrame,
+        transcriptome_df: pl.DataFrame,
+        mode: str = "gw",
     ) -> pl.DataFrame:
         """Filter predictions to those contained within transcriptome features.
-
-        Performs an inner join on chromosome and strand, then filters rows where
-        the prediction interval [start, end] is fully contained within the
-        feature interval [start, end].
 
         Args:
             risearch_df: DataFrame from RIsearchParser.
             transcriptome_df: DataFrame from TranscriptomeParser.
+            mode: "gw" (genome-wide) or "tw" (transcriptome-wide).
 
         Returns:
-            DataFrame containing intersected results. Includes columns from both
-            inputs, with suffixes if needed.
+            DataFrame containing intersected results.
         """
-        # We need to distinguish start/end columns
-        # risearch: start, end
-        # transcriptome: start, end
-
         # Rename transcriptome columns to avoid collision and allow comparison
-        # We keep chrom and strand for the join key
+        # We keep chrom and strand for the join key in gw mode
 
-        # Suffix handling in join:
-        # Polars join allows suffix parameter.
+        if mode == "tw":
+            # Transcriptome-Wide Mode
+            # RIsearch 'chrom' column is actually Transcript ID.
+            # We join on Transcript ID.
+            # We assume prediction is 'within' the transcript by definition if IDs match.
 
-        # Perform join
-        # This will create a Cartesian product for each (chrom, strand) pair,
-        # which is memory intensive if pairs are large, but usually manageable
-        # for genome-wide siRNA studies unless thousands of siRNAs vs full genome at once.
-        # Given standard typical usage, this is acceptable. Use lazy() for optimization if needed later.
+            # We join on risearch.chrom == transcriptome.transcript_id
+            # We can also populate 'transcript_id' in the result to be the same as chrom
 
-        joined = risearch_df.join(
-            transcriptome_df,
-            on=["chrom", "strand"],
-            how="inner",
-            suffix="_trans",
-        )
+            joined = risearch_df.join(
+                transcriptome_df,
+                left_on="chrom",
+                right_on="transcript_id",
+                how="inner",
+                suffix="_trans",
+            )
 
-        # Filter for containment
-        # risearch interval: start, end
-        # transcriptome interval: start_trans, end_trans
+            # Ensure transcript_id column exists (it might have been consumed or renamed depending on polars version/join)
+            # In Polars join, if columns are different names, both are kept.
+            # So we will have 'chrom' (from risearch) and 'transcript_id' (from transcriptome, but invalid as join key?? No, left_on/right_on keeps them usually)
+            # Actually, let's explicit alias to be safe.
 
-        # Condition: risearch_start >= trans_start AND risearch_end <= trans_end
-        intersected = joined.filter(
-            (pl.col("start") >= pl.col("start_trans"))
-            & (pl.col("end") <= pl.col("end_trans"))
-        )
+            # But wait, if we join on differnet names, both cols are kept.
+            # We want 'transcript_id' to satisfy ProbabilityService which uses it for grouping.
+            # And 'chrom' should ideally stay as the ID too.
 
-        # Clean up:
-        # We might want to keep the transcript info
-        # Columns: sirna_id, chrom, start, end, strand, energy,
-        #          source, feature, start_trans, end_trans, score_raw, frame, attributes,
-        #          gene_id, transcript_id, exp_value
+            if "transcript_id" not in joined.columns:
+                joined = joined.with_columns(pl.col("chrom").alias("transcript_id"))
 
-        return intersected
+            return joined
+
+        else:
+            # Genome-Wide Mode (Default)
+            # Join on (chrom, strand)
+            joined = risearch_df.join(
+                transcriptome_df,
+                on=["chrom", "strand"],
+                how="inner",
+                suffix="_trans",
+            )
+
+            # Filter for containment
+            # risearch interval: start, end
+            # transcriptome interval: start_trans, end_trans
+
+            # Condition: risearch_start >= trans_start AND risearch_end <= trans_end
+            intersected = joined.filter(
+                (pl.col("start") >= pl.col("start_trans"))
+                & (pl.col("end") <= pl.col("end_trans"))
+            )
+
+            return intersected

@@ -1,5 +1,7 @@
 from pathlib import Path
 import typer
+import polars as pl
+from typing import Optional
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
 
@@ -16,7 +18,7 @@ def run(
         None,
         "-t",
         "--transcriptome",
-        help="Path to transcriptome annotation file (.gtf).",
+        help="Path to transcriptome annotation file (.gtf) or .bed file.",
         exists=True,
         readable=True,
     ),
@@ -65,6 +67,14 @@ def run(
         exists=True,
         readable=True,
     ),
+    on_target_risearch_file: Optional[Path] = typer.Option(
+        None,
+        "--on-target-risearch-file",
+        "-on-ris",
+        help="Path to pre-computed RIsearch output file for On-Target (skips on-the-fly calculation).",
+        exists=True,
+        readable=True,
+    ),
     query_file: Path = typer.Option(
         None,
         "-q",
@@ -76,7 +86,33 @@ def run(
     on_target_expression: float = typer.Option(
         1000.0,
         "--on-target-expression",
+        "-oexp",
         help="Expression level for On-Target (default: 1000.0).",
+    ),
+    on_target_accessibility: Optional[Path] = typer.Option(
+        None,
+        "--on-target-accessibility",
+        help="Path to accessibility file for On-Target (text or binary).",
+    ),
+    legacy_format: bool = typer.Option(
+        False,
+        "--legacy-format",
+        help="Output in legacy format (gw.results style, aggregated by transcript).",
+    ),
+    detailed_report: bool = typer.Option(
+        False,
+        "--detailed-report",
+        help="Report off-target probabilities for individual transcripts (Legacy Format).",
+    ),
+    sense_only: bool = typer.Option(
+        False,
+        "--sense-only",
+        help="Limit RIsearch2 predictions to sense strand (+), ignore antisense.",
+    ),
+    predictions_type: str = typer.Option(
+        "gw",
+        "--type",
+        help="Type of RIsearch2 predictions. gw for genome-wide and tw for transcriptome-wide.",
     ),
 ) -> None:
     """
@@ -96,6 +132,15 @@ def run(
             risearch_file = Path(risearch_file)
 
         df = risearch_parser.load(risearch_file)
+
+        # Apply --sense-only filter (Sense strand only)
+        if sense_only:
+            df = df.filter(pl.col("strand") == "+")
+
+        typer.echo("--- RIsearch Predictions (First 5 rows) ---")
+        typer.echo(df.head(5))
+        typer.echo("------------------------------------------")
+
         summary_ris = risearch_parser.summary(df)
 
         typer.echo(
@@ -104,6 +149,8 @@ def run(
         typer.echo(
             f"  Energy range: {summary_ris['energy_min']:.2f} to {summary_ris['energy_max']:.2f} kcal/mol"
         )
+        if sense_only:
+            typer.echo("  (Filtered to sense strand only)")
 
         # Load Transcriptome if provided
         if gtf_file:
@@ -118,19 +165,25 @@ def run(
                 gtf_file = Path(gtf_file)
 
             trans_parser = TranscriptomeParser()
+            # load_gtf handles BED files too now (by extension)
             df_trans = trans_parser.load_gtf(
                 gtf_file, feature=feature_type, score_col=expression_metric
             )
+            typer.echo("--- Transcriptome Data (First 5 rows) ---")
+            typer.echo(df_trans.head(5))
+            typer.echo("----------------------------------------")
             summary_trans = trans_parser.summary(df_trans)
 
             typer.echo(
-                f"✓ Loaded {summary_trans['row_count']} {feature_type}s from {gtf_file.name}"
+                f"✓ Loaded {summary_trans['row_count']} features from {gtf_file.name}"
             )
 
             # Perform intersection
-            typer.echo("  Intersecting predictions with transcriptome...")
+            typer.echo(
+                f"  Intersecting predictions with transcriptome (mode={predictions_type})..."
+            )
             intersector = IntersectionService()
-            df = intersector.intersect(df, df_trans)
+            df = intersector.intersect(df, df_trans, mode=predictions_type)
 
             typer.echo(f"✓ Found {df.height} intersecting off-target candidates")
 
@@ -178,7 +231,41 @@ def run(
             on_target_path=on_target_file,
             query_path=query_file,
             on_target_expression=on_target_expression,
+            on_target_accessibility_path=on_target_accessibility,
+            on_target_risearch_path=on_target_risearch_file,
         )
+
+        # Legacy Format Output
+        if legacy_format:
+            # Extract siRNA ID from query or use default
+            sirna_id = "siRNA"
+            if query_file:
+                sirna_id = query_file.stem
+
+            legacy_output = prob_service.calculate_legacy_format(
+                df,
+                sirna_id=sirna_id,
+                on_target_path=on_target_file,
+                query_path=query_file,
+                on_target_expression=on_target_expression,
+                on_target_accessibility_path=on_target_accessibility,
+                on_target_risearch_path=on_target_risearch_file,
+                verbose=detailed_report,
+            )
+
+            if output_file:
+                legacy_path = output_file.with_suffix(".results")
+                with open(legacy_path, "w") as f:
+                    f.write(legacy_output)
+                typer.echo(f"✓ Legacy format results saved to {legacy_path}")
+            else:
+                typer.echo(legacy_output)
+
+            # Also save TSV if requested (Standard flow continues below? No, return in orig)
+            if output_file:
+                df.write_csv(output_file, separator="\t")
+                typer.echo(f"✓ Detailed results saved to {output_file}")
+            return
 
         # Display Results
         if df.height > 0:
