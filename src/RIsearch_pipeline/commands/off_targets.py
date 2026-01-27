@@ -263,8 +263,9 @@ def run(
 
             # Also save TSV if requested (Standard flow continues below? No, return in orig)
             if output_file:
-                df.write_csv(output_file, separator="\t")
-                typer.echo(f"✓ Detailed results saved to {output_file}")
+                detailed_path = output_file.parent / "detailed_results.tsv"
+                df.write_csv(detailed_path, separator="\t")
+                typer.echo(f"✓ Detailed results saved to {detailed_path}")
             return
 
         # Display Results

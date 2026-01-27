@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import polars as pl
 import numpy as np
 from pathlib import Path
@@ -51,7 +51,7 @@ class TestProbabilityPartition(unittest.TestCase):
     def test_z_score_with_on_target(self, mock_risearch):
         """Test P(OT) including On-Target in Z (Open Universe)."""
         # Mock RIsearch to return -30.0 kcal/mol for on-target (very stable)
-        mock_risearch.return_value = -30.0
+        mock_risearch.return_value = (-30.0, 0, 100, "+")
 
         # One Off-Target: dG = -10.0, Expr = 100
         df = pl.DataFrame(
@@ -93,7 +93,9 @@ class TestProbabilityPartition(unittest.TestCase):
         self.assertAlmostEqual(p_off, expected_p_off, places=10)
 
         # Verify Mock was called
-        mock_risearch.assert_called_once_with(query_path, on_target_path)
+        # It is called twice: once for weight calculation, once for metadata retrieval
+        self.assertEqual(mock_risearch.call_count, 2)
+        mock_risearch.assert_called_with(query_path, on_target_path)
 
 
 if __name__ == "__main__":

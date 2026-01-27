@@ -1,0 +1,60 @@
+# RIsearch Pipeline Configuration Example
+# You can place this file anywhere. Run with:
+# risearch-pipeline --config path/to/this/config.yaml
+
+# -----------------------------------------------------------------------------
+# COMMAND SELECTION
+# Options: "off-targets" or "accessibility"
+# -----------------------------------------------------------------------------
+command: off-targets
+
+# -----------------------------------------------------------------------------
+# OFF-TARGETS CONFIGURATION
+# Required if command is "off-targets"
+# -----------------------------------------------------------------------------
+off_targets:
+  # [REQUIRED] Path to RIsearch2 output predictions (TSV)
+  risearch_file: risearch_output.tsv
+
+  # [OPTIONAL] Transcriptome annotation (GTF/GFF3)
+  transcriptome: annotation.gtf
+
+  # [OPTIONAL] Feature type to filter from GTF (default: exon)
+  feature: exon
+
+  # [OPTIONAL] Expression metric column in GTF attributes (default: RPKM)
+  expression_metric: RPKM
+
+  # [OPTIONAL] Output file path
+  output: results.tsv
+
+  # [OPTIONAL] Accessibility Data
+  # Provide EITHER accessibility_dir (pre-computed) OR fasta (compute on-the-fly)
+  # accessibility_dir: path/to/profiles/
+  fasta: genome.fa
+
+  # [OPTIONAL] On-Target Calculation (for Probability P(OT))
+  on_target: on_target_sequence.fa
+  query: sirna_sequence.fa
+  on_target_expression: 1000.0
+
+  # [OPTIONAL] Analysis Flags
+  legacy_format: true # Save in old pipeline format (.results)
+  detailed_report: true # Save detailed probability breakdown per transcript
+  sense_only: false # Filter for sense strand only
+
+# -----------------------------------------------------------------------------
+# ACCESSIBILITY CONFIGURATION
+# Required if command is "accessibility"
+# -----------------------------------------------------------------------------
+accessibility:
+  # [REQUIRED] Genome FASTA file
+  fasta: genome.fa
+
+  # [REQUIRED] Output directory for binary profiles
+  output: accessibility_profiles_dir
+
+  # Parameters
+  window: 80
+  span: 40
+  unpaired: 30

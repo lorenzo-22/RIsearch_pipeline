@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "Pipeline for the analysis of the results of the RIsearch project"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["numpy", "polars", "typer", "viennaRNA"]
+dependencies = [
+    "numpy",
+    "omegaconf>=2.3.0",
+    "polars",
+    "typer",
+    "viennaRNA",
+]
 
 [project.scripts]
 gw = "RIsearch_pipeline.cli:entrypoint"

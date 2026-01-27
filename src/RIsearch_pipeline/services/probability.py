@@ -491,7 +491,12 @@ class ProbabilityService:
         # Or, filter unique targets first?
 
         # Unique Targets: (chrom, start, end, strand)
-        targets = df.select(["chrom", "start", "end", "strand"]).unique()
+        # Exclude 'onTarget' as it is handled separately
+        targets = (
+            df.filter(pl.col("chrom") != "onTarget")
+            .select(["chrom", "start", "end", "strand"])
+            .unique()
+        )
 
         # Calculate logic
         # We need the mean unpaired probability across the target site?
