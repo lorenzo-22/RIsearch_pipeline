@@ -228,18 +228,6 @@ class ProbabilityService:
         # min_energy_noacc is effectively the same as min_energy in this context
         # (both refer to hybridization energy minimum)
 
-        import sys
-
-        # CHECKPOINT DEBUG: Print minimum energy and prediction count
-        print(
-            f"\n=== NEW PIPELINE CHECKPOINT: calculate_legacy_format() ===",
-            file=sys.stderr,
-        )
-        print(f"Minimum energy (with acc): {min_energy:.2f}", file=sys.stderr)
-        print(f"Minimum energy (no acc): {min_energy:.2f}", file=sys.stderr)
-        print(f"RT = {RT:.6f}", file=sys.stderr)
-        print(f"Total predictions: {df.height}", file=sys.stderr)
-
         # Filter out on-target row if it exists (added by calculate_probabilities)
         df = df.filter(pl.col("transcript_id") != "onTarget")
 
@@ -277,34 +265,6 @@ class ProbabilityService:
                 ]
             )
 
-            # CHECKPOINT DEBUG: Print sample weights (ALL SAMPLES)
-            sample_rows = df_scaled.select(
-                [
-                    "transcript_id",
-                    "energy",
-                    "opening_energy",
-                    "dG_scaled",
-                    "dG_scaled_noacc",
-                    "exp_value",
-                    "W",
-                    "W_noacc",
-                ]
-            )
-            for i, row in enumerate(sample_rows.iter_rows(named=True)):
-                clamped = "YES" if row["energy"] < alpha * min_energy else "NO"
-                print(
-                    f"Sample {i + 1} (alpha={alpha}, gamma={gamma}): tid={row['transcript_id']}, energy={row['energy']:.2f}, open_eng={row['opening_energy']:.2f}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"  assigned_energy={row['dG_scaled']:.2f}, assigned_noacc={row['dG_scaled_noacc']:.2f}, clamped={clamped}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"  exp={row['exp_value']:.1f}, W={row['W']:.4e}, W_noacc={row['W_noacc']:.4e}",
-                    file=sys.stderr,
-                )
-
             # Aggregate by transcript (sum weights)
             df_agg = df_scaled.group_by(["chrom", "transcript_id"]).agg(
                 [
@@ -316,14 +276,6 @@ class ProbabilityService:
             # Z_off = sum of all off-target weights
             z_off = df_agg["W_transcript"].sum()
             z_off_noacc = df_agg["W_transcript_noacc"].sum()
-
-            # CHECKPOINT DEBUG: Print Z values
-            print(
-                f"\n=== NEW PIPELINE CHECKPOINT: Z values (alpha={alpha}, gamma={gamma}) ===",
-                file=sys.stderr,
-            )
-            print(f"  Z_off (with acc): {z_off:.4e}", file=sys.stderr)
-            print(f"  Z_off (no acc):   {z_off_noacc:.4e}", file=sys.stderr)
 
             # On-target weight (apply same clamping logic)
             if dG_hyb_on < alpha * min_energy:

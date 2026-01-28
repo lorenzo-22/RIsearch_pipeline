@@ -14,10 +14,10 @@ command: off-targets
 # -----------------------------------------------------------------------------
 off_targets:
   # [REQUIRED] Path to RIsearch2 output predictions (TSV)
-  risearch_file: risearch_output.tsv
+  risearch_file: ../tests/off-targets/input/risearch_siRNAID.out
 
   # [OPTIONAL] Transcriptome annotation (GTF/GFF3)
-  transcriptome: annotation.gtf
+  transcriptome: ../tests/off-targets/input/expression_data.bed
 
   # [OPTIONAL] Feature type to filter from GTF (default: exon)
   feature: exon
@@ -26,22 +26,25 @@ off_targets:
   expression_metric: RPKM
 
   # [OPTIONAL] Output file path
-  output: results.tsv
+  output: ../tests/off-targets/output/tw.results
 
   # [OPTIONAL] Accessibility Data
   # Provide EITHER accessibility_dir (pre-computed) OR fasta (compute on-the-fly)
-  # accessibility_dir: path/to/profiles/
-  fasta: genome.fa
+  accessibility_dir: ../tests/off-targets/input/accessibility
+  #fasta: tests/input/genome.fa
 
   # [OPTIONAL] On-Target Calculation (for Probability P(OT))
-  on_target: on_target_sequence.fa
-  query: sirna_sequence.fa
+  on_target: ../tests/off-targets/input/onTarget.fa
+  query: ../tests/off-targets/input/siRNA.fa
   on_target_expression: 1000.0
+  on_target_risearch_file: ../tests/off-targets/input/risearch_siRNAID_only.out
+  on_target_accessibility: ../tests/off-targets/input/accessibility/onTarget.open.acc.bin
 
   # [OPTIONAL] Analysis Flags
   legacy_format: true # Save in old pipeline format (.results)
   detailed_report: true # Save detailed probability breakdown per transcript
-  sense_only: false # Filter for sense strand only
+  sense_only: true # Filter for sense strand only
+  type: tw # Transcriptome-wide mode (match by transcript ID)
 
 # -----------------------------------------------------------------------------
 # ACCESSIBILITY CONFIGURATION
@@ -49,10 +52,10 @@ off_targets:
 # -----------------------------------------------------------------------------
 accessibility:
   # [REQUIRED] Genome FASTA file
-  fasta: genome.fa
+  fasta: ../tests/off-targets/input/transcripts.fa
 
   # [REQUIRED] Output directory for binary profiles
-  output: accessibility_profiles_dir
+  output: ../tests/off-targets/output/accessibility
 
   # Parameters
   window: 80

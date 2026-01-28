@@ -29,6 +29,7 @@ class OffTargetsConfig:
     detailed_report: bool = False
     sense_only: bool = False
     type: str = "gw"
+    verbose: bool = False
 
 
 @dataclass
@@ -40,6 +41,7 @@ class AccessibilityConfig:
     window: int = 80
     span: int = 40
     unpaired: int = 30
+    verbose: bool = False
 
 
 @dataclass

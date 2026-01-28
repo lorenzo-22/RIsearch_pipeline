@@ -17,7 +17,7 @@ def parser() -> RIsearchParser:
 @pytest.fixture
 def test_tsv_path() -> Path:
     """Path to the test RIsearch2 output file."""
-    return Path(__file__).parent / "input" / "risearch_output.tsv"
+    return Path(__file__).parent.parent / "input" / "risearch_siRNAID.out"
 
 
 class TestRIsearchParser:
@@ -35,7 +35,7 @@ class TestRIsearchParser:
     ) -> None:
         """Parser loads all 71 predictions from test file."""
         df = parser.load(test_tsv_path)
-        assert df.height == 71
+        assert df.height == 60
 
     def test_load_correct_columns(
         self, parser: RIsearchParser, test_tsv_path: Path
@@ -81,7 +81,7 @@ class TestRIsearchParserSummary:
         """Summary includes correct row count."""
         df = parser.load(test_tsv_path)
         summary = parser.summary(df)
-        assert summary["row_count"] == 71
+        assert summary["row_count"] == 60
 
     def test_summary_energy_range(
         self, parser: RIsearchParser, test_tsv_path: Path
@@ -89,8 +89,8 @@ class TestRIsearchParserSummary:
         """Summary includes energy min/max."""
         df = parser.load(test_tsv_path)
         summary = parser.summary(df)
-        # Most favorable binding is around -24.61
-        assert summary["energy_min"] < -20.0
+        # Most favorable binding is around -14.47
+        assert summary["energy_min"] < -10.0
         # Least favorable is around -10.01
         assert summary["energy_max"] > -15.0
 
@@ -100,8 +100,8 @@ class TestRIsearchParserSummary:
         """Summary lists chromosomes present."""
         df = parser.load(test_tsv_path)
         summary = parser.summary(df)
-        assert "chr1" in summary["chromosomes"]
-        assert "chr2" in summary["chromosomes"]
+        # risearch_siRNAID.out uses transcript IDs as "chromosome" (target)
+        assert "transcript_3" in summary["chromosomes"]
 
     def test_summary_strands(self, parser: RIsearchParser, test_tsv_path: Path) -> None:
         """Summary lists both strands."""

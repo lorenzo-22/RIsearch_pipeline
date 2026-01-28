@@ -2,7 +2,20 @@ from pathlib import Path
 import typer
 import polars as pl
 from typing import Optional
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+)
+
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+
+console = Console()
 
 
 def run(
@@ -114,17 +127,22 @@ def run(
         "--type",
         help="Type of RIsearch2 predictions. gw for genome-wide and tw for transcriptome-wide.",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed output (tables, stats).",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
 
     Integrates RIsearch2 predictions with transcriptome data and optionally
     calculates off-target probabilities.
-
-    Accessibility can be provided via pre-computed directory (-a) OR
-    computed on-the-fly from a genome FASTA (-f).
     """
     risearch_parser = RIsearchParser()
+
+    console.print(Panel("RIsearch Pipeline", style="bold cyan"))
 
     try:
         # Load RIsearch2 predictions
@@ -137,20 +155,21 @@ def run(
         if sense_only:
             df = df.filter(pl.col("strand") == "+")
 
-        typer.echo("--- RIsearch Predictions (First 5 rows) ---")
-        typer.echo(df.head(5))
-        typer.echo("------------------------------------------")
+        # Verbose: Raw DF
+        if verbose:
+            console.print(f"[dim]--- RIsearch Predictions (First 5 rows) ---[/dim]")
+            console.print(df.head(5))
 
         summary_ris = risearch_parser.summary(df)
+        console.print(
+            f"[green]✓[/green] Loaded [bold]{summary_ris['row_count']}[/bold] predictions from {risearch_file.name}"
+        )
+        console.print(
+            f"  └─ Energy range: {summary_ris['energy_min']:.2f} to {summary_ris['energy_max']:.2f} kcal/mol"
+        )
 
-        typer.echo(
-            f"✓ Loaded {summary_ris['row_count']} predictions from {risearch_file.name}"
-        )
-        typer.echo(
-            f"  Energy range: {summary_ris['energy_min']:.2f} to {summary_ris['energy_max']:.2f} kcal/mol"
-        )
         if sense_only:
-            typer.echo("  (Filtered to sense strand only)")
+            console.print("  └─ (Filtered to sense strand only)")
 
         # Load Transcriptome if provided
         if gtf_file:
@@ -165,27 +184,29 @@ def run(
                 gtf_file = Path(gtf_file)
 
             trans_parser = TranscriptomeParser()
-            # load_gtf handles BED files too now (by extension)
             df_trans = trans_parser.load_gtf(
                 gtf_file, feature=feature_type, score_col=expression_metric
             )
-            typer.echo("--- Transcriptome Data (First 5 rows) ---")
-            typer.echo(df_trans.head(5))
-            typer.echo("----------------------------------------")
-            summary_trans = trans_parser.summary(df_trans)
 
-            typer.echo(
-                f"✓ Loaded {summary_trans['row_count']} features from {gtf_file.name}"
+            if verbose:
+                console.print(f"[dim]--- Transcriptome Data (First 5 rows) ---[/dim]")
+                console.print(df_trans.head(5))
+
+            summary_trans = trans_parser.summary(df_trans)
+            console.print(
+                f"[green]✓[/green] Loaded [bold]{summary_trans['row_count']}[/bold] features from {gtf_file.name}"
             )
 
             # Perform intersection
-            typer.echo(
-                f"  Intersecting predictions with transcriptome (mode={predictions_type})..."
-            )
-            intersector = IntersectionService()
-            df = intersector.intersect(df, df_trans, mode=predictions_type)
+            with console.status(
+                f"[bold green]Intersecting predictions (mode={predictions_type})..."
+            ) as status:
+                intersector = IntersectionService()
+                df = intersector.intersect(df, df_trans, mode=predictions_type)
 
-            typer.echo(f"✓ Found {df.height} intersecting off-target candidates")
+            console.print(
+                f"[green]✓[/green] Found [bold]{df.height}[/bold] intersecting off-target candidates"
+            )
 
         # Accessibility and Probability Calculation
         from RIsearch_pipeline.services.probability import ProbabilityService
@@ -196,44 +217,64 @@ def run(
         temp_dir_obj = None
 
         if accessibility_dir:
-            typer.echo(
-                f"  Calculating probabilities using accessibility profiles from {accessibility_dir}..."
+            console.print(
+                f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
             )
             acc_service = GenomeAccessibilityService(accessibility_dir)
             prob_service = ProbabilityService(acc_service)
 
         elif genome_file:
-            typer.echo(f"  Computing accessibility on-the-fly from {genome_file}...")
-            typer.echo("  (This may take some time for large genomes)")
+            console.print(
+                f"  [dim]Computing accessibility on-the-fly from {genome_file} (this may take time)...[/dim]"
+            )
 
             # Create temp dir
             temp_dir_obj = tempfile.TemporaryDirectory(prefix="risearch_accessibility_")
             temp_dir = Path(temp_dir_obj.name)
 
             acc_service = GenomeAccessibilityService(temp_dir)
-            acc_service.compute_genome_accessibility(
-                genome_file,
-                window_size=window_size,
-                max_span=max_span,
-                unpaired_prob=unpaired_prob,
-            )
+
+            # Use progress bar for accessibility
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task(
+                    "Calculating Accessibility...", total=None
+                )  # Total unknown initially
+
+                def progress_callback(advance=0, description=""):
+                    progress.update(task, advance=advance, description=description)
+
+                acc_service.compute_genome_accessibility(
+                    genome_file,
+                    window_size=window_size,
+                    max_span=max_span,
+                    unpaired_prob=unpaired_prob,
+                    progress_callback=progress_callback,
+                )
+
             prob_service = ProbabilityService(acc_service)
 
         else:
-            typer.echo(
-                "  Warning: No accessibility data provided (-a or -f). P(OT) will be based only on hybridization energy."
+            console.print(
+                "[yellow]Warning:[/yellow] No accessibility data provided. P(OT) based on energy only."
             )
             prob_service = ProbabilityService(None)
 
         # Calculate P(OT)
-        df = prob_service.calculate_probabilities(
-            df,
-            on_target_path=on_target_file,
-            query_path=query_file,
-            on_target_expression=on_target_expression,
-            on_target_accessibility_path=on_target_accessibility,
-            on_target_risearch_path=on_target_risearch_file,
-        )
+        with console.status("[bold green]Calculating probabilities...") as status:
+            df = prob_service.calculate_probabilities(
+                df,
+                on_target_path=on_target_file,
+                query_path=query_file,
+                on_target_expression=on_target_expression,
+                on_target_accessibility_path=on_target_accessibility,
+                on_target_risearch_path=on_target_risearch_file,
+            )
 
         # Legacy Format Output
         if legacy_format:
@@ -257,53 +298,71 @@ def run(
                 legacy_path = output_file.with_suffix(".results")
                 with open(legacy_path, "w") as f:
                     f.write(legacy_output)
-                typer.echo(f"✓ Legacy format results saved to {legacy_path}")
+                console.print(
+                    f"[green]✓[/green] Legacy format results saved to {legacy_path}"
+                )
             else:
-                typer.echo(legacy_output)
+                console.print(legacy_output)
 
             # Also save TSV if requested (Standard flow continues below? No, return in orig)
             if output_file:
                 detailed_path = output_file.parent / "detailed_results.tsv"
                 df.write_csv(detailed_path, separator="\t")
-                typer.echo(f"✓ Detailed results saved to {detailed_path}")
+                console.print(
+                    f"[green]✓[/green] Detailed results saved to {detailed_path}"
+                )
             return
 
-        # Display Results
+        # Display Results Table
         if df.height > 0:
             if "P_off_target" in df.columns:
-                # Sort by Probability desc
                 df = df.sort("P_off_target", descending=True)
-                typer.echo("\nTop 10 candidates (Sorted by P(OT)):")
+                title = "Top 10 Candidates (By P_off_target)"
             else:
-                typer.echo("\nFirst 5 rows (Predictions):")
+                title = "Predictions Preview"
+
+            table = Table(title=title)
 
             # Select useful columns to show
             potential_cols = [
                 "sirna_id",
                 "chrom",
-                "start",
-                "end",
                 "gene_id",
                 "transcript_id",
                 "energy",
-                "opening_energy",
                 "dG_total",
                 "P_off_target",
                 "exp_value",
             ]
-            # specific intersection selection
             display_cols = [c for c in potential_cols if c in df.columns]
 
-            typer.echo(df.select(display_cols).head(10))
+            for col in display_cols:
+                table.add_column(col)
+
+            for row in df.select(display_cols).head(10).iter_rows():
+                # Format floats nicely
+                formatted_row = []
+                for val in row:
+                    if isinstance(val, float):
+                        formatted_row.append(f"{val:.4g}")
+                    else:
+                        formatted_row.append(str(val))
+                table.add_row(*formatted_row)
+
+            console.print(table)
 
         # Save to Output File
         if output_file:
             df.write_csv(output_file, separator="\t")
-            typer.echo(f"\n✓ Results saved to {output_file}")
+            console.print(
+                f"\n[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
+            )
 
     except FileNotFoundError as e:
-        typer.echo(f"✗ Error: {e}", err=True)
+        console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(code=1)
     except Exception as e:
-        typer.echo(f"✗ Failed to parse file: {e}", err=True)
+        console.print(f"[bold red]Failed:[/bold red] {e}")
+        if verbose:
+            console.print_exception()
         raise typer.Exit(code=1)

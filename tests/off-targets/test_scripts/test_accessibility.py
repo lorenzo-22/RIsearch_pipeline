@@ -52,10 +52,10 @@ class TestAccessibility(unittest.TestCase):
             self.fasta_path, window_size=10, max_span=5, unpaired_prob=3
         )
 
-        self.assertIn("chr1", results)
+        self.assertIn("chr1_+", results)
 
         # Verify files created
-        chr1_path = results["chr1"]
+        chr1_path = results["chr1_+"]
         self.assertTrue(chr1_path.exists())
 
         # Verify content

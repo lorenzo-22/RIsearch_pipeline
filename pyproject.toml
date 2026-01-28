@@ -8,6 +8,7 @@ dependencies = [
     "numpy",
     "omegaconf>=2.3.0",
     "polars",
+    "rich>=14.3.0",
     "typer",
     "viennaRNA",
 ]

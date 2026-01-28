@@ -341,6 +341,7 @@ dependencies = [
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "polars" },
+    { name = "rich" },
     { name = "typer" },
     { name = "viennarna" },
 ]
@@ -357,6 +358,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "polars" },
+    { name = "rich", specifier = ">=14.3.0" },
     { name = "typer" },
     { name = "viennarna" },
 ]

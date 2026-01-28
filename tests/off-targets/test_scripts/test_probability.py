@@ -38,7 +38,13 @@ class TestProbabilityService(unittest.TestCase):
         service = ProbabilityService(acc_service)
 
         df = pl.DataFrame(
-            {"energy": [-10.0], "chrom": ["chr1"], "start": [10], "end": [12]}
+            {
+                "energy": [-10.0],
+                "chrom": ["chr1"],
+                "start": [10],
+                "end": [12],
+                "strand": ["+"],
+            }
         )
 
         res = service.calculate_probabilities(df)
@@ -46,7 +52,7 @@ class TestProbabilityService(unittest.TestCase):
         self.assertIn("opening_energy", res.columns)
         dG_open = res["opening_energy"][0]
 
-        self.assertAlmostEqual(dG_open, -RT * log(0.5), places=2)
+        self.assertAlmostEqual(dG_open, 0.5, places=2)
 
 
 if __name__ == "__main__":

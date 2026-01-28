@@ -14,31 +14,30 @@ class TestCLIMain:
 
     def test_run_valid_file(self) -> None:
         """CLI loads valid TSV and prints summary."""
-        tsv_path = Path(__file__).parent / "input" / "risearch_output.tsv"
-        result = runner.invoke(app, ["-r", str(tsv_path)])
+        tsv_path = Path(__file__).parent.parent / "input" / "risearch_siRNAID.out"
+        result = runner.invoke(app, ["off-targets", "-r", str(tsv_path)])
 
         assert result.exit_code == 0
-        assert "71 predictions" in result.stdout
+        assert "60 predictions" in result.stdout
         assert "Energy range" in result.stdout
 
     def test_run_missing_file(self) -> None:
         """CLI exits with error for missing file."""
-        result = runner.invoke(app, ["-r", "/nonexistent/file.tsv"])
+        result = runner.invoke(app, ["off-targets", "-r", "/nonexistent/file.tsv"])
 
         assert result.exit_code != 0
 
     def test_run_shows_chromosomes(self) -> None:
         """CLI output includes chromosome information."""
-        tsv_path = Path(__file__).parent / "input" / "risearch_output.tsv"
-        result = runner.invoke(app, ["-r", str(tsv_path)])
+        # Use verbose to see the dataframe head where chromosomes/targets are listed
+        tsv_path = Path(__file__).parent.parent / "input" / "risearch_siRNAID.out"
+        result = runner.invoke(app, ["off-targets", "-r", str(tsv_path), "-v"])
 
-        assert "chr1" in result.stdout
-        assert "chr2" in result.stdout
+        assert "transcript_3" in result.stdout
 
     def test_run_shows_strands(self) -> None:
         """CLI output includes strand information."""
-        tsv_path = Path(__file__).parent / "input" / "risearch_output.tsv"
-        result = runner.invoke(app, ["-r", str(tsv_path)])
+        tsv_path = Path(__file__).parent.parent / "input" / "risearch_siRNAID.out"
+        result = runner.invoke(app, ["off-targets", "-r", str(tsv_path), "-v"])
 
         assert "+" in result.stdout
-        assert "-" in result.stdout

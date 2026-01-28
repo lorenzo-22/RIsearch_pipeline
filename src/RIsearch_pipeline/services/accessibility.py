@@ -43,6 +43,7 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
+        progress_callback=None,
     ) -> Dict[str, Path]:
         """
         Compute accessibility for all sequences in the genome FASTA.
@@ -143,6 +144,9 @@ class GenomeAccessibilityService:
                         f.write("\t".join(row_vals) + "\n")
 
                 results[f"{chrom}_{strand}"] = out_path
+
+            if progress_callback:
+                progress_callback(advance=1, description=f"Processing {chrom}")
 
         return results
 
