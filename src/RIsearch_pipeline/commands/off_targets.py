@@ -266,15 +266,45 @@ def run(
             prob_service = ProbabilityService(None)
 
         # Calculate P(OT)
-        with console.status("[bold green]Calculating probabilities...") as status:
-            df = prob_service.calculate_probabilities(
-                df,
-                on_target_path=on_target_file,
-                query_path=query_file,
-                on_target_expression=on_target_expression,
-                on_target_accessibility_path=on_target_accessibility,
-                on_target_risearch_path=on_target_risearch_file,
+        # Calculate P(OT)
+        console.print("[bold green]Calculating probabilities...[/bold green]")
+
+        # 1. Annotate Opening Energies
+        if accessibility_dir or genome_file:
+            console.print(
+                "  └─ Annotating opening energies from accessibility profiles..."
             )
+        else:
+            console.print(
+                "  └─ [yellow]Skipping accessibility annotation (energy only)[/yellow]"
+            )
+
+        df, meta = prob_service.calculate_probabilities(
+            df,
+            on_target_path=on_target_file,
+            query_path=query_file,
+            on_target_expression=on_target_expression,
+            on_target_accessibility_path=on_target_accessibility,
+            on_target_risearch_path=on_target_risearch_file,
+        )
+
+        # 2. Boltzmann Weights
+        console.print("  └─ Computing Boltzmann weights (α=1.0, γ=1.0)...")
+
+        # 3. Partition Function Info
+        z_fmt = f"{meta['z_total']:.2e}"
+        z_off = f"{meta['z_off_target']:.2e}"
+        z_on = f"{meta['w_on_target']:.2e}"
+        console.print(
+            f"  └─ Partition Function Z = [bold]{z_fmt}[/bold] (Off-Target={z_off}, On-Target={z_on})"
+        )
+
+        # 4. On-Target Details
+        if meta["has_on_target"]:
+            dg_on = f"{meta['dG_on_target']:.2f}"
+            # Use high precision to show deviation from 1.0
+            p_on = f"{meta.get('p_on_target', 0.0):.10f}"
+            console.print(f"  └─ On-Target: ΔG_total={dg_on} kcal/mol, P(on)={p_on}")
 
         # Legacy Format Output
         if legacy_format:

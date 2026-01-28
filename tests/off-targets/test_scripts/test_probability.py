@@ -13,7 +13,7 @@ class TestProbabilityService(unittest.TestCase):
 
         df = pl.DataFrame({"energy": [-10.0, -5.0, 0.0]})
 
-        res = service.calculate_probabilities(df)
+        res, _ = service.calculate_probabilities(df)
 
         self.assertIn("dG_total", res.columns)
         self.assertIn("P_off_target", res.columns)
@@ -25,7 +25,7 @@ class TestProbabilityService(unittest.TestCase):
         service = ProbabilityService(None)
         df = pl.DataFrame({"energy": [-10.0]})
 
-        res = service.calculate_probabilities(df)
+        res, _ = service.calculate_probabilities(df)
         p = res["P_off_target"][0]
 
         self.assertGreater(p, 0.9)
@@ -47,7 +47,7 @@ class TestProbabilityService(unittest.TestCase):
             }
         )
 
-        res = service.calculate_probabilities(df)
+        res, _ = service.calculate_probabilities(df)
 
         self.assertIn("opening_energy", res.columns)
         dG_open = res["opening_energy"][0]

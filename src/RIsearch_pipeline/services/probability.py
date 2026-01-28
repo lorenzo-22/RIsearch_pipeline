@@ -1,15 +1,13 @@
-import logging
+from loguru import logger
 from pathlib import Path
 import polars as pl
-from typing import Optional
+from typing import Optional, Tuple, Dict
 import numpy as np
 
 from RIsearch_pipeline.services.accessibility import (
     GenomeAccessibilityService,
     AccessibilityError,
 )
-
-logger = logging.getLogger(__name__)
 
 # Gas constant in kcal/mol*K
 R = 0.001987
@@ -37,7 +35,7 @@ class ProbabilityService:
         on_target_expression: float = 1000.0,
         on_target_accessibility_path: Optional[Path] = None,
         on_target_risearch_path: Optional[Path] = None,
-    ) -> pl.DataFrame:
+    ) -> Tuple[pl.DataFrame, Dict]:
         """
         Calculate P(OT) for each candidate using Partition Function (Z).
 
@@ -164,7 +162,20 @@ class ProbabilityService:
             ont_df = ont_df.select(df.columns)
             df = pl.concat([df, ont_df], how="vertical")
 
-        return df
+        # Metadata collection
+        metadata = {
+            "z_total": float(z_total),
+            "z_off_target": float(z_partial),
+            "w_on_target": float(w_on),
+            "dG_on_target": float(dG_total_on),
+            "has_on_target": bool(on_target_path and query_path),
+        }
+
+        # Add P_on to metadata if applicable
+        if on_target_path and query_path:
+            metadata["p_on_target"] = float(w_on / z_total) if z_total > 0 else 0.0
+
+        return df, metadata
 
     def calculate_legacy_format(
         self,

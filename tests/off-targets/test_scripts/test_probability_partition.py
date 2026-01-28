@@ -35,7 +35,7 @@ class TestProbabilityPartition(unittest.TestCase):
         expected_p1 = w1 / z
         expected_p2 = w2 / z
 
-        res = self.service.calculate_probabilities(df)
+        res, _ = self.service.calculate_probabilities(df)
 
         p1 = res["P_off_target"][0]
         p2 = res["P_off_target"][1]
@@ -78,7 +78,7 @@ class TestProbabilityPartition(unittest.TestCase):
         expected_p_off = w_off / z
 
         # Calculate
-        res = self.service.calculate_probabilities(
+        res, _ = self.service.calculate_probabilities(
             df,
             on_target_path=on_target_path,
             query_path=query_path,

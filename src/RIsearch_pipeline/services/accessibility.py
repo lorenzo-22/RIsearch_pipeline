@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Dict
 import numpy as np
@@ -10,8 +10,6 @@ try:
     HAS_VIENNA_BINDINGS = True
 except ImportError:
     HAS_VIENNA_BINDINGS = False
-
-logger = logging.getLogger(__name__)
 
 
 class AccessibilityError(Exception):
@@ -135,11 +133,11 @@ class GenomeAccessibilityService:
                     for i in range(1, seq_len + 1):
                         row_vals = [str(i)]
                         for u in range(1, unpaired_prob + 1):
-                            val = 25.5  # Default max E
+                            val = 0.0  # Default prob
                             if i < len(probs_matrix) and u < len(probs_matrix[i]):
                                 p = probs_matrix[i][u]
                                 if p is not None and p > 0:
-                                    val = -RT * np.log(p)
+                                    val = p  # Write raw probability to TSV
                             row_vals.append(f"{val:.6f}")
                         f.write("\t".join(row_vals) + "\n")
 

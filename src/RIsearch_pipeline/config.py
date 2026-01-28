@@ -49,6 +49,7 @@ class PipelineConfig:
     """Top-level config schema."""
 
     command: str = MISSING  # "off-targets" or "accessibility"
+    verbose: bool = False
     off_targets: Optional[OffTargetsConfig] = None
     accessibility: Optional[AccessibilityConfig] = None
 

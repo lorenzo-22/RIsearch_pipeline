@@ -1,9 +1,7 @@
-import logging
+from loguru import logger
 from pathlib import Path
 import typer
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
-
-logger = logging.getLogger(__name__)
 
 
 def run(

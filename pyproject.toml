@@ -3,14 +3,15 @@ name = "risearch-pipeline"
 version = "0.1.0"
 description = "Pipeline for the analysis of the results of the RIsearch project"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
-    "numpy",
-    "omegaconf>=2.3.0",
-    "polars",
-    "rich>=14.3.0",
-    "typer",
-    "viennaRNA",
+  "loguru",
+  "numpy==2.4.0",
+  "omegaconf>=2.3.0",
+  "polars",
+  "rich>=14.3.0",
+  "typer",
+  "viennaRNA==2.7.2"
 ]
 
 [project.scripts]
@@ -18,7 +19,7 @@ gw = "RIsearch_pipeline.cli:entrypoint"
 risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
 
 [dependency-groups]
-dev = ["pre-commit", "pytest", "ruff"]
+dev = ["pre-commit", "pyrefly", "pytest", "ruff", "ty"]
 
 [tool.pytest]
 pythonpath = ["src"]
