@@ -1,0 +1,3 @@
+Drosophila melanogaster
+Apis mellifera
+Bombyx mori

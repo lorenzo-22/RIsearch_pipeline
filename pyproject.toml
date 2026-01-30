@@ -5,13 +5,19 @@ description = "Pipeline for the analysis of the results of the RIsearch project"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+  "biopython",
+  "httpx",
   "loguru",
+  "matplotlib>=3.7.0",
+  "muscle>=0.0.4",
   "numpy==2.4.0",
   "omegaconf>=2.3.0",
+  "pandas>=2.0.0",
   "polars",
   "rich>=14.3.0",
+  "seaborn>=0.12.0",
   "typer",
-  "viennaRNA==2.7.2"
+  "viennaRNA==2.7.2",
 ]
 
 [project.scripts]
