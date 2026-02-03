@@ -817,88 +817,17 @@ class ProbabilityService:
     ) -> tuple[float, int, int, str]:
         """
         Run RIsearch binary to get hybridization energy and coordinates.
-        Returns (energy, start, end, strand).
+
+        Delegates to RIsearchService for actual execution.
+
+        Returns:
+            Tuple of (energy, start, end, strand) for the best hit.
+            Returns (0.0, 0, 0, "+") if no hits found.
         """
-        import subprocess
-        import tempfile
-        import os
+        from RIsearch_pipeline.services.risearch_service import RIsearchService
 
-        binary_path = "/Users/lorenzo/.cargo/bin/RIsearch"
-        if not Path(binary_path).exists():
-            logger.error(f"RIsearch binary not found at {binary_path}")
-            return 0.0, 0, 0, "+"
-
-        with tempfile.NamedTemporaryFile(suffix=".sa", delete=False) as tmp_index:
-            index_path = Path(tmp_index.name)
-
-        try:
-            # 1. Index
-            # RIsearch index <INPUT> <OUTPUT>
-            cmd_index = [binary_path, "index", str(target_path), str(index_path)]
-            subprocess.run(cmd_index, capture_output=True, check=True)
-
-            # 2. Search
-            # RIsearch search -q <QUERY> -i <INDEX> --output -
-            cmd_search = [
-                binary_path,
-                "search",
-                "-q",
-                str(query_path),
-                "-i",
-                str(index_path),
-                "--output",
-                "-",
-            ]
-            result = subprocess.run(
-                cmd_search, capture_output=True, text=True, check=True
-            )
-
-            # 3. Parse Output
-            lines = result.stdout.splitlines()
-            energies = []
-            for line in lines:
-                if line.startswith("#"):
-                    continue
-                parts = line.split()
-                # Output format (8 cols): QueryID, QStart, QEnd, TargetID, TStart, TEnd, Strand, Energy
-                parts = line.split()
-                if len(parts) >= 8:
-                    try:
-                        energy = float(parts[7])
-                        # If energy < 0, it's a candidate
-                        # We want the BEST (lowest) energy
-
-                        # Store tuple
-                        t_start = int(parts[4])
-                        t_end = int(parts[5])
-                        strand = parts[6]
-
-                        energies.append((energy, t_start, t_end, strand))
-                    except ValueError:
-                        pass
-
-            if energies:
-                # Find min energy
-                best = min(energies, key=lambda x: x[0])
-                return best
-            else:
-                logger.warning(
-                    "Could not parse energy from RIsearch output for On-Target."
-                )
-                return 0.0, 0, 0, "+"
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"RIsearch binary execution failed: {e.stderr}")
-            if e.stdout:
-                logger.error(f"Stdout: {e.stdout}")
-            return 0.0, 0, 0, "+"
-        except Exception as e:
-            logger.error(f"Error running RIsearch: {e}")
-            return 0.0, 0, 0, "+"
-        finally:
-            # Cleanup index
-            if index_path.exists():
-                os.unlink(index_path)
+        service = RIsearchService()
+        return service.search_single_sirna(query_path, target_path)
 
     def _parse_risearch_file(self, path: Path) -> tuple[float, int, int, str]:
         """
