@@ -17,7 +17,7 @@ def parser() -> RIsearchParser:
 @pytest.fixture
 def test_tsv_path() -> Path:
     """Path to the test RIsearch2 output file."""
-    return Path(__file__).parent.parent / "input" / "risearch_siRNAID.out"
+    return Path(__file__).parent.parent / "single" / "input" / "risearch_siRNAID.out"
 
 
 class TestRIsearchParser:

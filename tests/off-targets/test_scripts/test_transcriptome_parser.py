@@ -17,7 +17,7 @@ def parser() -> TranscriptomeParser:
 @pytest.fixture
 def test_gtf_path() -> Path:
     """Path to the test GTF file."""
-    return Path(__file__).parent.parent / "input" / "expression_data.gtf"
+    return Path(__file__).parent.parent / "single" / "input" / "expression_data.gtf"
 
 
 class TestTranscriptomeParser:
