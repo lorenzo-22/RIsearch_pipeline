@@ -126,7 +126,7 @@ class RIsearchService:
         logger.debug(f"Running: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -205,7 +205,7 @@ class RIsearchService:
         logger.debug(f"Running: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,

@@ -19,13 +19,43 @@ console = Console()
 
 
 def run(
-    risearch_file: Path = typer.Option(
-        ...,
+    risearch_file: Optional[Path] = typer.Option(
+        None,
         "-r",
         "--risearch-file",
-        help="Path to RIsearch2 output TSV file.",
+        help="Path to pre-computed RIsearch output TSV file.",
         exists=True,
         readable=True,
+    ),
+    sirna_fasta: Optional[Path] = typer.Option(
+        None,
+        "-s",
+        "--sirna-fasta",
+        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch internally.",
+        exists=True,
+        readable=True,
+    ),
+    target_fasta: Optional[Path] = typer.Option(
+        None,
+        "--target-fasta",
+        "--genome",
+        help="Path to target FASTA (genome or transcriptome) for RIsearch.",
+        exists=True,
+        readable=True,
+    ),
+    target_index: Optional[Path] = typer.Option(
+        None,
+        "-idx",
+        "--target-index",
+        help="Pre-built RIsearch index (optional, speeds up repeated runs).",
+        exists=True,
+        readable=True,
+    ),
+    workers: Optional[int] = typer.Option(
+        None,
+        "-j",
+        "--workers",
+        help="Number of parallel workers for multi-siRNA processing (default: CPU count).",
     ),
     gtf_file: Path = typer.Option(
         None,
@@ -145,11 +175,66 @@ def run(
     console.print(Panel("RIsearch Pipeline", style="bold cyan"))
 
     try:
-        # Load RIsearch2 predictions
-        if not isinstance(risearch_file, Path):
-            risearch_file = Path(risearch_file)
+        # Validate input options
+        if risearch_file is None and sirna_fasta is None:
+            console.print(
+                "[bold red]Error:[/bold red] Must provide either --risearch-file OR --sirna-fasta"
+            )
+            raise typer.Exit(code=1)
 
-        df = risearch_parser.load(risearch_file)
+        if sirna_fasta is not None and target_fasta is None:
+            console.print(
+                "[bold red]Error:[/bold red] --sirna-fasta requires --target-fasta"
+            )
+            raise typer.Exit(code=1)
+
+        # Mode 1: Integrated RIsearch execution
+        if sirna_fasta is not None:
+            from RIsearch_pipeline.services.risearch_service import RIsearchService
+            import tempfile
+
+            risearch_service = RIsearchService()
+
+            # Validate siRNA FASTA (checks for duplicates)
+            try:
+                sirna_ids = risearch_service.validate_sirna_fasta(sirna_fasta)
+                console.print(
+                    f"[green]✓[/green] Validated [bold]{len(sirna_ids)}[/bold] siRNA(s) from {sirna_fasta.name}"
+                )
+            except ValueError as e:
+                console.print(f"[bold red]Error:[/bold red] {e}")
+                raise typer.Exit(code=1)
+
+            # Index target (or reuse existing index)
+            with console.status("[bold green]Indexing target...") as status:
+                if target_index is not None:
+                    index_path = target_index
+                    console.print(
+                        f"[green]✓[/green] Using pre-built index: {index_path.name}"
+                    )
+                else:
+                    index_path = risearch_service.index_target(target_fasta)
+                    console.print(f"[green]✓[/green] Created index: {index_path.name}")
+
+            # Run RIsearch
+            with tempfile.TemporaryDirectory(prefix="risearch_") as tmpdir:
+                output_path = Path(tmpdir) / "predictions.out"
+
+                with console.status("[bold green]Running RIsearch...") as status:
+                    risearch_service.run_search(
+                        query_path=sirna_fasta,
+                        index_path=index_path,
+                        output_path=output_path,
+                    )
+
+                # Load predictions
+                df = risearch_parser.load(output_path)
+
+        # Mode 2: Pre-computed RIsearch file
+        else:
+            if not isinstance(risearch_file, Path):
+                risearch_file = Path(risearch_file)
+            df = risearch_parser.load(risearch_file)
 
         # Apply --sense-only filter (Sense strand only)
         if sense_only:
@@ -157,12 +242,13 @@ def run(
 
         # Verbose: Raw DF
         if verbose:
-            console.print(f"[dim]--- RIsearch Predictions (First 5 rows) ---[/dim]")
+            console.print("[dim]--- RIsearch Predictions (First 5 rows) ---[/dim]")
             console.print(df.head(5))
 
         summary_ris = risearch_parser.summary(df)
+        source_name = sirna_fasta.name if sirna_fasta else risearch_file.name
         console.print(
-            f"[green]✓[/green] Loaded [bold]{summary_ris['row_count']}[/bold] predictions from {risearch_file.name}"
+            f"[green]✓[/green] Loaded [bold]{summary_ris['row_count']}[/bold] predictions from {source_name}"
         )
         console.print(
             f"  └─ Energy range: {summary_ris['energy_min']:.2f} to {summary_ris['energy_max']:.2f} kcal/mol"
