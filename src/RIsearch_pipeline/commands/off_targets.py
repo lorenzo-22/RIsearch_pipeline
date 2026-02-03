@@ -365,28 +365,46 @@ def run(
                 "  └─ [yellow]Skipping accessibility annotation (energy only)[/yellow]"
             )
 
-        df, meta = prob_service.calculate_probabilities(
-            df,
-            on_target_path=on_target_file,
-            query_path=query_file,
-            on_target_expression=on_target_expression,
-            on_target_accessibility_path=on_target_accessibility,
-            on_target_risearch_path=on_target_risearch_file,
-        )
+        # Detect multi-siRNA mode and use per-siRNA partition functions
+        unique_sirnas = df["sirna_id"].unique() if "sirna_id" in df.columns else []
+        is_multi_sirna = len(unique_sirnas) > 1
 
-        # 2. Boltzmann Weights
-        console.print("  └─ Computing Boltzmann weights (α=1.0, γ=1.0)...")
+        if is_multi_sirna:
+            console.print(
+                f"  └─ Multi-siRNA mode: {len(unique_sirnas)} siRNAs detected"
+            )
+            df, meta = prob_service.calculate_probabilities_per_sirna(df)
 
-        # 3. Partition Function Info
-        z_fmt = f"{meta['z_total']:.2e}"
-        z_off = f"{meta['z_off_target']:.2e}"
-        z_on = f"{meta['w_on_target']:.2e}"
-        console.print(
-            f"  └─ Partition Function Z = [bold]{z_fmt}[/bold] (Off-Target={z_off}, On-Target={z_on})"
-        )
+            # Display per-siRNA Z summary
+            console.print(
+                "  └─ Computing per-siRNA Boltzmann weights (α=1.0, γ=1.0)..."
+            )
+            console.print(
+                f"  └─ Total Z across all siRNAs: [bold]{meta['z_total']:.2e}[/bold]"
+            )
+        else:
+            df, meta = prob_service.calculate_probabilities(
+                df,
+                on_target_path=on_target_file,
+                query_path=query_file,
+                on_target_expression=on_target_expression,
+                on_target_accessibility_path=on_target_accessibility,
+                on_target_risearch_path=on_target_risearch_file,
+            )
 
-        # 4. On-Target Details
-        if meta["has_on_target"]:
+            # 2. Boltzmann Weights
+            console.print("  └─ Computing Boltzmann weights (α=1.0, γ=1.0)...")
+
+            # 3. Partition Function Info
+            z_fmt = f"{meta['z_total']:.2e}"
+            z_off = f"{meta['z_off_target']:.2e}"
+            z_on = f"{meta['w_on_target']:.2e}"
+            console.print(
+                f"  └─ Partition Function Z = [bold]{z_fmt}[/bold] (Off-Target={z_off}, On-Target={z_on})"
+            )
+
+        # 4. On-Target Details (single siRNA mode only)
+        if meta.get("has_on_target", False):
             dg_on = f"{meta['dG_on_target']:.2f}"
             # Use high precision to show deviation from 1.0
             p_on = f"{meta.get('p_on_target', 0.0):.10f}"

@@ -177,6 +177,91 @@ class ProbabilityService:
 
         return df, metadata
 
+    def calculate_probabilities_per_sirna(
+        self,
+        df: pl.DataFrame,
+    ) -> Tuple[pl.DataFrame, Dict]:
+        """
+        Calculate P(OT) per siRNA using per-siRNA partition functions.
+
+        When processing multiple siRNAs, each siRNA should have its own partition
+        function Z. This method uses native Polars group_by operations for
+        efficient parallel computation.
+
+        Formula per siRNA:
+          Z_s = Sum_i(Expr_i * exp(-dG_total_i / RT)) for all predictions of siRNA s
+          P_s(t) = (Expr_t * exp(-dG_total_t / RT)) / Z_s
+
+        Returns:
+            Tuple of (DataFrame with P_off_target per siRNA, metadata dict).
+        """
+        if "energy" not in df.columns:
+            logger.warning("No 'energy' column found. Cannot calculate probabilities.")
+            return df, {}
+
+        if "sirna_id" not in df.columns:
+            logger.info("No sirna_id column; falling back to single partition function")
+            return self.calculate_probabilities(df)
+
+        # Check if single siRNA (optimization)
+        unique_sirnas = df["sirna_id"].unique()
+        if len(unique_sirnas) == 1:
+            logger.info("Single siRNA detected; using standard calculation")
+            return self.calculate_probabilities(df)
+
+        logger.info(
+            f"Processing {len(unique_sirnas)} siRNAs with per-siRNA partition functions"
+        )
+
+        # 1. Annotate with opening energy if service available
+        if self.accessibility_service:
+            df = self._annotate_opening_energy(df)
+
+        # 2. Calculate dG_total
+        if "opening_energy" in df.columns:
+            df = df.with_columns(
+                (pl.col("energy") + pl.col("opening_energy")).alias("dG_total")
+            )
+        else:
+            df = df.with_columns(pl.col("energy").alias("dG_total"))
+
+        # 3. Expression value (default 1.0)
+        if "exp_value" not in df.columns:
+            df = df.with_columns(pl.lit(1.0).alias("exp_value"))
+
+        # 4. Calculate Boltzmann weight per row
+        df = df.with_columns(
+            (pl.col("exp_value") * ((-pl.col("dG_total") / RT).exp())).alias(
+                "boltzmann_weight"
+            )
+        )
+
+        # 5. Calculate Z per siRNA using native Polars (parallelized internally)
+        z_per_sirna = df.group_by("sirna_id").agg(
+            pl.col("boltzmann_weight").sum().alias("Z_sirna")
+        )
+
+        # 6. Join Z back and compute P_off_target = W / Z
+        df = df.join(z_per_sirna, on="sirna_id", how="left")
+        df = df.with_columns(
+            pl.when(pl.col("Z_sirna") > 0)
+            .then(pl.col("boltzmann_weight") / pl.col("Z_sirna"))
+            .otherwise(0.0)
+            .alias("P_off_target")
+        )
+
+        # Collect metadata per siRNA
+        z_stats = z_per_sirna.to_dicts()
+        metadata = {
+            "n_sirnas": len(unique_sirnas),
+            "z_per_sirna": {row["sirna_id"]: float(row["Z_sirna"]) for row in z_stats},
+            "z_total": float(df["boltzmann_weight"].sum()),
+        }
+
+        logger.info(f"Calculated partition functions for {len(unique_sirnas)} siRNAs")
+
+        return df, metadata
+
     def calculate_legacy_format(
         self,
         df: pl.DataFrame,
