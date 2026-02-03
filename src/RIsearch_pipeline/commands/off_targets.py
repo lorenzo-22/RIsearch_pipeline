@@ -137,6 +137,21 @@ def run(
         "--on-target-accessibility",
         help="Path to accessibility file for On-Target (text or binary).",
     ),
+    alpha: str = typer.Option(
+        "1.0",
+        "--alpha",
+        help="Alpha clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
+    ),
+    gamma: str = typer.Option(
+        "1.0",
+        "--gamma",
+        help="Gamma clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
+    ),
+    theta: str = typer.Option(
+        "",
+        "--theta",
+        help="Theta scaling parameter(s). Separate multiple values with ';' (e.g., '0.5;0.7').",
+    ),
     legacy_format: bool = typer.Option(
         False,
         "--legacy-format",
@@ -365,22 +380,53 @@ def run(
                 "  └─ [yellow]Skipping accessibility annotation (energy only)[/yellow]"
             )
 
-        # Detect multi-siRNA mode and use per-siRNA partition functions
+        # Parse parameter lists
+        alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
+        gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
+        theta_vals = [float(x) for x in theta.split(";") if x.strip()]
+
+        # Construct alpha-gamma pairs (Cartesian product with a <= g constraint)
+        alpha_gamma_pairs = []
+        # Always include baseline (1.0, 1.0) first
+        alpha_gamma_pairs.append((1.0, 1.0))
+
+        for a in alpha_vals:
+            for g in gamma_vals:
+                if a == 1.0 and g == 1.0:
+                    continue
+                if a <= g:
+                    alpha_gamma_pairs.append((a, g))
+
+        # Remove duplicates while preserving order
+        alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
+
+        # Detect multi-siRNA mode OR if custom parameters are used (forcing vectorized path)
         unique_sirnas = df["sirna_id"].unique() if "sirna_id" in df.columns else []
-        is_multi_sirna = len(unique_sirnas) > 1
+        has_custom_params = len(alpha_gamma_pairs) > 1 or len(theta_vals) > 0
+
+        is_multi_sirna = len(unique_sirnas) > 1 or has_custom_params
 
         if is_multi_sirna:
-            console.print(
-                f"  └─ Multi-siRNA mode: {len(unique_sirnas)} siRNAs detected"
+            mode_msg = (
+                "Multi-siRNA"
+                if len(unique_sirnas) > 1
+                else "Parameterized Single-siRNA"
             )
-            df, meta = prob_service.calculate_probabilities_per_sirna(df)
+            console.print(f"  └─ {mode_msg} detection: {len(unique_sirnas)} siRNAs")
+
+            df, meta = prob_service.calculate_probabilities_per_sirna(
+                df, alpha_gamma_pairs=alpha_gamma_pairs, theta_values=theta_vals
+            )
 
             # Display per-siRNA Z summary
+            console.print("  └─ Computing per-siRNA Boltzmann weights...")
+            if has_custom_params:
+                console.print(
+                    f"  └─ Applied {len(alpha_gamma_pairs) - 1} alpha/gamma pairs and {len(theta_vals)} theta values"
+                )
+
             console.print(
-                "  └─ Computing per-siRNA Boltzmann weights (α=1.0, γ=1.0)..."
-            )
-            console.print(
-                f"  └─ Total Z across all siRNAs: [bold]{meta['z_total']:.2e}[/bold]"
+                f"  └─ Total Z across all siRNAs (base): [bold]{meta['z_total']:.2e}[/bold]"
             )
         else:
             df, meta = prob_service.calculate_probabilities(

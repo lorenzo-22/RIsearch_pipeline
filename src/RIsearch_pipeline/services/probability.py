@@ -180,6 +180,8 @@ class ProbabilityService:
     def calculate_probabilities_per_sirna(
         self,
         df: pl.DataFrame,
+        alpha_gamma_pairs: Optional[list[tuple[float, float]]] = None,
+        theta_values: Optional[list[float]] = None,
     ) -> Tuple[pl.DataFrame, Dict]:
         """
         Calculate P(OT) per siRNA using per-siRNA partition functions.
@@ -204,8 +206,9 @@ class ProbabilityService:
             return self.calculate_probabilities(df)
 
         # Check if single siRNA (optimization)
+        # Only fallback if no custom parameters are active (since standard calc doesn't support them)
         unique_sirnas = df["sirna_id"].unique()
-        if len(unique_sirnas) == 1:
+        if len(unique_sirnas) == 1 and not alpha_gamma_pairs and not theta_values:
             logger.info("Single siRNA detected; using standard calculation")
             return self.calculate_probabilities(df)
 
@@ -213,52 +216,117 @@ class ProbabilityService:
             f"Processing {len(unique_sirnas)} siRNAs with per-siRNA partition functions"
         )
 
-        # 1. Annotate with opening energy if service available
         if self.accessibility_service:
             df = self._annotate_opening_energy(df)
 
-        # 2. Calculate dG_total
+        # 2. Calculate dG_total (Base Case: alpha=1.0, gamma=1.0)
         if "opening_energy" in df.columns:
             df = df.with_columns(
                 (pl.col("energy") + pl.col("opening_energy")).alias("dG_total")
             )
         else:
-            df = df.with_columns(pl.col("energy").alias("dG_total"))
+            df = df.with_columns(
+                pl.lit(0.0).alias("opening_energy"),
+                pl.col("energy").alias("dG_total"),
+            )
 
         # 3. Expression value (default 1.0)
         if "exp_value" not in df.columns:
             df = df.with_columns(pl.lit(1.0).alias("exp_value"))
 
-        # 4. Calculate Boltzmann weight per row
-        df = df.with_columns(
-            (pl.col("exp_value") * ((-pl.col("dG_total") / RT).exp())).alias(
-                "boltzmann_weight"
+        # Calculate E_min per siRNA (required for alpha/gamma clamping)
+        # We assume E_min is the minimum hybridization energy observed for that siRNA
+        min_energies = df.group_by("sirna_id").agg(
+            pl.col("energy").min().alias("E_min")
+        )
+        df = df.join(min_energies, on="sirna_id", how="left")
+
+        # Define list of calculations to perform
+        # format: (name_suffix, energy_expression_col)
+        calc_configs = [("", "dG_total")]
+
+        # Prepare expressions for additional parameters
+        if alpha_gamma_pairs:
+            for alpha, gamma in alpha_gamma_pairs:
+                # Skip default base case if present
+                if alpha == 1.0 and gamma == 1.0:
+                    continue
+
+                suffix = f":alpha={alpha},gamma={gamma}"
+                col_name = f"dG_total{suffix}"
+
+                # Logic: if energy < alpha * E_min -> use gamma * E_min + open
+                # otherwise -> use energy + open
+                df = df.with_columns(
+                    pl.when(pl.col("energy") < alpha * pl.col("E_min"))
+                    .then(gamma * pl.col("E_min") + pl.col("opening_energy"))
+                    .otherwise(pl.col("energy") + pl.col("opening_energy"))
+                    .alias(col_name)
+                )
+                calc_configs.append((suffix, col_name))
+
+        if theta_values:
+            for theta in theta_values:
+                suffix = f":theta={theta}"
+                col_name = f"dG_total{suffix}"
+
+                # Logic: ((theta * (energy + 10)) - 10) + open
+                df = df.with_columns(
+                    (
+                        ((theta * (pl.col("energy") + 10.0)) - 10.0)
+                        + pl.col("opening_energy")
+                    ).alias(col_name)
+                )
+                calc_configs.append((suffix, col_name))
+
+        # 4. & 5. & 6. Calculate W, Z, and P for all configurations
+        # We build a list of aggregations to do them all in one group_by pass for efficiency
+
+        z_aggs = []
+        for suffix, dG_col in calc_configs:
+            # W = Expr * exp(-dG / RT)
+            weight_col = f"boltzmann_weight{suffix}"
+            df = df.with_columns(
+                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(weight_col)
             )
-        )
+            # Z aggregation
+            z_col = f"Z_sirna{suffix}"
+            z_aggs.append(pl.col(weight_col).sum().alias(z_col))
 
-        # 5. Calculate Z per siRNA using native Polars (parallelized internally)
-        z_per_sirna = df.group_by("sirna_id").agg(
-            pl.col("boltzmann_weight").sum().alias("Z_sirna")
-        )
+        # Compute all Zs (parallelized reduction)
+        z_df = df.group_by("sirna_id").agg(z_aggs)
 
-        # 6. Join Z back and compute P_off_target = W / Z
-        df = df.join(z_per_sirna, on="sirna_id", how="left")
-        df = df.with_columns(
-            pl.when(pl.col("Z_sirna") > 0)
-            .then(pl.col("boltzmann_weight") / pl.col("Z_sirna"))
-            .otherwise(0.0)
-            .alias("P_off_target")
-        )
+        # Join Zs back
+        df = df.join(z_df, on="sirna_id", how="left")
 
-        # Collect metadata per siRNA
-        z_stats = z_per_sirna.to_dicts()
+        # Compute Probabilities for all configs
+        probs_exprs = []
+        for suffix, _ in calc_configs:
+            weight_col = f"boltzmann_weight{suffix}"
+            z_col = f"Z_sirna{suffix}"
+            p_col = f"P_off_target{suffix}"
+
+            probs_exprs.append(
+                pl.when(pl.col(z_col) > 0)
+                .then(pl.col(weight_col) / pl.col(z_col))
+                .otherwise(0.0)
+                .alias(p_col)
+            )
+
+        df = df.with_columns(probs_exprs)
+
+        # Cleanup intermediate columns (optional, but good for memory)
+        # We verify by checking if dG_total is base dict
+        # We keep the base P_off_target and others.
+
+        # Collect metadata (base Z)
+        # For metadata return, we use the base config Z
+        z_stats = z_df.select(["sirna_id", "Z_sirna"]).to_dicts()
         metadata = {
             "n_sirnas": len(unique_sirnas),
             "z_per_sirna": {row["sirna_id"]: float(row["Z_sirna"]) for row in z_stats},
             "z_total": float(df["boltzmann_weight"].sum()),
         }
-
-        logger.info(f"Calculated partition functions for {len(unique_sirnas)} siRNAs")
 
         return df, metadata
 

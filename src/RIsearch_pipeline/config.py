@@ -25,6 +25,9 @@ class OffTargetsConfig:
     query: Optional[str] = None
     on_target_expression: float = 1000.0
     on_target_accessibility: Optional[str] = None
+    alpha: str = "1.0"
+    gamma: str = "1.0"
+    theta: str = ""
     legacy_format: bool = False
     detailed_report: bool = False
     sense_only: bool = False
@@ -196,6 +199,19 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
                 "query": "query_file",
             }
         )
+        # Explicitly set CLI-only arguments to None to prevent Typer OptionInfo defaults
+        # When calling a Typer function directly (not via CLI), typer.Option() objects
+        # become the default values, which are truthy and cause bugs.
+        cli_only_args = [
+            "sirna_fasta",
+            "target_fasta",
+            "target_index",
+            "workers",
+        ]
+        for arg in cli_only_args:
+            if arg not in kwargs:
+                kwargs[arg] = None
+
     elif command == "accessibility":
         # accessibility.run specific mappings
         key_mapping.update(
