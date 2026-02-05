@@ -56,32 +56,16 @@ class OrthoDBClient:
         """
         self._wait_for_rate_limit()
 
-        # Use ncbi=1 if it looks like an NCBI ID (digits), otherwise default search
-        # Actually, for gene names like PSMC2, we just query.
-        # The API documentation suggests `query={id}`
-        # Let's try general query first.
-
         params = {
             "query": gene_id,
             "level": level,
         }
-
-        # If gene_id is purely numeric, it might be NCBI, but let's just use the query param
-        # The prompt research said: "http://www.orthodb.org/search?query=[YOUR_GENE_ID]&level=50557"
 
         logger.debug(f"Searching OrthoDB for {gene_id} at level {level}...")
         try:
             response = self.client.get("/search", params=params)
             response.raise_for_status()
             data = response.json()
-
-            # The structure of data needs parsing.
-            # Based on common API structure (list of clusters or genes).
-            # OrthoDB search usually returns a list of matching cluster IDs or genes.
-            # Then we need to fetch members of the cluster.
-
-            # Actually the search returns a list of strings (cluster IDs) or objects?
-            # Let's assume it returns a list of cluster IDs for the gene.
 
             results = []
 
@@ -91,20 +75,7 @@ class OrthoDBClient:
                 logger.warning(f"No orthologs found for {gene_id}")
                 return []
 
-            # We need to fetch the cluster members (orthologs) for the first matching cluster
-            # Or should we fetch for all? Let's take the first significant cluster.
             cluster_id = clusters[0]
-
-            # Now fetch cluster details / fasta
-            # But wait, we want to download FASTA.
-            # The implementation plan says: /fasta?id={ortholog_group_id}
-
-            # We can also get detailed info about members from /tab?id={cluster_id} to filter by species BEFORE downloading fasta?
-            # Or just download FASTA and parse headers.
-            # FASTA headers usually contain organism info.
-
-            # Let's try to get more info first to be clean.
-            # /tab command returns tab-separated info about cluster members.
 
             return [
                 OrthologInfo(

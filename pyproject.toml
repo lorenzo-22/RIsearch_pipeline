@@ -25,7 +25,14 @@ gw = "RIsearch_pipeline.cli:entrypoint"
 risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
 
 [dependency-groups]
-dev = ["pre-commit", "pyrefly", "pytest", "ruff", "ty"]
+dev = [
+    "pre-commit",
+    "pyrefly",
+    "pytest",
+    "ruff",
+    "scalene>=2.1.3",
+    "ty",
+]
 
 [tool.pytest]
 pythonpath = ["src"]

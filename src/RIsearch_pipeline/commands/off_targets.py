@@ -137,6 +137,14 @@ def run(
         "--on-target-accessibility",
         help="Path to accessibility file for On-Target (text or binary).",
     ),
+    on_target_ids_file: Optional[Path] = typer.Option(
+        None,
+        "-oi",
+        "--on-target-ids",
+        help="File with on-target transcript IDs (one per line), ordered to match siRNA order.",
+        exists=True,
+        readable=True,
+    ),
     alpha: str = typer.Option(
         "1.0",
         "--alpha",
@@ -406,6 +414,35 @@ def run(
 
         is_multi_sirna = len(unique_sirnas) > 1 or has_custom_params
 
+        # Parse on-target IDs file if provided (for multi-siRNA mode)
+        on_target_map: dict[str, str] = {}
+        if on_target_ids_file is not None:
+            with open(on_target_ids_file, "r") as f:
+                on_target_ids = [line.strip() for line in f if line.strip()]
+
+            # Get siRNA IDs in order of first appearance
+            if "sirna_id" in df.columns:
+                sirna_order = df["sirna_id"].unique(maintain_order=True).to_list()
+
+                if len(on_target_ids) != len(sirna_order):
+                    console.print(
+                        f"[bold yellow]Warning:[/bold yellow] On-target IDs file has {len(on_target_ids)} entries, "
+                        f"but found {len(sirna_order)} siRNAs. Using available mappings."
+                    )
+
+                # Build mapping: siRNA_id -> on_target_transcript_id
+                for i, sirna_id in enumerate(sirna_order):
+                    if i < len(on_target_ids):
+                        on_target_map[sirna_id] = on_target_ids[i]
+
+                console.print(
+                    f"[green]✓[/green] Loaded {len(on_target_map)} on-target ID mappings from {on_target_ids_file.name}"
+                )
+            else:
+                console.print(
+                    "[bold yellow]Warning:[/bold yellow] No sirna_id column found. Cannot map on-target IDs."
+                )
+
         if is_multi_sirna:
             mode_msg = (
                 "Multi-siRNA"
@@ -415,7 +452,11 @@ def run(
             console.print(f"  └─ {mode_msg} detection: {len(unique_sirnas)} siRNAs")
 
             df, meta = prob_service.calculate_probabilities_per_sirna(
-                df, alpha_gamma_pairs=alpha_gamma_pairs, theta_values=theta_vals
+                df,
+                alpha_gamma_pairs=alpha_gamma_pairs,
+                theta_values=theta_vals,
+                on_target_map=on_target_map if on_target_map else None,
+                on_target_expression=on_target_expression,
             )
 
             # Display per-siRNA Z summary

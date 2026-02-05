@@ -1,0 +1,26 @@
+# Parallelization Benchmark Configuration
+# Run with: uv run python tests/off-targets/benchmark_parallel.py
+
+[benchmark]
+# Number of iterations per test
+iterations = 3
+# Output directory for results
+output_dir = "tests/off-targets/benchmark_results"
+
+[data]
+# Test data paths
+risearch_file = "tests/off-targets/10k_dataset/risearch_10k.out"
+sirna_fasta = "tests/off-targets/10k_dataset/sirnas_10k.fa"
+target_fasta = "tests/off-targets/multiple/input/genome.fa"
+# Scalability test sizes (number of siRNAs to process)
+sirna_counts = [100, 1000, 10000]
+
+[parallel_modes]
+# Modes to benchmark
+modes = ["polars", "threads", "processes"]
+# Worker counts to test (for threads/processes modes)
+worker_counts = [1, 2, 4, 8, 16, 32, 64]
+
+[metrics]
+# What to measure
+measure = ["wall_time", "peak_memory", "cpu_utilization"]

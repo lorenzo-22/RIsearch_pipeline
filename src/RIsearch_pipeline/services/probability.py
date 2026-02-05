@@ -182,6 +182,8 @@ class ProbabilityService:
         df: pl.DataFrame,
         alpha_gamma_pairs: Optional[list[tuple[float, float]]] = None,
         theta_values: Optional[list[float]] = None,
+        on_target_map: Optional[dict[str, str]] = None,
+        on_target_expression: float = 1000.0,
     ) -> Tuple[pl.DataFrame, Dict]:
         """
         Calculate P(OT) per siRNA using per-siRNA partition functions.
@@ -190,8 +192,15 @@ class ProbabilityService:
         function Z. This method uses native Polars group_by operations for
         efficient parallel computation.
 
+        Args:
+            df: DataFrame with predictions.
+            alpha_gamma_pairs: List of (alpha, gamma) tuples for clamping.
+            theta_values: List of theta scaling values.
+            on_target_map: Mapping of siRNA_id -> on_target_transcript_id.
+            on_target_expression: Expression level for on-targets (default 1000.0).
+
         Formula per siRNA:
-          Z_s = Sum_i(Expr_i * exp(-dG_total_i / RT)) for all predictions of siRNA s
+          Z_s = Sum_i(Expr_i * exp(-dG_total_i / RT)) + W_on_s
           P_s(t) = (Expr_t * exp(-dG_total_t / RT)) / Z_s
 
         Returns:
@@ -208,7 +217,12 @@ class ProbabilityService:
         # Check if single siRNA (optimization)
         # Only fallback if no custom parameters are active (since standard calc doesn't support them)
         unique_sirnas = df["sirna_id"].unique()
-        if len(unique_sirnas) == 1 and not alpha_gamma_pairs and not theta_values:
+        if (
+            len(unique_sirnas) == 1
+            and not alpha_gamma_pairs
+            and not theta_values
+            and not on_target_map
+        ):
             logger.info("Single siRNA detected; using standard calculation")
             return self.calculate_probabilities(df)
 
@@ -233,6 +247,47 @@ class ProbabilityService:
         # 3. Expression value (default 1.0)
         if "exp_value" not in df.columns:
             df = df.with_columns(pl.lit(1.0).alias("exp_value"))
+
+        # Extract on-target rows if on_target_map is provided
+        on_target_data: dict[str, dict] = {}
+        if on_target_map and "transcript_id" in df.columns:
+            for sirna_id, target_tid in on_target_map.items():
+                # Find matching rows for this siRNA and transcript
+                matches = df.filter(
+                    (pl.col("sirna_id") == sirna_id)
+                    & (pl.col("transcript_id") == target_tid)
+                )
+                if matches.height > 0:
+                    # Use best (lowest energy) match as on-target
+                    best = matches.sort("energy").head(1).to_dicts()[0]
+                    on_target_data[sirna_id] = {
+                        "transcript_id": target_tid,
+                        "energy": best["energy"],
+                        "opening_energy": best.get("opening_energy", 0.0),
+                        "dG_total": best.get("dG_total", best["energy"]),
+                    }
+                    logger.debug(
+                        f"On-target for {sirna_id}: {target_tid} (dG={best['energy']:.2f})"
+                    )
+                else:
+                    logger.warning(
+                        f"On-target transcript '{target_tid}' not found for siRNA '{sirna_id}'"
+                    )
+
+            # Remove on-target rows from off-target set to avoid double-counting
+            if on_target_data:
+                exclude_conditions = [
+                    (pl.col("sirna_id") == sid)
+                    & (pl.col("transcript_id") == data["transcript_id"])
+                    for sid, data in on_target_data.items()
+                ]
+                exclude_expr = exclude_conditions[0]
+                for cond in exclude_conditions[1:]:
+                    exclude_expr = exclude_expr | cond
+                df = df.filter(~exclude_expr)
+                logger.info(
+                    f"Excluded {len(on_target_data)} on-target entries from off-target set"
+                )
 
         # Calculate E_min per siRNA (required for alpha/gamma clamping)
         # We assume E_min is the minimum hybridization energy observed for that siRNA
@@ -296,6 +351,31 @@ class ProbabilityService:
         # Compute all Zs (parallelized reduction)
         z_df = df.group_by("sirna_id").agg(z_aggs)
 
+        # Add on-target weights to Z for each siRNA
+        if on_target_data:
+            import numpy as np
+
+            on_target_weights = {}
+            for sirna_id, data in on_target_data.items():
+                dG_on = data["dG_total"]
+                w_on = on_target_expression * np.exp(-dG_on / RT)
+                on_target_weights[sirna_id] = w_on
+
+            # Update Z_sirna to include on-target weight
+            z_df = z_df.with_columns(
+                [
+                    (
+                        pl.col("Z_sirna")
+                        + pl.col("sirna_id").replace_strict(
+                            on_target_weights, default=0.0
+                        )
+                    ).alias("Z_sirna")
+                ]
+            )
+            logger.info(
+                f"Added on-target weights for {len(on_target_weights)} siRNAs to partition functions"
+            )
+
         # Join Zs back
         df = df.join(z_df, on="sirna_id", how="left")
 
@@ -326,6 +406,7 @@ class ProbabilityService:
             "n_sirnas": len(unique_sirnas),
             "z_per_sirna": {row["sirna_id"]: float(row["Z_sirna"]) for row in z_stats},
             "z_total": float(df["boltzmann_weight"].sum()),
+            "on_target_count": len(on_target_data) if on_target_data else 0,
         }
 
         return df, metadata
