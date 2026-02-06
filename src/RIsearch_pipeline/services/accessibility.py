@@ -154,36 +154,46 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
+        use_cli: bool = False,
     ) -> np.ndarray:
         """
         Compute accessibility for a single sequence (e.g., on-target).
 
         Uses ViennaRNA's RNA.pfl_fold_up to compute unpaired probabilities,
-        then converts to opening energies.
+        then converts to opening energies. Falls back to RNAplfold CLI if
+        Python bindings are unavailable or use_cli=True.
 
         Args:
             sequence: RNA/DNA sequence string.
             window_size: -W parameter (default 80).
             max_span: -L parameter (default 40).
             unpaired_prob: -u parameter (default 30).
+            use_cli: Force using RNAplfold binary instead of Python bindings.
 
         Returns:
             2D numpy array [seq_len, unpaired_prob] of opening energies.
             Use result[pos, u-1] to get opening energy for length u at position pos.
         """
-        if not HAS_VIENNA_BINDINGS:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Cannot compute on-target accessibility."
-            )
-
         seq_len = len(sequence)
         if seq_len == 0:
             return np.array([], dtype=np.float32)
 
+        # Decide whether to use CLI or Python bindings
+        if use_cli or not HAS_VIENNA_BINDINGS:
+            if use_cli:
+                logger.info("Using RNAplfold CLI (--use-rnaplfold-cli flag)")
+            else:
+                logger.info(
+                    "ViennaRNA Python not available, falling back to RNAplfold CLI"
+                )
+            return self._run_rnaplfold_cli(
+                sequence, window_size, max_span, unpaired_prob
+            )
+
+        # Use ViennaRNA Python bindings
         # Adjust window/span if sequence is shorter
         w = min(window_size, seq_len)
-        l = min(max_span, seq_len)
+        max_span_adj = min(max_span, seq_len)
 
         RT = 0.616  # kcal/mol at 37°C
 
@@ -193,7 +203,7 @@ class GenomeAccessibilityService:
         try:
             # RNA.pfl_fold_up returns 2D: result[i][u] = P(segment of size u at position i is unpaired)
             # 1-based indexing
-            probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, l)
+            probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, max_span_adj)
 
             for i in range(1, seq_len + 1):
                 if i < len(probs_matrix):
@@ -214,6 +224,101 @@ class GenomeAccessibilityService:
             logger.error(f"ViennaRNA error computing accessibility: {e}")
             raise AccessibilityError(f"Failed to compute accessibility: {e}") from e
 
+        return profile
+
+    def _run_rnaplfold_cli(
+        self,
+        sequence: str,
+        window_size: int = 80,
+        max_span: int = 40,
+        unpaired_prob: int = 30,
+    ) -> np.ndarray:
+        """
+        Run RNAplfold binary to compute accessibility.
+
+        Command: RNAplfold -W {w} -L {l} -u {u} -O < input.fa
+        Produces: {seq_id}_openen file with opening energies.
+
+        Args:
+            sequence: RNA/DNA sequence string.
+            window_size: -W parameter.
+            max_span: -L parameter.
+            unpaired_prob: -u parameter.
+
+        Returns:
+            2D numpy array [seq_len, unpaired_prob] of opening energies.
+        """
+        import subprocess
+        import tempfile
+        import shutil
+
+        seq_len = len(sequence)
+        seq_id = "rnaplfold_seq"
+
+        # Adjust parameters for short sequences
+        w = min(window_size, seq_len)
+        max_span_adj = min(max_span, seq_len)
+
+        # Check if RNAplfold is available
+        if not shutil.which("RNAplfold"):
+            raise AccessibilityError(
+                "RNAplfold binary not found in PATH. "
+                "Please install ViennaRNA or add RNAplfold to PATH."
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Write sequence to temp FASTA
+            fasta_path = Path(tmpdir) / "input.fa"
+            with open(fasta_path, "w") as f:
+                f.write(f">{seq_id}\n{sequence}\n")
+
+            # Run RNAplfold
+            cmd = f"RNAplfold -W {w} -L {max_span_adj} -u {unpaired_prob} -O"
+            logger.debug(f"Running: {cmd}")
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=tmpdir,
+                    stdin=open(fasta_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minute timeout
+                )
+
+                if result.returncode != 0:
+                    logger.error(f"RNAplfold stderr: {result.stderr}")
+                    raise AccessibilityError(
+                        f"RNAplfold failed with exit code {result.returncode}"
+                    )
+
+            except subprocess.TimeoutExpired:
+                raise AccessibilityError("RNAplfold timed out after 5 minutes")
+            except FileNotFoundError:
+                raise AccessibilityError("RNAplfold binary not found")
+
+            # Parse output file
+            openen_path = Path(tmpdir) / f"{seq_id}_openen"
+            if not openen_path.exists():
+                # Try alternate naming
+                candidates = list(Path(tmpdir).glob("*_openen"))
+                if candidates:
+                    openen_path = candidates[0]
+                else:
+                    raise AccessibilityError(
+                        f"RNAplfold output file not found. Files in tmpdir: {list(Path(tmpdir).iterdir())}"
+                    )
+
+            logger.debug(f"Parsing RNAplfold output: {openen_path}")
+            profile = self._parse_openen_text(openen_path)
+
+            # Clean up dp.ps file (RNAplfold generates this)
+            dp_ps = Path(tmpdir) / f"{seq_id}_dp.ps"
+            if dp_ps.exists():
+                dp_ps.unlink()
+
+        logger.info(f"Computed accessibility via RNAplfold CLI (len={seq_len})")
         return profile
 
     def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:

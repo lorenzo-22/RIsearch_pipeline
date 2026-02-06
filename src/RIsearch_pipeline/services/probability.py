@@ -23,9 +23,12 @@ class ProbabilityService:
     """
 
     def __init__(
-        self, accessibility_service: Optional[GenomeAccessibilityService] = None
+        self,
+        accessibility_service: Optional[GenomeAccessibilityService] = None,
+        use_rnaplfold_cli: bool = False,
     ):
         self.accessibility_service = accessibility_service
+        self.use_rnaplfold_cli = use_rnaplfold_cli
 
     def calculate_probabilities(
         self,
@@ -981,7 +984,9 @@ class ProbabilityService:
 
                     with tempfile.TemporaryDirectory() as tmpdir:
                         temp_service = GenomeAccessibilityService(Path(tmpdir))
-                        profile = temp_service.compute_sequence_accessibility(sequence)
+                        profile = temp_service.compute_sequence_accessibility(
+                            sequence, use_cli=self.use_rnaplfold_cli
+                        )
 
                         # Extract opening energy at binding site
                         start0 = t_start - 1

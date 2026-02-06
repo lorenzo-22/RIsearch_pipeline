@@ -186,6 +186,11 @@ def run(
         "-v",
         help="Show detailed output (tables, stats).",
     ),
+    use_rnaplfold_cli: bool = typer.Option(
+        False,
+        "--use-rnaplfold-cli",
+        help="Use RNAplfold binary instead of ViennaRNA Python bindings for accessibility.",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
@@ -330,7 +335,9 @@ def run(
                 f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
             )
             acc_service = GenomeAccessibilityService(accessibility_dir)
-            prob_service = ProbabilityService(acc_service)
+            prob_service = ProbabilityService(
+                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+            )
 
         elif genome_file:
             console.print(
@@ -366,13 +373,15 @@ def run(
                     progress_callback=progress_callback,
                 )
 
-            prob_service = ProbabilityService(acc_service)
+            prob_service = ProbabilityService(
+                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+            )
 
         else:
             console.print(
                 "[yellow]Warning:[/yellow] No accessibility data provided. P(OT) based on energy only."
             )
-            prob_service = ProbabilityService(None)
+            prob_service = ProbabilityService(None, use_rnaplfold_cli=use_rnaplfold_cli)
 
         # Calculate P(OT)
         # Calculate P(OT)
