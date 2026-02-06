@@ -849,6 +849,9 @@ class ProbabilityService:
     ) -> tuple[float, float]:
         """
         Calculate (dG_hyb, dG_open) for On-Target.
+
+        If accessibility_path is not provided, computes accessibility on-the-fly
+        using ViennaRNA's RNA.pfl_fold_up.
         """
         # 1. Hybridization Energy + Coords
         if risearch_path:
@@ -860,7 +863,9 @@ class ProbabilityService:
 
         # 2. Accessibility Energy
         dG_open = 0.0
+
         if accessibility_path and accessibility_path.exists() and t_end > 0:
+            # Use pre-computed accessibility file
             try:
                 # Manual parsing of the accessibility file (Text or Binary)
                 # Since we don't have a service instance pointing here necessarily.
@@ -899,7 +904,7 @@ class ProbabilityService:
                         profile = raw_data.reshape(-1, 30)
                     else:
                         logger.warning(
-                            f"Binary file size not divisible by 30, using as 1D"
+                            "Binary file size not divisible by 30, using as 1D"
                         )
                         profile = raw_data
                 else:
@@ -918,14 +923,8 @@ class ProbabilityService:
                         if col_idx < 0:
                             col_idx = 0
 
-                        row_idx = -1 if strand == "+" else 0  # OnTarget usually +?
-                        # Wait, strand from RIsearch.
-
                         # Bounds check
                         if start0 >= 0 and t_end <= profile.shape[0]:
-                            # Slice rows
-                            # region = profile[start0:t_end, :] # Not needed, just need endpoint
-
                             # Endpoint index
                             # If +, end of site (t_end-1).
                             # If -, start of site (start0).
@@ -956,8 +955,71 @@ class ProbabilityService:
                             dG_open = 10.0
 
             except Exception as e:
-                logger.error(f"Failed to calculate on-target accessibility: {e}")
+                logger.error(
+                    f"Failed to calculate on-target accessibility from file: {e}"
+                )
                 dG_open = 0.0  # Fallback
+
+        elif t_end > 0:
+            # Compute accessibility on-the-fly from the on-target FASTA
+            try:
+                from RIsearch_pipeline.services.helpers import read_fasta
+
+                # Read sequence from on-target FASTA
+                sequence = None
+                for seq_id, seq in read_fasta(on_target_path):
+                    sequence = seq
+                    break  # Use first sequence
+
+                if sequence:
+                    logger.info(
+                        f"Computing on-target accessibility on-the-fly (len={len(sequence)})"
+                    )
+
+                    # Create temp service for computation
+                    import tempfile
+
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        temp_service = GenomeAccessibilityService(Path(tmpdir))
+                        profile = temp_service.compute_sequence_accessibility(sequence)
+
+                        # Extract opening energy at binding site
+                        start0 = t_start - 1
+                        interaction_len = t_end - start0
+
+                        if profile.size > 0 and profile.ndim == 2:
+                            col_idx = min(interaction_len, profile.shape[1]) - 1
+                            if col_idx < 0:
+                                col_idx = 0
+
+                            # Use appropriate endpoint based on strand
+                            target_idx = (t_end - 1) if strand == "+" else start0
+
+                            if 0 <= target_idx < profile.shape[0]:
+                                dG_open = float(profile[target_idx, col_idx])
+                                logger.info(
+                                    f"On-target opening energy: {dG_open:.2f} kcal/mol"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Binding site index {target_idx} out of bounds (len={profile.shape[0]})"
+                                )
+                                dG_open = 10.0
+                        else:
+                            logger.warning("Empty or 1D profile from ViennaRNA")
+                            dG_open = 10.0
+                else:
+                    logger.warning(
+                        f"No sequence found in on-target FASTA: {on_target_path}"
+                    )
+
+            except ImportError:
+                logger.warning(
+                    "ViennaRNA not available for on-the-fly accessibility computation"
+                )
+            except Exception as e:
+                logger.error(f"Failed to compute on-target accessibility: {e}")
+                dG_open = 0.0
 
         return dG_hyb, dG_open
 

@@ -148,6 +148,74 @@ class GenomeAccessibilityService:
 
         return results
 
+    def compute_sequence_accessibility(
+        self,
+        sequence: str,
+        window_size: int = 80,
+        max_span: int = 40,
+        unpaired_prob: int = 30,
+    ) -> np.ndarray:
+        """
+        Compute accessibility for a single sequence (e.g., on-target).
+
+        Uses ViennaRNA's RNA.pfl_fold_up to compute unpaired probabilities,
+        then converts to opening energies.
+
+        Args:
+            sequence: RNA/DNA sequence string.
+            window_size: -W parameter (default 80).
+            max_span: -L parameter (default 40).
+            unpaired_prob: -u parameter (default 30).
+
+        Returns:
+            2D numpy array [seq_len, unpaired_prob] of opening energies.
+            Use result[pos, u-1] to get opening energy for length u at position pos.
+        """
+        if not HAS_VIENNA_BINDINGS:
+            raise AccessibilityError(
+                "ViennaRNA Python bindings ('import RNA') not found. "
+                "Cannot compute on-target accessibility."
+            )
+
+        seq_len = len(sequence)
+        if seq_len == 0:
+            return np.array([], dtype=np.float32)
+
+        # Adjust window/span if sequence is shorter
+        w = min(window_size, seq_len)
+        l = min(max_span, seq_len)
+
+        RT = 0.616  # kcal/mol at 37°C
+
+        # Create 2D profile array [seq_len, unpaired_prob]
+        profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
+
+        try:
+            # RNA.pfl_fold_up returns 2D: result[i][u] = P(segment of size u at position i is unpaired)
+            # 1-based indexing
+            probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, l)
+
+            for i in range(1, seq_len + 1):
+                if i < len(probs_matrix):
+                    for u in range(1, unpaired_prob + 1):
+                        if u < len(probs_matrix[i]):
+                            p = probs_matrix[i][u]
+                            if p is not None and p > 0:
+                                # Convert probability to opening energy: E = -RT * ln(P)
+                                profile[i - 1, u - 1] = -RT * np.log(p)
+                            else:
+                                profile[i - 1, u - 1] = (
+                                    25.5  # High penalty for inaccessible
+                                )
+
+            logger.debug(f"Computed accessibility for sequence of length {seq_len}")
+
+        except Exception as e:
+            logger.error(f"ViennaRNA error computing accessibility: {e}")
+            raise AccessibilityError(f"Failed to compute accessibility: {e}") from e
+
+        return profile
+
     def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:
         """
         Query accessibility for a region (0-based, half-open [start, end)).
