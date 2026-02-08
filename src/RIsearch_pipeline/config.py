@@ -34,6 +34,7 @@ class OffTargetsConfig:
     type: str = "gw"
     verbose: bool = False
     chunk_mode: bool = False
+    batch_size: int = 50
 
 
 @dataclass

@@ -144,3 +144,57 @@ class RIsearchParser:
         )
 
         return df
+
+    def load_by_sirna_batch(self, path: Path, sirna_ids: list[str]) -> pl.DataFrame:
+        """Load predictions for multiple siRNAs via streaming filter.
+
+        Uses Polars lazy evaluation with is_in() filter for efficient batch loading.
+        This enables Polars/Rayon parallelization across all rows in the batch.
+
+        Args:
+            path: Path to RIsearch2 output file (TSV, optionally gzipped).
+            sirna_ids: List of siRNA IDs to filter for.
+
+        Returns:
+            Polars DataFrame with predictions for all specified siRNAs.
+        """
+        if not isinstance(path, Path):
+            path = Path(path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"RIsearch2 output file not found: {path}")
+
+        if not sirna_ids:
+            return pl.DataFrame(
+                schema={
+                    "sirna_id": pl.Utf8,
+                    "chrom": pl.Utf8,
+                    "start": pl.Int32,
+                    "end": pl.Int32,
+                    "strand": pl.Utf8,
+                    "energy": pl.Float32,
+                }
+            )
+
+        # Lazy scan, filter by batch, then collect
+        df = (
+            pl.scan_csv(
+                path,
+                separator="\t",
+                has_header=False,
+            )
+            .filter(pl.col("column_1").is_in(sirna_ids))
+            .select(
+                [
+                    pl.col("column_1").alias("sirna_id"),
+                    pl.col("column_4").alias("chrom"),
+                    pl.col("column_5").cast(pl.Int32).alias("start"),
+                    pl.col("column_6").cast(pl.Int32).alias("end"),
+                    pl.col("column_7").alias("strand"),
+                    pl.col("column_8").cast(pl.Float32).alias("energy"),
+                ]
+            )
+            .collect(engine="streaming")
+        )
+
+        return df

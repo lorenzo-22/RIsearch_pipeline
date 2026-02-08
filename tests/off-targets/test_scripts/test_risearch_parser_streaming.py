@@ -88,3 +88,34 @@ class TestLoadBySirna:
         """load_by_sirna raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
             parser.load_by_sirna(Path("/nonexistent/file.tsv"), "siRNAID")
+
+
+class TestLoadBySirnaBatch:
+    """Tests for RIsearchParser.load_by_sirna_batch()."""
+
+    def test_returns_dataframe(
+        self, parser: RIsearchParser, test_tsv_path: Path
+    ) -> None:
+        """load_by_sirna_batch returns a Polars DataFrame."""
+        df = parser.load_by_sirna_batch(test_tsv_path, ["siRNAID"])
+        assert isinstance(df, pl.DataFrame)
+
+    def test_filters_correctly(
+        self, parser: RIsearchParser, test_tsv_path: Path
+    ) -> None:
+        """load_by_sirna_batch returns only rows for specified siRNAs."""
+        df = parser.load_by_sirna_batch(test_tsv_path, ["siRNAID"])
+        assert (df["sirna_id"] == "siRNAID").all()
+
+    def test_empty_list_returns_empty(
+        self, parser: RIsearchParser, test_tsv_path: Path
+    ) -> None:
+        """load_by_sirna_batch returns empty DataFrame for empty list."""
+        df = parser.load_by_sirna_batch(test_tsv_path, [])
+        assert df.height == 0
+
+    def test_correct_columns(self, parser: RIsearchParser, test_tsv_path: Path) -> None:
+        """load_by_sirna_batch creates expected column names."""
+        df = parser.load_by_sirna_batch(test_tsv_path, ["siRNAID"])
+        expected_cols = ["sirna_id", "chrom", "start", "end", "strand", "energy"]
+        assert df.columns == expected_cols

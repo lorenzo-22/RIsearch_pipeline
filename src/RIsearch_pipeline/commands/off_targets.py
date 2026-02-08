@@ -194,7 +194,13 @@ def run(
     chunk_mode: bool = typer.Option(
         False,
         "--chunk-mode",
-        help="Process siRNAs one at a time for large files (reduces memory usage).",
+        help="Process siRNAs in batches for large files (reduces memory usage).",
+    ),
+    batch_size: int = typer.Option(
+        50,
+        "--batch-size",
+        "-b",
+        help="Number of siRNAs to process per batch in chunk mode (default: 50).",
     ),
 ) -> None:
     """
@@ -339,8 +345,16 @@ def run(
                             alpha_gamma_pairs.append((a, g))
                 alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
-                # Step 2: Process each siRNA
+                # Step 2: Process siRNAs in batches
                 all_results = []
+                num_batches = (
+                    len(sirna_ids) + batch_size - 1
+                ) // batch_size  # Ceiling division
+
+                console.print(
+                    f"  └─ Processing {len(sirna_ids)} siRNAs in {num_batches} batches of up to {batch_size}"
+                )
+
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
@@ -349,35 +363,44 @@ def run(
                     TimeElapsedColumn(),
                     console=console,
                 ) as progress:
-                    task = progress.add_task(
-                        "Processing siRNAs...", total=len(sirna_ids)
-                    )
+                    task = progress.add_task("Processing batches...", total=num_batches)
 
-                    for i, sid in enumerate(sirna_ids):
-                        # Load only this siRNA's predictions
-                        df_chunk = risearch_parser.load_by_sirna(risearch_file, sid)
+                    for batch_idx in range(num_batches):
+                        # Get siRNAs for this batch
+                        start_idx = batch_idx * batch_size
+                        end_idx = min(start_idx + batch_size, len(sirna_ids))
+                        batch_sirnas = sirna_ids[start_idx:end_idx]
+
+                        # Load entire batch at once (enables Polars/Rayon parallelization)
+                        df_chunk = risearch_parser.load_by_sirna_batch(
+                            risearch_file, batch_sirnas
+                        )
 
                         if sense_only:
                             df_chunk = df_chunk.filter(pl.col("strand") == "+")
 
                         if df_chunk.height == 0:
                             progress.update(
-                                task, advance=1, description=f"Skipped {sid} (no data)"
+                                task,
+                                advance=1,
+                                description=f"Batch {batch_idx + 1}: empty",
                             )
                             continue
 
-                        # Intersect with transcriptome
+                        # Intersect with transcriptome - Polars parallelizes this
                         if df_trans is not None:
                             df_chunk = intersector.intersect(
                                 df_chunk, df_trans, mode=predictions_type
                             )
 
-                        # Build on-target map for this siRNA
+                        # Build on-target map for all siRNAs in this batch
                         on_target_map = {}
-                        if i < len(on_target_ids_list):
-                            on_target_map[sid] = on_target_ids_list[i]
+                        for i, sid in enumerate(batch_sirnas):
+                            global_idx = start_idx + i
+                            if global_idx < len(on_target_ids_list):
+                                on_target_map[sid] = on_target_ids_list[global_idx]
 
-                        # Calculate probabilities
+                        # Calculate probabilities - Polars parallelizes across all rows
                         df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
                             df_chunk,
                             alpha_gamma_pairs=alpha_gamma_pairs,
@@ -387,7 +410,11 @@ def run(
                         )
 
                         all_results.append(df_chunk)
-                        progress.update(task, advance=1, description=f"Processed {sid}")
+                        progress.update(
+                            task,
+                            advance=1,
+                            description=f"Batch {batch_idx + 1}/{num_batches}",
+                        )
 
                 # Step 3: Combine all results
                 if all_results:
