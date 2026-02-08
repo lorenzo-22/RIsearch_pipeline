@@ -198,3 +198,71 @@ class RIsearchParser:
         )
 
         return df
+
+    def load_directory_batch(
+        self, directory: Path, file_paths: list[Path]
+    ) -> pl.DataFrame:
+        """Load multiple per-siRNA files in a single batch.
+
+        Uses pl.concat with lazy frames to enable Polars/Rayon parallelization
+        across all rows from all files in the batch.
+
+        Args:
+            directory: Base directory (for error messages).
+            file_paths: List of file paths to load.
+
+        Returns:
+            Combined Polars DataFrame with predictions from all files.
+        """
+        if not file_paths:
+            return pl.DataFrame(
+                schema={
+                    "sirna_id": pl.Utf8,
+                    "chrom": pl.Utf8,
+                    "start": pl.Int32,
+                    "end": pl.Int32,
+                    "strand": pl.Utf8,
+                    "energy": pl.Float32,
+                }
+            )
+
+        # Create lazy frames for each file - Polars parallelizes this
+        lazy_frames = []
+        for f in file_paths:
+            lf = pl.scan_csv(f, separator="\t", has_header=False).select(
+                [
+                    pl.col("column_1").alias("sirna_id"),
+                    pl.col("column_4").alias("chrom"),
+                    pl.col("column_5").cast(pl.Int32).alias("start"),
+                    pl.col("column_6").cast(pl.Int32).alias("end"),
+                    pl.col("column_7").alias("strand"),
+                    pl.col("column_8").cast(pl.Float32).alias("energy"),
+                ]
+            )
+            lazy_frames.append(lf)
+
+        # Concat and collect - Rayon parallelizes across all rows
+        df = pl.concat(lazy_frames).collect()
+
+        return df
+
+    def list_directory_files(self, directory: Path) -> list[Path]:
+        """List all RIsearch output files in a directory.
+
+        Args:
+            directory: Directory to scan.
+
+        Returns:
+            List of file paths (*.gz, *.tsv, *.out).
+        """
+        if not isinstance(directory, Path):
+            directory = Path(directory)
+
+        if not directory.exists():
+            raise FileNotFoundError(f"Directory not found: {directory}")
+
+        files = []
+        for ext in ["*.gz", "*.tsv", "*.out"]:
+            files.extend(directory.glob(ext))
+
+        return sorted(files)

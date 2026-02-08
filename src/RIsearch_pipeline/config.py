@@ -11,6 +11,7 @@ class OffTargetsConfig:
     """Schema for off-targets command configuration."""
 
     risearch_file: str = MISSING  # Required
+    input_dir: Optional[str] = None
     transcriptome: Optional[str] = None
     feature: str = "exon"
     expression_metric: str = "RPKM"

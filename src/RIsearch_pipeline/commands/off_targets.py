@@ -27,6 +27,14 @@ def run(
         exists=True,
         readable=True,
     ),
+    input_dir: Optional[Path] = typer.Option(
+        None,
+        "-d",
+        "--input-dir",
+        help="Directory containing per-siRNA RIsearch output files (*.gz or *.tsv).",
+        exists=True,
+        file_okay=False,
+    ),
     sirna_fasta: Optional[Path] = typer.Option(
         None,
         "-s",
@@ -215,9 +223,9 @@ def run(
 
     try:
         # Validate input options
-        if risearch_file is None and sirna_fasta is None:
+        if risearch_file is None and sirna_fasta is None and input_dir is None:
             console.print(
-                "[bold red]Error:[/bold red] Must provide either --risearch-file OR --sirna-fasta"
+                "[bold red]Error:[/bold red] Must provide either --risearch-file, --input-dir, OR --sirna-fasta"
             )
             raise typer.Exit(code=1)
 
@@ -269,8 +277,156 @@ def run(
                 # Load predictions
                 df = risearch_parser.load(output_path)
 
+        # Mode 3: Directory of per-siRNA files
+        elif input_dir is not None:
+            if not isinstance(input_dir, Path):
+                input_dir = Path(input_dir)
+
+            console.print(
+                f"[bold cyan]Directory mode[/bold cyan] - loading files from {input_dir}"
+            )
+
+            # List all files
+            all_files = risearch_parser.list_directory_files(input_dir)
+            if not all_files:
+                console.print(
+                    f"[bold red]Error:[/bold red] No RIsearch files found in {input_dir}"
+                )
+                raise typer.Exit(code=1)
+
+            console.print(
+                f"[green]✓[/green] Found [bold]{len(all_files)}[/bold] files to process"
+            )
+
+            # Prepare services
+            from RIsearch_pipeline.services.probability import ProbabilityService
+            from RIsearch_pipeline.services.accessibility import (
+                GenomeAccessibilityService,
+            )
+
+            acc_service = None
+            if accessibility_dir:
+                acc_service = GenomeAccessibilityService(accessibility_dir)
+            prob_service = ProbabilityService(
+                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+            )
+
+            # Prepare transcriptome if provided
+            df_trans = None
+            intersector = None
+            if gtf_file:
+                from RIsearch_pipeline.services.transcriptome_parser import (
+                    TranscriptomeParser,
+                )
+                from RIsearch_pipeline.services.intersection_service import (
+                    IntersectionService,
+                )
+
+                if not isinstance(gtf_file, Path):
+                    gtf_file = Path(gtf_file)
+
+                trans_parser = TranscriptomeParser()
+                df_trans = trans_parser.load_gtf(
+                    gtf_file, feature=feature_type, score_col=expression_metric
+                )
+                intersector = IntersectionService()
+                console.print(
+                    f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
+                )
+
+            # Parse parameter lists
+            alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
+            gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
+            theta_vals = [float(x) for x in theta.split(";") if x.strip()]
+
+            alpha_gamma_pairs = [(1.0, 1.0)]
+            for a in alpha_vals:
+                for g in gamma_vals:
+                    if a == 1.0 and g == 1.0:
+                        continue
+                    if a <= g:
+                        alpha_gamma_pairs.append((a, g))
+            alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
+
+            # Process in batches - Polars parallelizes across all rows
+            all_results = []
+            num_batches = (len(all_files) + batch_size - 1) // batch_size
+
+            console.print(
+                f"  └─ Processing in {num_batches} batches of up to {batch_size} files"
+            )
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.completed}/{task.total}"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Processing batches...", total=num_batches)
+
+                for batch_idx in range(num_batches):
+                    start_idx = batch_idx * batch_size
+                    end_idx = min(start_idx + batch_size, len(all_files))
+                    batch_files = all_files[start_idx:end_idx]
+
+                    # Load entire batch - Polars parallelizes via Rayon
+                    df_chunk = risearch_parser.load_directory_batch(
+                        input_dir, batch_files
+                    )
+
+                    if sense_only:
+                        df_chunk = df_chunk.filter(pl.col("strand") == "+")
+
+                    if df_chunk.height == 0:
+                        progress.update(
+                            task, advance=1, description=f"Batch {batch_idx + 1}: empty"
+                        )
+                        continue
+
+                    # Intersect with transcriptome
+                    if df_trans is not None and intersector is not None:
+                        df_chunk = intersector.intersect(
+                            df_chunk, df_trans, mode=predictions_type
+                        )
+
+                    # Calculate probabilities
+                    df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
+                        df_chunk,
+                        alpha_gamma_pairs=alpha_gamma_pairs,
+                        theta_values=theta_vals,
+                        on_target_expression=on_target_expression,
+                    )
+
+                    all_results.append(df_chunk)
+                    progress.update(
+                        task,
+                        advance=1,
+                        description=f"Batch {batch_idx + 1}/{num_batches}",
+                    )
+
+            # Combine and save
+            if all_results:
+                df = pl.concat(all_results, how="diagonal")
+                console.print(
+                    f"[green]✓[/green] Processed [bold]{df.height}[/bold] total predictions"
+                )
+
+                if output_file:
+                    df.write_csv(output_file, separator="\t")
+                    console.print(
+                        f"[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
+                    )
+                else:
+                    console.print(df.head(10))
+            else:
+                console.print("[yellow]Warning:[/yellow] No predictions to process")
+
+            return  # Exit after directory mode processing
+
         # Mode 2: Pre-computed RIsearch file
-        else:
+        elif risearch_file is not None:
             if not isinstance(risearch_file, Path):
                 risearch_file = Path(risearch_file)
 
