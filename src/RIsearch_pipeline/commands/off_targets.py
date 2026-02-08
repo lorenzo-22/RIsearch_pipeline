@@ -191,6 +191,11 @@ def run(
         "--use-rnaplfold-cli",
         help="Use RNAplfold binary instead of ViennaRNA Python bindings for accessibility.",
     ),
+    chunk_mode: bool = typer.Option(
+        False,
+        "--chunk-mode",
+        help="Process siRNAs one at a time for large files (reduces memory usage).",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
@@ -262,6 +267,150 @@ def run(
         else:
             if not isinstance(risearch_file, Path):
                 risearch_file = Path(risearch_file)
+
+            # CHUNK MODE: Process siRNAs one at a time for large files
+            if chunk_mode:
+                console.print(
+                    "[bold cyan]Chunk mode enabled[/bold cyan] - processing siRNAs individually"
+                )
+
+                # Step 1: Stream-scan to get unique siRNA IDs (low memory)
+                with console.status("[bold green]Scanning for siRNA IDs..."):
+                    sirna_ids = risearch_parser.scan_sirna_ids(risearch_file)
+
+                console.print(
+                    f"[green]✓[/green] Found [bold]{len(sirna_ids)}[/bold] unique siRNAs to process"
+                )
+
+                # Prepare services
+                from RIsearch_pipeline.services.probability import ProbabilityService
+                from RIsearch_pipeline.services.accessibility import (
+                    GenomeAccessibilityService,
+                )
+
+                acc_service = None
+                if accessibility_dir:
+                    acc_service = GenomeAccessibilityService(accessibility_dir)
+                prob_service = ProbabilityService(
+                    acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+                )
+
+                # Prepare transcriptome if provided
+                df_trans = None
+                if gtf_file:
+                    from RIsearch_pipeline.services.transcriptome_parser import (
+                        TranscriptomeParser,
+                    )
+                    from RIsearch_pipeline.services.intersection_service import (
+                        IntersectionService,
+                    )
+
+                    if not isinstance(gtf_file, Path):
+                        gtf_file = Path(gtf_file)
+
+                    trans_parser = TranscriptomeParser()
+                    df_trans = trans_parser.load_gtf(
+                        gtf_file, feature=feature_type, score_col=expression_metric
+                    )
+                    intersector = IntersectionService()
+                    console.print(
+                        f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
+                    )
+
+                # Parse on-target IDs file
+                on_target_ids_list = []
+                if on_target_ids_file is not None:
+                    with open(on_target_ids_file, "r") as f:
+                        on_target_ids_list = [
+                            line.strip() for line in f if line.strip()
+                        ]
+
+                # Parse parameter lists
+                alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
+                gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
+                theta_vals = [float(x) for x in theta.split(";") if x.strip()]
+
+                alpha_gamma_pairs = [(1.0, 1.0)]
+                for a in alpha_vals:
+                    for g in gamma_vals:
+                        if a == 1.0 and g == 1.0:
+                            continue
+                        if a <= g:
+                            alpha_gamma_pairs.append((a, g))
+                alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
+
+                # Step 2: Process each siRNA
+                all_results = []
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.completed}/{task.total}"),
+                    TimeElapsedColumn(),
+                    console=console,
+                ) as progress:
+                    task = progress.add_task(
+                        "Processing siRNAs...", total=len(sirna_ids)
+                    )
+
+                    for i, sid in enumerate(sirna_ids):
+                        # Load only this siRNA's predictions
+                        df_chunk = risearch_parser.load_by_sirna(risearch_file, sid)
+
+                        if sense_only:
+                            df_chunk = df_chunk.filter(pl.col("strand") == "+")
+
+                        if df_chunk.height == 0:
+                            progress.update(
+                                task, advance=1, description=f"Skipped {sid} (no data)"
+                            )
+                            continue
+
+                        # Intersect with transcriptome
+                        if df_trans is not None:
+                            df_chunk = intersector.intersect(
+                                df_chunk, df_trans, mode=predictions_type
+                            )
+
+                        # Build on-target map for this siRNA
+                        on_target_map = {}
+                        if i < len(on_target_ids_list):
+                            on_target_map[sid] = on_target_ids_list[i]
+
+                        # Calculate probabilities
+                        df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
+                            df_chunk,
+                            alpha_gamma_pairs=alpha_gamma_pairs,
+                            theta_values=theta_vals,
+                            on_target_map=on_target_map if on_target_map else None,
+                            on_target_expression=on_target_expression,
+                        )
+
+                        all_results.append(df_chunk)
+                        progress.update(task, advance=1, description=f"Processed {sid}")
+
+                # Step 3: Combine all results
+                if all_results:
+                    df = pl.concat(all_results, how="diagonal")
+                    console.print(
+                        f"[green]✓[/green] Processed [bold]{df.height}[/bold] total predictions"
+                    )
+                else:
+                    console.print("[yellow]Warning:[/yellow] No predictions to process")
+                    return
+
+                # Save output
+                if output_file:
+                    df.write_csv(output_file, separator="\t")
+                    console.print(
+                        f"[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
+                    )
+                else:
+                    console.print(df.head(10))
+
+                return  # Exit after chunk mode processing
+
+            # Standard mode: Load entire file
             df = risearch_parser.load(risearch_file)
 
         # Apply --sense-only filter (Sense strand only)

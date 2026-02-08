@@ -33,6 +33,7 @@ class OffTargetsConfig:
     sense_only: bool = False
     type: str = "gw"
     verbose: bool = False
+    chunk_mode: bool = False
 
 
 @dataclass
@@ -207,6 +208,7 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
             "target_fasta",
             "target_index",
             "workers",
+            "on_target_ids_file",
         ]
         for arg in cli_only_args:
             if arg not in kwargs:

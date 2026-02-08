@@ -180,6 +180,57 @@ default_path = Path.home() / ".cargo" / "bin" / "RIsearch"
 └────────────┘
 ```
 
+### On-Target Energy Calculation Flow
+
+When an on-target FASTA is provided, the pipeline computes **on-target weight** for proper partition function normalization:
+
+```
+                          ┌─────────────────────────┐
+                          │ On-Target FASTA         │
+                          │ (--on-target-fasta)     │
+                          └───────┬─────────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+┌─────────────────────────┐             ┌─────────────────────────┐
+│ RIsearch (binding)      │             │ RNAplfold (opening)     │
+│ → ΔG_binding_on_target  │             │ → ΔG_opening_on_target  │
+└───────────┬─────────────┘             └───────────┬─────────────┘
+            │                                       │
+            └───────────────────┬───────────────────┘
+                                ▼
+                  ┌─────────────────────────────┐
+                  │ W_on_target = exp(          │
+                  │   -(ΔG_bind + ΔG_open) / RT │
+                  │ )                           │
+                  └───────────────┬─────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    ProbabilityService                            │
+│  Z_s = Σ W_i (off-targets) + W_on_target                        │
+│  P(off-target_i) = W_i / Z_s                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**On-Target Opening Energy Computation**:
+
+The `AccessibilityService` handles on-target accessibility via two paths:
+
+1. **Pre-computed file** (`--on-target-accessibility`): Direct lookup from `.acc.bin`
+2. **On-the-fly calculation**: When only FASTA is provided, uses `RNA.pfl_fold_up()`:
+
+```python
+# ViennaRNA pfl_fold_up for on-target accessibility
+_, up_array = RNA.pfl_fold_up(sequence, window_size, max_span, unpaired_length)
+opening_energy = -RT * log(up_array[position])
+```
+
+**Complexity**:
+
+- On-the-fly: O(L²) per on-target sequence (RNAplfold algorithm)
+- Pre-computed lookup: O(1)
+
 ---
 
 ## Performance Optimizations
