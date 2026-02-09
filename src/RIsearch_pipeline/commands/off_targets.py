@@ -356,13 +356,19 @@ def run(
                         alpha_gamma_pairs.append((a, g))
             alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
-            # Process in batches - Polars parallelizes across all rows
-            all_results = []
+            # Process in batches - stream results to disk to avoid memory accumulation
             num_batches = (len(all_files) + batch_size - 1) // batch_size
+            total_rows = 0
+            header_written = False
 
             console.print(
                 f"  └─ Processing in {num_batches} batches of up to {batch_size} files"
             )
+
+            # Open output file for streaming writes if specified
+            output_handle = None
+            if output_file:
+                output_handle = open(output_file, "w")
 
             with Progress(
                 SpinnerColumn(),
@@ -399,6 +405,14 @@ def run(
                             df_chunk, df_trans, mode=predictions_type
                         )
 
+                    if df_chunk.height == 0:
+                        progress.update(
+                            task,
+                            advance=1,
+                            description=f"Batch {batch_idx + 1}: no matches",
+                        )
+                        continue
+
                     # Calculate probabilities
                     df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
                         df_chunk,
@@ -407,28 +421,34 @@ def run(
                         on_target_expression=on_target_expression,
                     )
 
-                    all_results.append(df_chunk)
+                    # Stream to disk instead of accumulating
+                    if output_handle:
+                        csv_str = df_chunk.write_csv(include_header=not header_written)
+                        output_handle.write(csv_str)
+                        header_written = True
+                    else:
+                        # Show first batch if no output file
+                        if batch_idx == 0:
+                            console.print(df_chunk.head(10))
+
+                    total_rows += df_chunk.height
+
+                    # Free memory immediately
+                    del df_chunk
+
                     progress.update(
                         task,
                         advance=1,
                         description=f"Batch {batch_idx + 1}/{num_batches}",
                     )
 
-            # Combine and save
-            if all_results:
-                df = pl.concat(all_results, how="diagonal")
+            # Close output file
+            if output_handle:
+                output_handle.close()
                 console.print(
-                    f"[green]✓[/green] Processed [bold]{df.height}[/bold] total predictions"
+                    f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{output_file}[/bold]"
                 )
-
-                if output_file:
-                    df.write_csv(output_file, separator="\t")
-                    console.print(
-                        f"[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
-                    )
-                else:
-                    console.print(df.head(10))
-            else:
+            elif total_rows == 0:
                 console.print("[yellow]Warning:[/yellow] No predictions to process")
 
             return  # Exit after directory mode processing

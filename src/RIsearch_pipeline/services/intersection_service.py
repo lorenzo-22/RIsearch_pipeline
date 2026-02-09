@@ -1,6 +1,7 @@
 """Service for intersecting RIsearch predictions with transcriptome annotations."""
 
 import polars as pl
+import gc
 
 
 class IntersectionService:
@@ -42,34 +43,31 @@ class IntersectionService:
 
         else:
             # Genome-Wide Mode - Per-chromosome range-join
-            return self._range_join_per_chrom(risearch_df, transcriptome_df)
+            return self._range_join_streaming(risearch_df, transcriptome_df)
 
-    def _range_join_per_chrom(
+    def _range_join_streaming(
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
     ) -> pl.DataFrame:
-        """Efficient range-join by processing per chromosome+strand.
+        """Streaming range-join that processes and concatenates per-chromosome.
 
-        Strategy:
-        1. Process each (chrom, strand) separately to limit memory
-        2. For each chunk, use interval overlap detection
-        3. A prediction is contained if: pred.start >= trans.start AND pred.end <= trans.end
-
-        Memory complexity: O(max_chunk_size) instead of O(n*m)
+        Uses lazy concatenation to avoid holding all results in memory.
         """
-        results = []
-
-        # Get unique (chrom, strand) pairs from RIsearch data
-        chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
-
-        # Prepare transcriptome with renamed columns to avoid collision
+        # Prepare transcriptome with renamed columns
         trans_renamed = transcriptome_df.rename(
             {
                 "start": "trans_start",
                 "end": "trans_end",
             }
         )
+
+        # Get unique (chrom, strand) pairs
+        chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
+
+        # Process each chromosome in a streaming fashion
+        # Use lazy frames for memory efficiency
+        lazy_results = []
 
         for pair in chrom_strand_pairs:
             chrom = pair["chrom"]
@@ -87,77 +85,57 @@ class IntersectionService:
             if pred_chunk.height == 0 or trans_chunk.height == 0:
                 continue
 
-            # For smaller chunks, cross-join + filter is acceptable
-            # This limits peak memory to (chunk_pred * chunk_trans) per chromosome
-            if pred_chunk.height * trans_chunk.height < 100_000_000:
-                # Small enough for cross-join approach
-                chunk_result = self._cross_join_filter(pred_chunk, trans_chunk)
-            else:
-                # Large chunk - use sorted interval approach
-                chunk_result = self._sorted_interval_join(pred_chunk, trans_chunk)
+            # Process this chunk
+            chunk_result = self._process_chunk(pred_chunk, trans_chunk)
 
             if chunk_result.height > 0:
-                results.append(chunk_result)
+                # Convert to lazy for efficient concatenation
+                lazy_results.append(chunk_result.lazy())
 
-        if not results:
-            # Return empty DataFrame with expected schema
+            # Free memory
+            del pred_chunk, trans_chunk, chunk_result
+            gc.collect()
+
+        if not lazy_results:
             return self._empty_result_schema(risearch_df)
 
-        return pl.concat(results, how="diagonal")
+        # Collect all lazy frames at once - more memory efficient
+        return pl.concat(lazy_results).collect()
 
-    def _cross_join_filter(
+    def _process_chunk(
         self,
         pred_chunk: pl.DataFrame,
         trans_chunk: pl.DataFrame,
     ) -> pl.DataFrame:
-        """Cross-join with containment filter for smaller chunks."""
-        # Select only needed columns from transcriptome
+        """Process a single chromosome+strand chunk using batched cross-join."""
+        BATCH_SIZE = 5000  # Process predictions in smaller batches
+        results = []
+
         trans_subset = trans_chunk.select(
             ["trans_start", "trans_end", "gene_id", "transcript_id", "exp_value"]
         )
 
-        # Cross join
-        crossed = pred_chunk.join(trans_subset, how="cross")
+        # If small enough, process directly
+        if pred_chunk.height * trans_subset.height < 50_000_000:
+            crossed = pred_chunk.join(trans_subset, how="cross")
+            return crossed.filter(
+                (pl.col("start") >= pl.col("trans_start"))
+                & (pl.col("end") <= pl.col("trans_end"))
+            )
 
-        # Filter for containment
-        contained = crossed.filter(
-            (pl.col("start") >= pl.col("trans_start"))
-            & (pl.col("end") <= pl.col("trans_end"))
-        )
-
-        return contained
-
-    def _sorted_interval_join(
-        self,
-        pred_chunk: pl.DataFrame,
-        trans_chunk: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """Sorted interval join for large chunks using batch processing.
-
-        Process predictions in batches to limit memory.
-        """
-        BATCH_SIZE = 10000
-        results = []
-
-        # Sort transcriptome by start for efficient searching
-        trans_sorted = trans_chunk.sort("trans_start")
-        trans_subset = trans_sorted.select(
-            ["trans_start", "trans_end", "gene_id", "transcript_id", "exp_value"]
-        )
-
-        # Process predictions in batches
+        # Batch process for large chunks
         for i in range(0, pred_chunk.height, BATCH_SIZE):
             batch = pred_chunk.slice(i, BATCH_SIZE)
-
-            # For each batch, do cross-join + filter
             crossed = batch.join(trans_subset, how="cross")
             contained = crossed.filter(
                 (pl.col("start") >= pl.col("trans_start"))
                 & (pl.col("end") <= pl.col("trans_end"))
             )
-
             if contained.height > 0:
                 results.append(contained)
+
+            # Free intermediate memory
+            del batch, crossed, contained
 
         if not results:
             return self._empty_result_schema(pred_chunk)
