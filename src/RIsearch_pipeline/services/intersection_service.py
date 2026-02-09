@@ -2,8 +2,12 @@
 
 import polars as pl
 import numpy as np
-from bisect import bisect_right
 from typing import Iterator, Optional
+
+try:
+    from ncls import NCLS
+except Exception:  # pragma: no cover - optional dependency
+    NCLS = None
 
 
 class IntersectionService:
@@ -98,53 +102,148 @@ class IntersectionService:
         return pl.concat(all_results, how="diagonal")
 
     def _build_transcript_index(self, trans_sorted: pl.DataFrame) -> dict:
-        """Pre-build numpy arrays for fast binary search."""
-        return {
-            "starts": trans_sorted["start"].to_numpy(),
-            "ends": trans_sorted["end"].to_numpy(),
+        """Pre-build numpy arrays and optional interval index for fast lookup."""
+        starts = trans_sorted["start"].to_numpy().astype(np.int64, copy=False)
+        ends = trans_sorted["end"].to_numpy().astype(np.int64, copy=False)
+
+        index = {
+            "starts": starts,
+            "ends": ends,
             "gene_ids": trans_sorted["gene_id"].to_list(),
             "transcript_ids": trans_sorted["transcript_id"].to_list(),
             "exp_values": trans_sorted["exp_value"].to_numpy(),
+            "trans_df": trans_sorted,
         }
+
+        if NCLS is not None and len(starts) > 0:
+            # NCLS uses half-open intervals [start, end); add 1 to preserve inclusive end
+            interval_ids = np.arange(len(starts), dtype=np.int64)
+            index["ncls"] = NCLS(starts, ends + 1, interval_ids)
+
+        return index
 
     def _process_batch(
         self,
         preds: pl.DataFrame,
         trans_index: dict,
     ) -> Optional[pl.DataFrame]:
-        """Process a batch of predictions using binary search."""
-        trans_starts = trans_index["starts"]
-        trans_ends = trans_index["ends"]
-        trans_gene_ids = trans_index["gene_ids"]
-        trans_transcript_ids = trans_index["transcript_ids"]
-        trans_exp_values = trans_index["exp_values"]
+        """Process a batch of predictions using the fastest available method."""
+        if trans_index.get("ncls") is not None:
+            return self._process_batch_ncls(preds, trans_index)
 
-        # Collect matching rows
-        result_rows = []
-        pred_data = preds.to_dicts()
+        return self._process_batch_numpy(preds, trans_index)
 
-        for pred in pred_data:
-            pred_start = pred["start"]
-            pred_end = pred["end"]
-
-            # Find transcripts that could contain this prediction
-            right_idx = bisect_right(trans_starts, pred_start)
-
-            # Check all transcripts starting at or before pred_start
-            for i in range(right_idx):
-                if trans_ends[i] >= pred_end:
-                    result_row = pred.copy()
-                    result_row["trans_start"] = int(trans_starts[i])
-                    result_row["trans_end"] = int(trans_ends[i])
-                    result_row["gene_id"] = trans_gene_ids[i]
-                    result_row["transcript_id"] = trans_transcript_ids[i]
-                    result_row["exp_value"] = float(trans_exp_values[i])
-                    result_rows.append(result_row)
-
-        if not result_rows:
+    def _process_batch_ncls(
+        self,
+        preds: pl.DataFrame,
+        trans_index: dict,
+    ) -> Optional[pl.DataFrame]:
+        """Process a batch using NCLS interval indexing (fast path)."""
+        if preds.height == 0:
             return None
 
-        return pl.DataFrame(result_rows)
+        trans_df = trans_index["trans_df"]
+        trans_starts = trans_index["starts"]
+        trans_ends = trans_index["ends"]
+        ncls = trans_index["ncls"]
+
+        pred_starts = preds["start"].to_numpy().astype(np.int64, copy=False)
+        pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
+        pred_ids = np.arange(preds.height, dtype=np.int64)
+
+        # Query overlaps using half-open intervals to preserve inclusive end semantics
+        query_starts = pred_starts
+        query_ends = pred_ends + 1
+        pred_idx, trans_idx = ncls.all_overlaps_both(query_starts, query_ends, pred_ids)
+
+        if len(pred_idx) == 0:
+            return None
+
+        # Filter to strict containment: trans_start <= pred_start and trans_end >= pred_end
+        mask = (trans_starts[trans_idx] <= pred_starts[pred_idx]) & (
+            trans_ends[trans_idx] >= pred_ends[pred_idx]
+        )
+        if not np.any(mask):
+            return None
+
+        pred_idx = pred_idx[mask]
+        trans_idx = trans_idx[mask]
+
+        preds_sel = preds[pred_idx]
+        trans_sel = trans_df[trans_idx].select(
+            [
+                pl.col("start").alias("trans_start"),
+                pl.col("end").alias("trans_end"),
+                pl.col("gene_id"),
+                pl.col("transcript_id"),
+                pl.col("exp_value"),
+            ]
+        )
+
+        return preds_sel.hstack(trans_sel)
+
+    def _process_batch_numpy(
+        self,
+        preds: pl.DataFrame,
+        trans_index: dict,
+    ) -> Optional[pl.DataFrame]:
+        """Process a batch using vectorized numpy searches (fallback path)."""
+        if preds.height == 0:
+            return None
+
+        trans_df = trans_index["trans_df"]
+        trans_starts = trans_index["starts"]
+        trans_ends = trans_index["ends"]
+
+        pred_starts = preds["start"].to_numpy().astype(np.int64, copy=False)
+        pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
+
+        order = np.argsort(pred_starts, kind="mergesort")
+        pred_starts_sorted = pred_starts[order]
+        pred_ends_sorted = pred_ends[order]
+
+        pred_match_idx_list = []
+        trans_match_idx_list = []
+
+        for t_idx in range(len(trans_starts)):
+            t_start = trans_starts[t_idx]
+            t_end = trans_ends[t_idx]
+
+            left = np.searchsorted(pred_starts_sorted, t_start, side="left")
+            right = np.searchsorted(pred_starts_sorted, t_end, side="right")
+
+            if left >= right:
+                continue
+
+            ends_slice = pred_ends_sorted[left:right]
+            mask = ends_slice <= t_end
+            if not np.any(mask):
+                continue
+
+            pred_match_idx = order[left:right][mask]
+            pred_match_idx_list.append(pred_match_idx)
+            trans_match_idx_list.append(
+                np.full(pred_match_idx.shape[0], t_idx, dtype=np.int64)
+            )
+
+        if not pred_match_idx_list:
+            return None
+
+        pred_idx = np.concatenate(pred_match_idx_list)
+        trans_idx = np.concatenate(trans_match_idx_list)
+
+        preds_sel = preds[pred_idx]
+        trans_sel = trans_df[trans_idx].select(
+            [
+                pl.col("start").alias("trans_start"),
+                pl.col("end").alias("trans_end"),
+                pl.col("gene_id"),
+                pl.col("transcript_id"),
+                pl.col("exp_value"),
+            ]
+        )
+
+        return preds_sel.hstack(trans_sel)
 
     def intersect_streaming(
         self,
