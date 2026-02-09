@@ -343,7 +343,7 @@ class GenomeAccessibilityService:
             if not path:
                 raise AccessibilityError(
                     f"Profile for {chrom} {strand} not found in {self.data_dir}. "
-                    "Expected .access.npy or legacy .bin files."
+                    "Expected .access.npy, .access.bin, or legacy open.acc.bin files."
                 )
 
             # Load based on extension
@@ -456,10 +456,20 @@ class GenomeAccessibilityService:
             return p2
 
         # 3. Legacy BIN (glob)
-        # e.g. chr1_plus.bin, chr1_open.acc.bin
+        # e.g. chr1_plus.bin, chr1.open.acc.bin, chr1_rev.open.acc.bin
         candidates = list(self.data_dir.glob(f"{chrom}*{suffix}*.bin"))
         if candidates:
             return candidates[0]
+
+        # 3b. Legacy open/rev naming (open.acc.bin / rev.open.acc.bin)
+        if strand == "+":
+            for candidate in self.data_dir.glob(f"{chrom}*.open.acc.bin"):
+                if "rev.open.acc.bin" not in candidate.name:
+                    return candidate
+        else:
+            candidates_rev = list(self.data_dir.glob(f"{chrom}*rev.open.acc.bin"))
+            if candidates_rev:
+                return candidates_rev[0]
 
         # 4. Legacy Text (openen)
         # e.g. chr1_0_75631_openen
