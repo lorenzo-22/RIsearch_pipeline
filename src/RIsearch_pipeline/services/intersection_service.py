@@ -2,7 +2,8 @@
 
 import polars as pl
 import numpy as np
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
+from typing import Iterator, Optional
 
 
 class IntersectionService:
@@ -24,38 +25,42 @@ class IntersectionService:
         Returns:
             DataFrame containing intersected results.
         """
-
         if mode == "tw":
-            # Transcriptome-Wide Mode - direct ID join
-            joined = risearch_df.join(
-                transcriptome_df,
-                left_on="chrom",
-                right_on="transcript_id",
-                how="inner",
-                suffix="_trans",
-            )
-
-            if "transcript_id" not in joined.columns:
-                joined = joined.with_columns(pl.col("chrom").alias("transcript_id"))
-
-            return joined
-
+            return self._transcriptome_wide_join(risearch_df, transcriptome_df)
         else:
-            # Genome-Wide Mode - interval containment via binary search
-            return self._interval_containment(risearch_df, transcriptome_df)
+            return self._genome_wide_streaming(risearch_df, transcriptome_df)
 
-    def _interval_containment(
+    def _transcriptome_wide_join(
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
     ) -> pl.DataFrame:
-        """Efficient interval containment using sorted binary search.
+        """Transcriptome-Wide Mode - direct ID join."""
+        joined = risearch_df.join(
+            transcriptome_df,
+            left_on="chrom",
+            right_on="transcript_id",
+            how="inner",
+            suffix="_trans",
+        )
 
-        For each prediction, find all transcripts that contain it.
-        Uses numpy arrays and binary search for O(n log m) complexity
-        instead of O(n * m) cross-join.
+        if "transcript_id" not in joined.columns:
+            joined = joined.with_columns(pl.col("chrom").alias("transcript_id"))
+
+        return joined
+
+    def _genome_wide_streaming(
+        self,
+        risearch_df: pl.DataFrame,
+        transcriptome_df: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Genome-wide intersection with streaming to limit memory.
+
+        Processes predictions in small batches and yields results immediately.
         """
-        results = []
+        BATCH_SIZE = 50000  # Process 50K predictions at a time
+
+        all_results = []
 
         # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
@@ -75,38 +80,46 @@ class IntersectionService:
             if preds.height == 0 or trans.height == 0:
                 continue
 
-            # Build sorted index on transcript starts and ends
-            chunk_result = self._binary_search_containment(preds, trans)
+            # Build transcript index once per chromosome
+            trans_sorted = trans.sort("start")
+            trans_index = self._build_transcript_index(trans_sorted)
 
-            if chunk_result is not None and chunk_result.height > 0:
-                results.append(chunk_result)
+            # Process predictions in batches
+            for batch_start in range(0, preds.height, BATCH_SIZE):
+                batch = preds.slice(batch_start, BATCH_SIZE)
+                batch_result = self._process_batch(batch, trans_index)
 
-        if not results:
+                if batch_result is not None and batch_result.height > 0:
+                    all_results.append(batch_result)
+
+        if not all_results:
             return self._empty_result_schema(risearch_df)
 
-        return pl.concat(results, how="diagonal")
+        return pl.concat(all_results, how="diagonal")
 
-    def _binary_search_containment(
+    def _build_transcript_index(self, trans_sorted: pl.DataFrame) -> dict:
+        """Pre-build numpy arrays for fast binary search."""
+        return {
+            "starts": trans_sorted["start"].to_numpy(),
+            "ends": trans_sorted["end"].to_numpy(),
+            "gene_ids": trans_sorted["gene_id"].to_list(),
+            "transcript_ids": trans_sorted["transcript_id"].to_list(),
+            "exp_values": trans_sorted["exp_value"].to_numpy(),
+        }
+
+    def _process_batch(
         self,
         preds: pl.DataFrame,
-        trans: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """Find all transcripts containing each prediction using binary search.
+        trans_index: dict,
+    ) -> Optional[pl.DataFrame]:
+        """Process a batch of predictions using binary search."""
+        trans_starts = trans_index["starts"]
+        trans_ends = trans_index["ends"]
+        trans_gene_ids = trans_index["gene_ids"]
+        trans_transcript_ids = trans_index["transcript_ids"]
+        trans_exp_values = trans_index["exp_values"]
 
-        Algorithm:
-        1. Sort transcripts by start position
-        2. For each prediction, binary search to find transcripts starting <= pred.start
-        3. Among those, filter for transcripts ending >= pred.end
-        """
-        # Convert to numpy for fast iteration
-        trans_sorted = trans.sort("start")
-        trans_starts = trans_sorted["start"].to_numpy()
-        trans_ends = trans_sorted["end"].to_numpy()
-        trans_gene_ids = trans_sorted["gene_id"].to_list()
-        trans_transcript_ids = trans_sorted["transcript_id"].to_list()
-        trans_exp_values = trans_sorted["exp_value"].to_numpy()
-
-        # Collect results
+        # Collect matching rows
         result_rows = []
         pred_data = preds.to_dicts()
 
@@ -115,14 +128,11 @@ class IntersectionService:
             pred_end = pred["end"]
 
             # Find transcripts that could contain this prediction
-            # Transcript must start at or before prediction start
             right_idx = bisect_right(trans_starts, pred_start)
 
-            # Check all transcripts starting before pred_start
+            # Check all transcripts starting at or before pred_start
             for i in range(right_idx):
-                # Transcript must end at or after prediction end
                 if trans_ends[i] >= pred_end:
-                    # This transcript contains the prediction
                     result_row = pred.copy()
                     result_row["trans_start"] = int(trans_starts[i])
                     result_row["trans_end"] = int(trans_ends[i])
@@ -135,6 +145,48 @@ class IntersectionService:
             return None
 
         return pl.DataFrame(result_rows)
+
+    def intersect_streaming(
+        self,
+        risearch_df: pl.DataFrame,
+        transcriptome_df: pl.DataFrame,
+        mode: str = "gw",
+    ) -> Iterator[pl.DataFrame]:
+        """Streaming intersection that yields batches instead of accumulating.
+
+        Use this for large datasets to avoid OOM.
+        """
+        if mode == "tw":
+            yield self._transcriptome_wide_join(risearch_df, transcriptome_df)
+            return
+
+        BATCH_SIZE = 50000
+
+        chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
+
+        for pair in chrom_strand_pairs:
+            chrom = pair["chrom"]
+            strand = pair["strand"]
+
+            preds = risearch_df.filter(
+                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
+            )
+            trans = transcriptome_df.filter(
+                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
+            )
+
+            if preds.height == 0 or trans.height == 0:
+                continue
+
+            trans_sorted = trans.sort("start")
+            trans_index = self._build_transcript_index(trans_sorted)
+
+            for batch_start in range(0, preds.height, BATCH_SIZE):
+                batch = preds.slice(batch_start, BATCH_SIZE)
+                batch_result = self._process_batch(batch, trans_index)
+
+                if batch_result is not None and batch_result.height > 0:
+                    yield batch_result
 
     def _empty_result_schema(self, risearch_df: pl.DataFrame) -> pl.DataFrame:
         """Return empty DataFrame with expected output schema."""

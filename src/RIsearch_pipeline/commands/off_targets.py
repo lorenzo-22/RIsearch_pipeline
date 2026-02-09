@@ -399,41 +399,54 @@ def run(
                         )
                         continue
 
-                    # Intersect with transcriptome
+                    # Stream through intersection to avoid memory accumulation
                     if df_trans is not None and intersector is not None:
-                        df_chunk = intersector.intersect(
+                        # Use streaming intersection - process each sub-batch through full pipeline
+                        for intersect_batch in intersector.intersect_streaming(
                             df_chunk, df_trans, mode=predictions_type
-                        )
+                        ):
+                            if intersect_batch.height == 0:
+                                continue
 
-                    if df_chunk.height == 0:
-                        progress.update(
-                            task,
-                            advance=1,
-                            description=f"Batch {batch_idx + 1}: no matches",
-                        )
-                        continue
+                            # Calculate probabilities for this intersection batch
+                            result_batch, _ = (
+                                prob_service.calculate_probabilities_per_sirna(
+                                    intersect_batch,
+                                    alpha_gamma_pairs=alpha_gamma_pairs,
+                                    theta_values=theta_vals,
+                                    on_target_expression=on_target_expression,
+                                )
+                            )
 
-                    # Calculate probabilities
-                    df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
-                        df_chunk,
-                        alpha_gamma_pairs=alpha_gamma_pairs,
-                        theta_values=theta_vals,
-                        on_target_expression=on_target_expression,
-                    )
+                            # Write immediately to disk
+                            if output_handle:
+                                csv_str = result_batch.write_csv(
+                                    include_header=not header_written
+                                )
+                                output_handle.write(csv_str)
+                                header_written = True
 
-                    # Stream to disk instead of accumulating
-                    if output_handle:
-                        csv_str = df_chunk.write_csv(include_header=not header_written)
-                        output_handle.write(csv_str)
-                        header_written = True
+                            total_rows += result_batch.height
+                            del result_batch, intersect_batch
                     else:
-                        # Show first batch if no output file
-                        if batch_idx == 0:
-                            console.print(df_chunk.head(10))
+                        # No transcriptome - calculate probabilities on raw data
+                        df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
+                            df_chunk,
+                            alpha_gamma_pairs=alpha_gamma_pairs,
+                            theta_values=theta_vals,
+                            on_target_expression=on_target_expression,
+                        )
 
-                    total_rows += df_chunk.height
+                        if output_handle:
+                            csv_str = df_chunk.write_csv(
+                                include_header=not header_written
+                            )
+                            output_handle.write(csv_str)
+                            header_written = True
 
-                    # Free memory immediately
+                        total_rows += df_chunk.height
+
+                    # Free memory
                     del df_chunk
 
                     progress.update(
