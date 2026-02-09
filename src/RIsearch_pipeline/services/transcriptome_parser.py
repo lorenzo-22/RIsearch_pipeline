@@ -1,7 +1,6 @@
 """Service for parsing transcriptome annotation files (GTF/GFF/BED)."""
 
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 
@@ -12,7 +11,11 @@ class TranscriptomeParser:
     """Parser for transcriptome files to extract gene/transcript locations and expression."""
 
     def load_gtf(
-        self, path: Path, feature: str = "exon", score_col: str = "RPKM"
+        self,
+        path: Path,
+        feature: str = "exon",
+        score_col: str = "RPKM",
+        format: str = "auto",
     ) -> pl.DataFrame:
         """Load GTF/GFF or BED file and extract fields.
 
@@ -20,6 +23,7 @@ class TranscriptomeParser:
             path: Path to .gtf, .gff, or .bed file
             feature: Feature type to filter by (GTF only, e.g. 'exon')
             score_col: Attribute for score (GTF) or use score column (BED)
+            format: 'auto', 'bed6', 'bed7', or 'gtf'
 
         Returns:
             DataFrame with columns: chrom, start, end, strand, gene_id, transcript_id, exp_value
@@ -30,13 +34,23 @@ class TranscriptomeParser:
         if not path.exists():
             raise FileNotFoundError(f"Transcriptome file not found: {path}")
 
-        # Detect format by suffix
-        if path.suffix.lower() in [".bed", ".bed.gz"]:
-            return self._load_bed(path)
-        else:
+        # Determine format
+        fmt = format.lower()
+        if fmt == "auto":
+            if path.suffix.lower() in [".bed", ".bed.gz"]:
+                return self._load_bed(path)
+            else:
+                return self._load_gtf_impl(path, feature, score_col)
+        elif fmt == "bed6":
+            return self._load_bed(path, force_bed6=True)
+        elif fmt == "bed7":
+            return self._load_bed(path, force_bed7=True)
+        else:  # gtf/gff
             return self._load_gtf_impl(path, feature, score_col)
 
-    def _load_bed(self, path: Path) -> pl.DataFrame:
+    def _load_bed(
+        self, path: Path, force_bed6: bool = False, force_bed7: bool = False
+    ) -> pl.DataFrame:
         """Load BED file (supports BED6 and BED7 formats).
 
         BED6: chrom, start, end, name, score, strand
@@ -45,10 +59,19 @@ class TranscriptomeParser:
         # First, detect number of columns by reading first line
         import gzip
 
-        opener = gzip.open if str(path).endswith(".gz") else open
-        with opener(path, "rt") as f:
-            first_line = f.readline().strip()
-            num_cols = len(first_line.split("\t"))
+        if force_bed6:
+            num_cols = 6
+        elif force_bed7:
+            num_cols = 7
+        else:
+            opener = gzip.open if str(path).endswith(".gz") else open
+            try:
+                with opener(path, "rt") as f:
+                    first_line = f.readline().strip()
+                    num_cols = len(first_line.split("\t"))
+            except Exception:
+                # Fallback to standard reading if peeking fails (e.g. empty file)
+                num_cols = 6
 
         if num_cols >= 7:
             # BED7+: chrom, start, end, transcript_id, score_placeholder, strand, exp_value

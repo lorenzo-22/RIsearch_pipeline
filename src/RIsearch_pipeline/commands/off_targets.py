@@ -83,6 +83,11 @@ def run(
         "--expression-metric",
         help="Attribute to use for expression score (default: RPKM).",
     ),
+    transcriptome_format: str = typer.Option(
+        "auto",
+        "--transcriptome-format",
+        help="Transcriptome file format: auto, bed6, bed7, or gtf (default: auto-detect).",
+    ),
     accessibility_dir: Path = typer.Option(
         None,
         "-a",
@@ -267,7 +272,7 @@ def run(
             with tempfile.TemporaryDirectory(prefix="risearch_") as tmpdir:
                 output_path = Path(tmpdir) / "predictions.out"
 
-                with console.status("[bold green]Running RIsearch...") as status:
+                with console.status("[bold green]Running RIsearch..."):
                     risearch_service.run_search(
                         query_path=sirna_fasta,
                         index_path=index_path,
@@ -327,7 +332,10 @@ def run(
 
                 trans_parser = TranscriptomeParser()
                 df_trans = trans_parser.load_gtf(
-                    gtf_file, feature=feature_type, score_col=expression_metric
+                    gtf_file,
+                    feature=feature_type,
+                    score_col=expression_metric,
+                    format=transcriptome_format,
                 )
                 intersector = IntersectionService()
                 console.print(
@@ -472,7 +480,10 @@ def run(
 
                     trans_parser = TranscriptomeParser()
                     df_trans = trans_parser.load_gtf(
-                        gtf_file, feature=feature_type, score_col=expression_metric
+                        gtf_file,
+                        feature=feature_type,
+                        score_col=expression_metric,
+                        format=transcriptome_format,
                     )
                     intersector = IntersectionService()
                     console.print(
@@ -631,7 +642,10 @@ def run(
 
             trans_parser = TranscriptomeParser()
             df_trans = trans_parser.load_gtf(
-                gtf_file, feature=feature_type, score_col=expression_metric
+                gtf_file,
+                feature=feature_type,
+                score_col=expression_metric,
+                format=transcriptome_format,
             )
 
             if verbose:
@@ -646,7 +660,7 @@ def run(
             # Perform intersection
             with console.status(
                 f"[bold green]Intersecting predictions (mode={predictions_type})..."
-            ) as status:
+            ):
                 intersector = IntersectionService()
                 df = intersector.intersect(df, df_trans, mode=predictions_type)
 

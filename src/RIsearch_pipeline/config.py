@@ -13,6 +13,7 @@ class OffTargetsConfig:
     risearch_file: str = MISSING  # Required
     input_dir: Optional[str] = None
     transcriptome: Optional[str] = None
+    transcriptome_format: str = "auto"
     feature: str = "exon"
     expression_metric: str = "RPKM"
     accessibility_dir: Optional[str] = None
