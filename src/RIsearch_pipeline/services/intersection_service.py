@@ -1,7 +1,8 @@
 """Service for intersecting RIsearch predictions with transcriptome annotations."""
 
 import polars as pl
-import gc
+import numpy as np
+from bisect import bisect_left, bisect_right
 
 
 class IntersectionService:
@@ -25,9 +26,7 @@ class IntersectionService:
         """
 
         if mode == "tw":
-            # Transcriptome-Wide Mode
-            # RIsearch 'chrom' column is actually Transcript ID.
-            # Join on transcript ID directly (no Cartesian explosion).
+            # Transcriptome-Wide Mode - direct ID join
             joined = risearch_df.join(
                 transcriptome_df,
                 left_on="chrom",
@@ -42,105 +41,100 @@ class IntersectionService:
             return joined
 
         else:
-            # Genome-Wide Mode - Per-chromosome range-join
-            return self._range_join_streaming(risearch_df, transcriptome_df)
+            # Genome-Wide Mode - interval containment via binary search
+            return self._interval_containment(risearch_df, transcriptome_df)
 
-    def _range_join_streaming(
+    def _interval_containment(
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
     ) -> pl.DataFrame:
-        """Streaming range-join that processes and concatenates per-chromosome.
+        """Efficient interval containment using sorted binary search.
 
-        Uses lazy concatenation to avoid holding all results in memory.
+        For each prediction, find all transcripts that contain it.
+        Uses numpy arrays and binary search for O(n log m) complexity
+        instead of O(n * m) cross-join.
         """
-        # Prepare transcriptome with renamed columns
-        trans_renamed = transcriptome_df.rename(
-            {
-                "start": "trans_start",
-                "end": "trans_end",
-            }
-        )
+        results = []
 
         # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
-
-        # Process each chromosome in a streaming fashion
-        # Use lazy frames for memory efficiency
-        lazy_results = []
 
         for pair in chrom_strand_pairs:
             chrom = pair["chrom"]
             strand = pair["strand"]
 
             # Filter to this chromosome+strand
-            pred_chunk = risearch_df.filter(
+            preds = risearch_df.filter(
+                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
+            )
+            trans = transcriptome_df.filter(
                 (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
             )
 
-            trans_chunk = trans_renamed.filter(
-                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
-            )
-
-            if pred_chunk.height == 0 or trans_chunk.height == 0:
+            if preds.height == 0 or trans.height == 0:
                 continue
 
-            # Process this chunk
-            chunk_result = self._process_chunk(pred_chunk, trans_chunk)
+            # Build sorted index on transcript starts and ends
+            chunk_result = self._binary_search_containment(preds, trans)
 
-            if chunk_result.height > 0:
-                # Convert to lazy for efficient concatenation
-                lazy_results.append(chunk_result.lazy())
-
-            # Free memory
-            del pred_chunk, trans_chunk, chunk_result
-            gc.collect()
-
-        if not lazy_results:
-            return self._empty_result_schema(risearch_df)
-
-        # Collect all lazy frames at once - more memory efficient
-        return pl.concat(lazy_results).collect()
-
-    def _process_chunk(
-        self,
-        pred_chunk: pl.DataFrame,
-        trans_chunk: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """Process a single chromosome+strand chunk using batched cross-join."""
-        BATCH_SIZE = 5000  # Process predictions in smaller batches
-        results = []
-
-        trans_subset = trans_chunk.select(
-            ["trans_start", "trans_end", "gene_id", "transcript_id", "exp_value"]
-        )
-
-        # If small enough, process directly
-        if pred_chunk.height * trans_subset.height < 50_000_000:
-            crossed = pred_chunk.join(trans_subset, how="cross")
-            return crossed.filter(
-                (pl.col("start") >= pl.col("trans_start"))
-                & (pl.col("end") <= pl.col("trans_end"))
-            )
-
-        # Batch process for large chunks
-        for i in range(0, pred_chunk.height, BATCH_SIZE):
-            batch = pred_chunk.slice(i, BATCH_SIZE)
-            crossed = batch.join(trans_subset, how="cross")
-            contained = crossed.filter(
-                (pl.col("start") >= pl.col("trans_start"))
-                & (pl.col("end") <= pl.col("trans_end"))
-            )
-            if contained.height > 0:
-                results.append(contained)
-
-            # Free intermediate memory
-            del batch, crossed, contained
+            if chunk_result is not None and chunk_result.height > 0:
+                results.append(chunk_result)
 
         if not results:
-            return self._empty_result_schema(pred_chunk)
+            return self._empty_result_schema(risearch_df)
 
         return pl.concat(results, how="diagonal")
+
+    def _binary_search_containment(
+        self,
+        preds: pl.DataFrame,
+        trans: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Find all transcripts containing each prediction using binary search.
+
+        Algorithm:
+        1. Sort transcripts by start position
+        2. For each prediction, binary search to find transcripts starting <= pred.start
+        3. Among those, filter for transcripts ending >= pred.end
+        """
+        # Convert to numpy for fast iteration
+        trans_sorted = trans.sort("start")
+        trans_starts = trans_sorted["start"].to_numpy()
+        trans_ends = trans_sorted["end"].to_numpy()
+        trans_gene_ids = trans_sorted["gene_id"].to_list()
+        trans_transcript_ids = trans_sorted["transcript_id"].to_list()
+        trans_exp_values = trans_sorted["exp_value"].to_numpy()
+
+        # Collect results
+        result_rows = []
+        pred_data = preds.to_dicts()
+
+        for pred in pred_data:
+            pred_start = pred["start"]
+            pred_end = pred["end"]
+
+            # Find transcripts that could contain this prediction
+            # Transcript must start at or before prediction start
+            right_idx = bisect_right(trans_starts, pred_start)
+
+            # Check all transcripts starting before pred_start
+            for i in range(right_idx):
+                # Transcript must end at or after prediction end
+                if trans_ends[i] >= pred_end:
+                    # This transcript contains the prediction
+                    result_row = pred.copy()
+                    result_row["trans_start"] = int(trans_starts[i])
+                    result_row["trans_end"] = int(trans_ends[i])
+                    result_row["gene_id"] = trans_gene_ids[i]
+                    result_row["transcript_id"] = trans_transcript_ids[i]
+                    result_row["exp_value"] = float(trans_exp_values[i])
+                    result_rows.append(result_row)
+
+        if not result_rows:
+            return None
+
+        return pl.DataFrame(result_rows)
 
     def _empty_result_schema(self, risearch_df: pl.DataFrame) -> pl.DataFrame:
         """Return empty DataFrame with expected output schema."""
