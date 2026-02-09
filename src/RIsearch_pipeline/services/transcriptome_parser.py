@@ -37,42 +37,75 @@ class TranscriptomeParser:
             return self._load_gtf_impl(path, feature, score_col)
 
     def _load_bed(self, path: Path) -> pl.DataFrame:
-        """Load BED file (7 columns expected)."""
-        # User format: chrom, start, end, transcript_id, score_placeholder, strand, exp_value
-        headers = [
-            "chrom",
-            "start",
-            "end",
-            "transcript_id",
-            "score_placeholder",
-            "strand",
-            "exp_value",
-        ]
+        """Load BED file (supports BED6 and BED7 formats).
 
-        # Read 7 columns
-        df = pl.read_csv(
-            path,
-            separator="\t",
-            has_header=False,
-            columns=range(7),
-            new_columns=headers,
-            truncate_ragged_lines=True,
-        )
+        BED6: chrom, start, end, name, score, strand
+        BED7: chrom, start, end, name, score, strand, exp_value
+        """
+        # First, detect number of columns by reading first line
+        import gzip
 
-        # Select and cast
-        df = df.select(
-            [
-                pl.col("chrom"),
-                pl.col("start"),
-                pl.col("end"),
-                pl.col("strand"),
-                pl.col("transcript_id").alias(
-                    "gene_id"
-                ),  # Use transcript_id as gene_id for BED
-                pl.col("transcript_id"),
-                pl.col("exp_value").cast(pl.Float32, strict=False).fill_null(0.0),
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt") as f:
+            first_line = f.readline().strip()
+            num_cols = len(first_line.split("\t"))
+
+        if num_cols >= 7:
+            # BED7+: chrom, start, end, transcript_id, score_placeholder, strand, exp_value
+            headers = [
+                "chrom",
+                "start",
+                "end",
+                "transcript_id",
+                "score_placeholder",
+                "strand",
+                "exp_value",
             ]
-        )
+            df = pl.read_csv(
+                path,
+                separator="\t",
+                has_header=False,
+                columns=range(7),
+                new_columns=headers,
+                truncate_ragged_lines=True,
+            )
+            df = df.select(
+                [
+                    pl.col("chrom"),
+                    pl.col("start"),
+                    pl.col("end"),
+                    pl.col("strand"),
+                    pl.col("transcript_id").alias("gene_id"),
+                    pl.col("transcript_id"),
+                    pl.col("exp_value").cast(pl.Float32, strict=False).fill_null(0.0),
+                ]
+            )
+        else:
+            # BED6: chrom, start, end, name, score, strand
+            headers = ["chrom", "start", "end", "transcript_id", "score", "strand"]
+            df = pl.read_csv(
+                path,
+                separator="\t",
+                has_header=False,
+                columns=range(6),
+                new_columns=headers,
+                truncate_ragged_lines=True,
+            )
+            # Use score column as exp_value for BED6
+            df = df.select(
+                [
+                    pl.col("chrom"),
+                    pl.col("start"),
+                    pl.col("end"),
+                    pl.col("strand"),
+                    pl.col("transcript_id").alias("gene_id"),
+                    pl.col("transcript_id"),
+                    pl.col("score")
+                    .cast(pl.Float32, strict=False)
+                    .fill_null(0.0)
+                    .alias("exp_value"),
+                ]
+            )
 
         return df
 
