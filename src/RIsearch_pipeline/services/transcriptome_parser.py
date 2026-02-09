@@ -90,13 +90,16 @@ class TranscriptomeParser:
                 columns=range(6),
                 new_columns=headers,
                 truncate_ragged_lines=True,
+                schema_overrides={
+                    h: pl.Utf8 for h in headers
+                },  # All strings to avoid type inference issues
             )
             # Use score column as exp_value for BED6
             df = df.select(
                 [
                     pl.col("chrom"),
-                    pl.col("start"),
-                    pl.col("end"),
+                    pl.col("start").cast(pl.Int64),
+                    pl.col("end").cast(pl.Int64),
                     pl.col("strand"),
                     pl.col("transcript_id").alias("gene_id"),
                     pl.col("transcript_id"),
