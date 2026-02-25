@@ -1,5 +1,6 @@
 from loguru import logger
 from pathlib import Path
+from collections import OrderedDict
 from typing import Dict
 import numpy as np
 
@@ -25,10 +26,14 @@ class GenomeAccessibilityService:
     Stores profiles as memory-mapped numpy arrays (float16) for efficient random access.
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, max_cached: int = 4):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._profiles: Dict[str, np.memmap] = {}
+        self._max_cached = max_cached
+        # OrderedDict for LRU eviction: profile_key -> numpy array
+        self._profiles: OrderedDict[str, np.ndarray] = OrderedDict()
+        # Metadata flags stored separately (not counted toward LRU slots)
+        self._profile_flags: Dict[str, bool] = {}
 
     def get_profile_path(self, chrom: str, strand: str = "+") -> Path:
         """Get path for accessibility profile. Strand can be '+' or '-'."""
@@ -147,6 +152,236 @@ class GenomeAccessibilityService:
                 progress_callback(advance=1, description=f"Processing {chrom}")
 
         return results
+
+    def compute_binding_site_accessibility(
+        self,
+        genome_path: Path,
+        risearch_dir: Path,
+        output_path: Path,
+        window_size: int = 80,
+        max_span: int = 40,
+        unpaired_prob: int = 30,
+        progress_callback=None,
+    ) -> Path:
+        """
+        Compute accessibility only for regions with predicted binding sites.
+
+        Scans all per-siRNA RIsearch files in risearch_dir to extract unique
+        binding site coordinates, groups by chromosome, merges nearby sites
+        into islands (with W-bp flanking), folds only those islands using
+        ViennaRNA, and saves per-site opening energies to Parquet.
+
+        Args:
+            genome_path: Path to genome FASTA file.
+            risearch_dir: Directory containing per-siRNA RIsearch output files.
+            output_path: Path for the output .parquet file.
+            window_size: -W parameter (default 80).
+            max_span: -L parameter (default 40).
+            unpaired_prob: -u parameter (default 30).
+            progress_callback: Optional callback(advance=1, description=str).
+
+        Returns:
+            Path to the output Parquet file.
+
+        Complexity:
+            O(S) lazy scan where S = total predictions across all files.
+            O(I × W) folding time where I = number of merged islands.
+            O(1) memory per chromosome (process + discard).
+        """
+        if not HAS_VIENNA_BINDINGS:
+            raise AccessibilityError(
+                "ViennaRNA Python bindings ('import RNA') not found. "
+                "Please install ViennaRNA or use the CLI fallback."
+            )
+
+        import polars as pl
+        from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+        from RIsearch_pipeline.services.helpers import (
+            read_fasta,
+            reverse_complement,
+            merge_intervals,
+        )
+
+        parser = RIsearchParser()
+        all_files = parser.list_directory_files(risearch_dir)
+        if not all_files:
+            raise AccessibilityError(f"No RIsearch files found in {risearch_dir}")
+
+        logger.info(
+            f"Scanning {len(all_files)} RIsearch files for binding site coordinates..."
+        )
+
+        # --- Step 1: Lazy scan to extract unique (chrom, start, end, strand) ---
+        lazy_frames = []
+        for f in all_files:
+            lf = pl.scan_csv(f, separator="\t", has_header=False).select(
+                [
+                    pl.col("column_4").alias("chrom"),
+                    pl.col("column_5").cast(pl.Int32).alias("start"),
+                    pl.col("column_6").cast(pl.Int32).alias("end"),
+                    pl.col("column_7").alias("strand"),
+                ]
+            )
+            lazy_frames.append(lf)
+
+        unique_sites = pl.concat(lazy_frames).unique().collect()
+        logger.info(f"Found {unique_sites.height} unique binding site coordinates")
+
+        # --- Step 2: Group by chromosome ---
+        chroms_in_predictions = unique_sites["chrom"].unique().to_list()
+
+        # Load genome sequences as a dict (lazy — one at a time via generator)
+        genome_sequences: dict[str, str] = {}
+        for chrom, seq in read_fasta(genome_path):
+            if chrom in chroms_in_predictions:
+                genome_sequences[chrom] = seq
+
+        RT = 0.616  # kcal/mol at 37°C
+        all_results: list[dict] = []
+
+        for chrom in chroms_in_predictions:
+            if chrom not in genome_sequences:
+                logger.warning(
+                    f"Chromosome {chrom} not found in genome FASTA, skipping"
+                )
+                continue
+
+            chrom_seq = genome_sequences[chrom]
+            seq_len = len(chrom_seq)
+            chrom_sites = unique_sites.filter(pl.col("chrom") == chrom)
+
+            logger.info(
+                f"Processing {chrom} ({seq_len} bp, "
+                f"{chrom_sites.height} binding sites)..."
+            )
+
+            for strand in ["+", "-"]:
+                strand_sites = chrom_sites.filter(pl.col("strand") == strand)
+                if strand_sites.height == 0:
+                    continue
+
+                # Convert 1-based RIsearch coords to 0-based intervals
+                starts = strand_sites["start"].to_numpy()
+                ends = strand_sites["end"].to_numpy()
+                intervals = [(int(s) - 1, int(e)) for s, e in zip(starts, ends)]
+
+                # Merge nearby intervals with W-bp padding
+                islands = merge_intervals(intervals, padding=window_size)
+                logger.info(
+                    f"  {strand} strand: {len(intervals)} sites → "
+                    f"{len(islands)} islands"
+                )
+
+                # Prepare sequence for this strand
+                if strand == "-":
+                    strand_seq = reverse_complement(chrom_seq)
+                else:
+                    strand_seq = chrom_seq
+
+                # Build a position→opening_energy map for this chrom/strand
+                pos_energy: dict[tuple[int, int], float] = {}
+
+                for island_start, island_end in islands:
+                    # Add W-bp flanking context (clamped to sequence bounds)
+                    ctx_start = max(0, island_start - window_size)
+                    ctx_end = min(seq_len, island_end + window_size)
+
+                    # For minus strand, coordinates are reversed
+                    if strand == "-":
+                        rev_start = seq_len - ctx_end
+                        rev_end = seq_len - ctx_start
+                        island_subseq = strand_seq[rev_start:rev_end]
+                    else:
+                        island_subseq = strand_seq[ctx_start:ctx_end]
+
+                    # T→U conversion for ViennaRNA
+                    rna_seq = island_subseq.replace("T", "U").replace("t", "u")
+
+                    sub_len = len(rna_seq)
+                    w = min(window_size, sub_len)
+                    l_adj = min(max_span, sub_len)
+
+                    try:
+                        probs_matrix = RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
+                    except Exception as e:
+                        logger.error(
+                            f"ViennaRNA error on {chrom} {strand} "
+                            f"island {island_start}-{island_end}: {e}"
+                        )
+                        # Default penalty for failed islands
+                        for s, e_val in zip(starts, ends):
+                            s0, e0 = int(s) - 1, int(e_val)
+                            if island_start <= s0 and e0 <= island_end:
+                                pos_energy[(s0, e0)] = 10.0
+                        continue
+
+                    # Map each original binding site back to the island profile
+                    for orig_s, orig_e in intervals:
+                        if not (island_start <= orig_s and orig_e <= island_end):
+                            continue
+
+                        interaction_len = orig_e - orig_s
+
+                        # Position within the extracted subsequence
+                        if strand == "+":
+                            # 3'-end position within island context
+                            pos_in_sub = (orig_e - 1) - ctx_start
+                        else:
+                            # For minus strand, map to reversed coordinates
+                            # orig coords are on + strand, but profile is on - strand
+                            pos_in_sub = (seq_len - orig_s - 1) - rev_start
+
+                        # 1-based index for probs_matrix
+                        idx_1based = pos_in_sub + 1
+
+                        u_col = min(interaction_len, unpaired_prob)
+                        if u_col < 1:
+                            u_col = 1
+
+                        energy_val = 10.0  # Default penalty
+                        if 0 < idx_1based < len(probs_matrix) and u_col < len(
+                            probs_matrix[idx_1based]
+                        ):
+                            p = probs_matrix[idx_1based][u_col]
+                            if p is not None and p > 0:
+                                energy_val = -RT * float(np.log(p))
+                                # Quantize to 0.1 resolution
+                                energy_val = int(round(energy_val * 10.0)) / 10.0
+
+                        pos_energy[(orig_s, orig_e)] = energy_val
+
+                # Collect results for this chrom/strand
+                for row_idx in range(strand_sites.height):
+                    s_1based = int(starts[row_idx])
+                    e_1based = int(ends[row_idx])
+                    s0 = s_1based - 1
+                    e0 = e_1based
+                    oe = pos_energy.get((s0, e0), 10.0)
+                    all_results.append(
+                        {
+                            "chrom": chrom,
+                            "start": s_1based,
+                            "end": e_1based,
+                            "strand": strand,
+                            "opening_energy": oe,
+                        }
+                    )
+
+            # Free chromosome sequence after processing
+            del genome_sequences[chrom]
+
+            if progress_callback:
+                progress_callback(advance=1, description=f"Processed {chrom}")
+
+        # --- Step 3: Save as Parquet ---
+        result_df = pl.DataFrame(all_results)
+        result_df.write_parquet(output_path)
+        logger.info(
+            f"Saved {result_df.height} binding site accessibility values "
+            f"to {output_path}"
+        )
+
+        return output_path
 
     def compute_sequence_accessibility(
         self,
@@ -321,6 +556,58 @@ class GenomeAccessibilityService:
         logger.info(f"Computed accessibility via RNAplfold CLI (len={seq_len})")
         return profile
 
+    def _ensure_profile(self, chrom: str, strand: str) -> str:
+        """
+        Ensure the profile for (chrom, strand) is loaded, applying LRU eviction.
+
+        Returns the profile_key string.
+
+        Complexity: O(1) amortized.  Eviction frees the oldest cached
+        profile when the cache exceeds max_cached slots, bounding
+        resident memory to max_cached chromosome-sized arrays.
+        """
+        profile_key = f"{chrom}_{strand}"
+
+        if profile_key in self._profiles:
+            # Move to end (most-recently-used)
+            self._profiles.move_to_end(profile_key)
+            return profile_key
+
+        # --- Load from disk ---
+        path = self._find_profile(chrom, strand)
+        if not path:
+            raise AccessibilityError(
+                f"Profile for {chrom} {strand} not found in {self.data_dir}. "
+                "Expected .access.npy, .access.bin, or legacy open.acc.bin files."
+            )
+
+        if path.suffix == ".npy":
+            self._profiles[profile_key] = np.load(path, mmap_mode="r")
+        elif path.suffix == ".bin":
+            raw_data = np.memmap(path, dtype=np.uint8, mode="r")
+            if len(raw_data) % 30 == 0:
+                self._profiles[profile_key] = raw_data.reshape(-1, 30)
+            else:
+                logger.warning(
+                    f"Binary file {path} size not divisible by 30, using as 1D"
+                )
+                self._profiles[profile_key] = raw_data
+            self._profile_flags[f"{profile_key}_is_legacy_bin"] = True
+        elif "openen" in path.name:
+            logger.info(f"Parsing legacy text file: {path}")
+            self._profiles[profile_key] = self._parse_openen_text(path)
+
+        logger.info(f"Loaded accessibility profile for {chrom} {strand} from {path}")
+
+        # --- LRU eviction ---
+        while len(self._profiles) > self._max_cached:
+            evicted_key, _ = self._profiles.popitem(last=False)
+            # Clean up associated flags
+            self._profile_flags.pop(f"{evicted_key}_is_legacy_bin", None)
+            logger.debug(f"Evicted profile cache entry: {evicted_key}")
+
+        return profile_key
+
     def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:
         """
         Query accessibility for a region (0-based, half-open [start, end)).
@@ -332,61 +619,79 @@ class GenomeAccessibilityService:
             strand: Strand ('+' or '-')
 
         Returns:
-            Numpy array of probabilities.
+            Numpy array of opening energies for the region.
         """
-        profile_key = f"{chrom}_{strand}"
-
-        if profile_key not in self._profiles:
-            # Try to resolve path (support .npy and legacy .bin)
-            path = self._find_profile(chrom, strand)
-
-            if not path:
-                raise AccessibilityError(
-                    f"Profile for {chrom} {strand} not found in {self.data_dir}. "
-                    "Expected .access.npy, .access.bin, or legacy open.acc.bin files."
-                )
-
-            # Load based on extension
-            if path.suffix == ".npy":
-                self._profiles[profile_key] = np.load(path, mmap_mode="r")
-            elif path.suffix == ".bin":
-                # Legacy format: uint8, flattened 2D matrix (Nx30)
-                # val = round(energy * 10)
-                raw_data = np.memmap(path, dtype=np.uint8, mode="r")
-                # Reshape to 2D if divisible by 30
-                if len(raw_data) % 30 == 0:
-                    self._profiles[profile_key] = raw_data.reshape(-1, 30)
-                else:
-                    logger.warning(
-                        f"Binary file {path} size not divisible by 30, using as 1D"
-                    )
-                    self._profiles[profile_key] = raw_data
-                self._profiles[f"{profile_key}_is_legacy_bin"] = True
-            elif "openen" in path.name:
-                # Text format: RNAplfold output
-                # We need to parse this into a float32 array
-                logger.info(f"Parsing legacy text file: {path}")
-                self._profiles[profile_key] = self._parse_openen_text(path)
-
-            logger.info(
-                f"Loaded accessibility profile for {chrom} {strand} from {path}"
-            )
-
+        profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
-        is_legacy_bin = self._profiles.get(f"{profile_key}_is_legacy_bin", False)
+        is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
         seq_len = len(profile)
 
-        # Check bounds
         if start < 0 or end > seq_len:
             raise AccessibilityError(
                 f"Query {start}-{end} out of bounds for {chrom} {strand} (len {seq_len}, path={self._find_profile(chrom, strand)})"
             )
 
-        # Retrieve and decode if needed
         data = profile[start:end]
         if is_legacy_bin:
             return data.astype(np.float32) / 10.0
         return data
+
+    def query_single(
+        self, chrom: str, start: int, end: int, strand: str = "+"
+    ) -> float:
+        """
+        Fast-path: return a single opening energy value for a prediction.
+
+        Mirrors the old pipeline's get_opening_energy() logic:
+        - For 2D profiles (matrix [pos, u]): picks the value at the 3'-end
+          position using the interaction length as the u-column index.
+        - For 1D profiles: picks the 3'-end value directly.
+        - Quantizes to 0.1 resolution (match legacy behavior).
+
+        Args:
+            chrom: Chromosome name.
+            start: 1-based start position (RIsearch convention).
+            end:   1-based end position (inclusive, RIsearch convention).
+            strand: '+' or '-'.
+
+        Returns:
+            Opening energy as float, quantized to 0.1 kcal/mol.
+
+        Complexity: O(1) time, O(1) space per call (profile already mmap'd).
+        """
+        profile_key = self._ensure_profile(chrom, strand)
+        profile = self._profiles[profile_key]
+        is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
+        seq_len = len(profile)
+
+        # Convert 1-based RIsearch coords to 0-based
+        start0 = start - 1
+        end0 = end  # half-open
+
+        if start0 < 0 or end0 > seq_len:
+            return 10.0  # Default penalty for out-of-bounds
+
+        interaction_len = end0 - start0
+
+        if profile.ndim == 2:
+            matrix_width = profile.shape[1]
+            col_idx = min(interaction_len, matrix_width) - 1
+            if col_idx < 0:
+                col_idx = 0
+            # 3' end for +, 5' end for -
+            row_idx = end0 - 1 if strand == "+" else start0
+            raw_val = float(profile[row_idx, col_idx])
+            if is_legacy_bin:
+                raw_val /= 10.0
+        else:
+            # 1D profile
+            row_idx = end0 - 1 if strand == "+" else start0
+            raw_val = float(profile[row_idx])
+            if is_legacy_bin:
+                raw_val /= 10.0
+
+        # Quantize to 0.1 resolution (legacy compatibility)
+        return int(round(raw_val * 10.0)) / 10.0
 
     def _parse_openen_text(self, path: Path) -> np.ndarray:
         """

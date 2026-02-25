@@ -33,7 +33,8 @@ class TestProbabilityService(unittest.TestCase):
     def test_with_accessibility(self):
         """Test with accessibility service mocked."""
         acc_service = MagicMock()
-        acc_service.query.return_value = np.array([0.5, 0.5], dtype=np.float32)
+        # query_single returns a single float (quantized to 0.1)
+        acc_service.query_single.return_value = 0.5
 
         service = ProbabilityService(acc_service)
 

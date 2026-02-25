@@ -96,6 +96,13 @@ def run(
         exists=True,
         file_okay=False,
     ),
+    accessibility_file: Path = typer.Option(
+        None,
+        "--accessibility-file",
+        help="Parquet file with pre-computed binding-site accessibility (from 'accessibility --risearch-dir').",
+        exists=True,
+        dir_okay=False,
+    ),
     output_file: Path = typer.Option(
         None,
         "-o",
@@ -310,10 +317,22 @@ def run(
             )
 
             acc_service = None
-            if accessibility_dir:
-                acc_service = GenomeAccessibilityService(accessibility_dir)
+            precomputed_acc = None
+            if accessibility_file:
+                import polars as pl
+
+                precomputed_acc = pl.read_parquet(accessibility_file)
+                console.print(
+                    f"  [dim]Loaded {precomputed_acc.height} precomputed accessibility values[/dim]"
+                )
+            elif accessibility_dir:
+                acc_service = GenomeAccessibilityService(
+                    accessibility_dir, max_cached=4
+                )
             prob_service = ProbabilityService(
-                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+                acc_service,
+                use_rnaplfold_cli=use_rnaplfold_cli,
+                precomputed_accessibility=precomputed_acc,
             )
 
             # Prepare transcriptome if provided
@@ -492,10 +511,19 @@ def run(
                 )
 
                 acc_service = None
-                if accessibility_dir:
-                    acc_service = GenomeAccessibilityService(accessibility_dir)
+                precomputed_acc = None
+                if accessibility_file:
+                    import polars as pl
+
+                    precomputed_acc = pl.read_parquet(accessibility_file)
+                elif accessibility_dir:
+                    acc_service = GenomeAccessibilityService(
+                        accessibility_dir, max_cached=4
+                    )
                 prob_service = ProbabilityService(
-                    acc_service, use_rnaplfold_cli=use_rnaplfold_cli
+                    acc_service,
+                    use_rnaplfold_cli=use_rnaplfold_cli,
+                    precomputed_accessibility=precomputed_acc,
                 )
 
                 # Prepare transcriptome if provided
@@ -709,11 +737,24 @@ def run(
         # Keep reference to temp dir object so it persists until function exit
         temp_dir_obj = None
 
-        if accessibility_dir:
+        if accessibility_file:
+            import polars as pl
+
+            precomputed_acc = pl.read_parquet(accessibility_file)
+            console.print(
+                f"  [dim]Loaded {precomputed_acc.height} precomputed accessibility values from {accessibility_file}...[/dim]"
+            )
+            prob_service = ProbabilityService(
+                None,
+                use_rnaplfold_cli=use_rnaplfold_cli,
+                precomputed_accessibility=precomputed_acc,
+            )
+
+        elif accessibility_dir:
             console.print(
                 f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
             )
-            acc_service = GenomeAccessibilityService(accessibility_dir)
+            acc_service = GenomeAccessibilityService(accessibility_dir, max_cached=4)
             prob_service = ProbabilityService(
                 acc_service, use_rnaplfold_cli=use_rnaplfold_cli
             )
@@ -727,7 +768,7 @@ def run(
             temp_dir_obj = tempfile.TemporaryDirectory(prefix="risearch_accessibility_")
             temp_dir = Path(temp_dir_obj.name)
 
-            acc_service = GenomeAccessibilityService(temp_dir)
+            acc_service = GenomeAccessibilityService(temp_dir, max_cached=4)
 
             # Use progress bar for accessibility
             with Progress(

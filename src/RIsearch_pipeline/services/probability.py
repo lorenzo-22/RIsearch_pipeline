@@ -26,9 +26,11 @@ class ProbabilityService:
         self,
         accessibility_service: Optional[GenomeAccessibilityService] = None,
         use_rnaplfold_cli: bool = False,
+        precomputed_accessibility: Optional[pl.DataFrame] = None,
     ):
         self.accessibility_service = accessibility_service
         self.use_rnaplfold_cli = use_rnaplfold_cli
+        self.precomputed_accessibility = precomputed_accessibility
 
     def calculate_probabilities(
         self,
@@ -662,171 +664,89 @@ class ProbabilityService:
 
     def _annotate_opening_energy(self, df: pl.DataFrame) -> pl.DataFrame:
         """
-        Lookup opening energy for each row using the AccessibilityService.
+        Lookup opening energy for each row.
+
+        Two paths:
+        1. Precomputed Parquet (fast): single Polars join on (chrom, start, end, strand).
+        2. Profile-based (LRU cache): per-row query_single() with group-by-chromosome locality.
+
+        Complexity:
+            Path 1: O(N log N) for hash join.
+            Path 2: O(N) with O(1) per lookup via mmap.
         """
         if df.height == 0:
             return df
 
-        if not self.accessibility_service:
-            return df
-
-        # We need chromosomal coordinates.
-        # Required columns: chrom, start, end.
         if not all(c in df.columns for c in ["chrom", "start", "end", "strand"]):
             logger.warning(
                 "Missing coordinate or strand columns. Cannot lookup accessibility."
             )
             return df
 
-        # This lookup is row-by-row or batched.
-        # Since our profiles are memory mapped, random access is fast.
-        # However, calling python function for millions of rows is slow.
-        #
-        # Strategy:
-        # Group by Chromosome? Or just map_rows?
-        # For Polars, custom python functions in map_elements are slow.
-        #
-        # But we are looking up ranges.
-        # Let's iterate over rows using a generator or python loop, then recreate specific columns?
-        # Or, filter unique targets first?
+        # --- Path 1: Precomputed Parquet join ---
+        if self.precomputed_accessibility is not None:
+            acc_df = self.precomputed_accessibility
+            join_keys = ["chrom", "start", "end", "strand"]
+            result = df.join(
+                acc_df.select(join_keys + ["opening_energy"]),
+                on=join_keys,
+                how="left",
+            )
+            # Fill nulls (sites not in precomputed file) with default penalty
+            if "opening_energy" in result.columns:
+                result = result.with_columns(pl.col("opening_energy").fill_null(10.0))
+            else:
+                result = result.with_columns(pl.lit(10.0).alias("opening_energy"))
+            logger.info(
+                f"Annotated {result.height} rows with precomputed accessibility"
+            )
+            return result
 
-        # Unique Targets: (chrom, start, end, strand)
-        # Exclude 'onTarget' as it is handled separately
-        targets = (
-            df.filter(pl.col("chrom") != "onTarget")
-            .select(["chrom", "start", "end", "strand"])
-            .unique()
-        )
+        # --- Path 2: Profile-based lookup ---
+        if not self.accessibility_service:
+            return df
 
-        # Calculate logic
-        # We need the mean unpaired probability across the target site?
-        # Or the max?
-        # Usually: Accessibility of the binding site.
-        # Formula: dG_open = -RT * ln(P_u_average) or sum?
-        #
-        # Standard approach (e.g. RNAplfold):
-        # The probability that a region is unpaired is the probability that ALL bases are unpaired?
-        # Or usually approximated.
-        #
-        # If we use P_u from plfold -u 30:
-        # It gives P that a stretch of length u is unpaired ending at i.
-        # IF the target length matches 'u', we just look up one value!
-        #
-        # If lengths vary, and we precomputed for u=30 (fixed):
-        # We can only crudely approximate if target length != 30.
-        #
-        # Assumption: The siRNA length is ~20. The seed is critical.
-        # Often accessibility is checked for the Seed region (6-8nt) or the whole site.
-        #
-        # User Requirement Check: The implementation plan said:
-        # "Query AccessibilityService for P_u at the target site"
-        #
-        # I will assume we take the *average* per-nucleotide accessibility?
-        # NO, typically we use the P_u for a specific window length.
-        # But we pre-computed for a FIXED u (e.g. 30).
-        # And stored it.
-        #
-        # Let's assume for this implementations we take the P_u value at the center or average over the region?
-        #
-        # BETTER: For now, I will implement a lookup that takes the P_u from the profile
-        # at the valid index, assuming the pre-computation 'u' roughly matches our needs or we just take the max/avg.
-        #
-        # Let's use: Mean probability of being unpaired for nucleotides in the region?
-        # No, that's available from u=1 profile.
-        #
-        # If we used -u 30, we have P(segment of 30 is unpaired).
-        # If our target is 21nt, P(30) is a lower bound (harder to open 30 than 21).
+        n_rows = df.height
+        opening_energies = np.full(n_rows, 10.0, dtype=np.float64)
 
-        # I will compute: Mean accessibility score from the profile for the indices covered by the target.
-        # (This is a heuristic if the profile is u=30, but robust enough for a scaffold).
+        chroms = df["chrom"].to_numpy()
+        starts = df["start"].to_numpy()
+        ends = df["end"].to_numpy()
+        strands = df["strand"].to_numpy()
 
-        # Extract unique list to Python
-        rows = targets.rows(named=True)
-        results = []
+        from collections import defaultdict
 
-        for row in rows:
-            chrom = row["chrom"]
-            start_in = row["start"]
-            end_in = row["end"]
-            strand = row["strand"]
+        groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for i in range(n_rows):
+            c = str(chroms[i])
+            if c == "onTarget":
+                continue
+            s = str(strands[i])
+            groups[(c, s)].append(i)
 
-            # Convert 1-based RIsearch coords to 0-based for internal query
-            start0 = start_in - 1
+        error_logged: set[str] = set()
 
+        for (chrom, strand), indices in groups.items():
             try:
-                # Query region
-                opening_energies = self.accessibility_service.query(
-                    chrom, start0, end_in, strand
-                )
-
-                # Interaction length 'u'
-                interaction_len = end_in - start0
-
-                # Check for 2D (matrix) profile
-                if opening_energies.ndim == 2:
-                    # Matrix: rows = positions, cols = u-lengths
-                    # We want the column corresponding to our interaction length 'u'
-                    # col_idx = u - 1
-                    matrix_width = opening_energies.shape[1]
-                    col_idx = min(interaction_len, matrix_width) - 1
-                    if col_idx < 0:
-                        col_idx = 0
-
-                    # Pick 3' end value
-                    if len(opening_energies) > 0:
-                        row_idx = -1 if strand == "+" else 0
-                        val = opening_energies[row_idx, col_idx]
-                        mean_e_open = int(round(float(val) * 10.0)) / 10.0
-                    else:
-                        mean_e_open = 10.0
-                else:
-                    # 1D Legacy/Simplified (Assumes fixed large u, e.g. 30)
-                    if len(opening_energies) > 0:
-                        val = (
-                            opening_energies[-1]
-                            if strand == "+"
-                            else opening_energies[0]
-                        )
-                        mean_e_open = int(round(float(val) * 10.0)) / 10.0
-                    else:
-                        mean_e_open = 10.0
-
-                results.append(
-                    {
-                        "chrom": chrom,
-                        "start": start_in,
-                        "end": end_in,
-                        "strand": strand,
-                        "opening_energy": mean_e_open,
-                    }
-                )
-            except AccessibilityError as e:
-                # Log first few errors per chromosome to avoid spam
-                result_key = f"acc_error_{chrom}"
-                if not hasattr(self, "_logged_errors"):
-                    self._logged_errors = set()
-
-                if result_key not in self._logged_errors:
-                    logger.warning(
-                        f"Accessibility lookup failed for {chrom}:{start_in}-{end_in} ({strand}): {e}. Defaulting to 10.0"
+                for idx in indices:
+                    opening_energies[idx] = self.accessibility_service.query_single(
+                        chrom,
+                        int(starts[idx]),
+                        int(ends[idx]),
+                        strand,
                     )
-                    self._logged_errors.add(result_key)
+            except AccessibilityError as e:
+                err_key = f"acc_error_{chrom}_{strand}"
+                if err_key not in error_logged:
+                    logger.warning(
+                        f"Accessibility lookup failed for {chrom} ({strand}): {e}. "
+                        "Defaulting to 10.0 for all positions on this chromosome/strand."
+                    )
+                    error_logged.add(err_key)
 
-                results.append(
-                    {
-                        "chrom": chrom,
-                        "start": start_in,
-                        "end": end_in,
-                        "strand": strand,
-                        "opening_energy": 10.0,
-                    }
-                )
-
-        # Join back
-        df_acc = pl.DataFrame(results)
-
-        # Join on keys
-        return df.join(df_acc, on=["chrom", "start", "end", "strand"], how="left")
+        return df.with_columns(
+            pl.Series("opening_energy", opening_energies, dtype=pl.Float64)
+        )
 
     def _calculate_on_target_dg(
         self,

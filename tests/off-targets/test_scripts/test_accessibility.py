@@ -89,6 +89,53 @@ class TestAccessibility(unittest.TestCase):
             res, np.array([0.2, 0.3, 0.4], dtype=np.float32)
         )
 
+    def test_lru_eviction(self):
+        """Test LRU eviction with max_cached=2."""
+        service = GenomeAccessibilityService(self.test_dir, max_cached=2)
+
+        # Create 3 chromosome profiles on disk
+        for chrom in ["chrA", "chrB", "chrC"]:
+            data = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+            path = service.get_profile_path(chrom, "+")
+            np.save(path, data)
+
+        # Load chrA, then chrB -> cache: [chrA_+, chrB_+]
+        service.query("chrA", 0, 1)
+        service.query("chrB", 0, 1)
+        self.assertEqual(len(service._profiles), 2)
+        self.assertIn("chrA_+", service._profiles)
+        self.assertIn("chrB_+", service._profiles)
+
+        # Load chrC -> evicts chrA (LRU), cache: [chrB_+, chrC_+]
+        service.query("chrC", 0, 1)
+        self.assertEqual(len(service._profiles), 2)
+        self.assertNotIn("chrA_+", service._profiles)
+        self.assertIn("chrB_+", service._profiles)
+        self.assertIn("chrC_+", service._profiles)
+
+        # Re-query chrA -> reloads from disk, evicts chrB
+        res = service.query("chrA", 0, 3)
+        self.assertEqual(len(service._profiles), 2)
+        self.assertIn("chrA_+", service._profiles)
+        self.assertNotIn("chrB_+", service._profiles)
+        np.testing.assert_array_almost_equal(
+            res, np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+
+    def test_query_single(self):
+        """Test query_single returns a single quantized float."""
+        service = GenomeAccessibilityService(self.test_dir)
+
+        # 1D profile
+        data = np.array([0.15, 0.25, 0.35, 0.45, 0.55], dtype=np.float32)
+        path = service.get_profile_path("chr1", "+")
+        np.save(path, data)
+
+        # query_single uses 1-based coords: start=2, end=4 -> 0-based [1,4)
+        # strand "+": picks end0-1 = index 3 -> 0.45 -> quantized round(4.5)/10 = 0.4
+        val = service.query_single("chr1", 2, 4, "+")
+        self.assertAlmostEqual(val, 0.4, places=1)
+
 
 if __name__ == "__main__":
     unittest.main()
