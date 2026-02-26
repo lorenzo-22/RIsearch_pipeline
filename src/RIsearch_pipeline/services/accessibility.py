@@ -234,8 +234,9 @@ class GenomeAccessibilityService:
     def compute_binding_site_accessibility(
         self,
         genome_path: Path,
-        risearch_dir: Path,
         output_path: Path,
+        risearch_dir: Path = None,
+        risearch_file: Path = None,
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
@@ -253,12 +254,15 @@ class GenomeAccessibilityService:
 
         Args:
             genome_path: Path to genome FASTA file.
-            risearch_dir: Directory containing per-siRNA RIsearch output files.
             output_path: Path for the output .parquet file.
+            risearch_dir: Directory of per-siRNA RIsearch output files.
+            risearch_file: Single merged RIsearch TSV file (alternative to risearch_dir).
             window_size: -W parameter (default 80).
             max_span: -L parameter (default 40).
             unpaired_prob: -u parameter (default 30).
-            progress_callback: Optional callback(advance=1, description=str).
+            workers: Number of parallel workers (default 1 = serial).
+            progress: Optional Rich Progress object for live progress bars.
+            verbose: Log per-island folding details.
 
         Returns:
             Path to the output Parquet file.
@@ -266,7 +270,7 @@ class GenomeAccessibilityService:
         Complexity:
             O(S) lazy scan where S = total predictions across all files.
             O(I × W) folding time where I = number of merged islands.
-            O(1) memory per chromosome (process + discard).
+            O(C) memory where C = results for one chromosome (streamed to disk).
         """
         if not HAS_VIENNA_BINDINGS:
             raise AccessibilityError(
@@ -274,47 +278,75 @@ class GenomeAccessibilityService:
                 "Please install ViennaRNA or use the CLI fallback."
             )
 
+        if not risearch_dir and not risearch_file:
+            raise AccessibilityError("Provide either risearch_dir or risearch_file")
+
         import polars as pl
-        from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+        import tempfile
+        import shutil
         from RIsearch_pipeline.services.helpers import (
             read_fasta,
             reverse_complement,
             merge_intervals,
         )
 
-        parser = RIsearchParser()
-        all_files = parser.list_directory_files(risearch_dir)
-        if not all_files:
-            raise AccessibilityError(f"No RIsearch files found in {risearch_dir}")
-
-        logger.info(
-            f"Scanning {len(all_files)} RIsearch files for binding site coordinates..."
-        )
-
-        # --- Step 1: Lazy scan to extract unique (chrom, start, end, strand) ---
+        # --- Step 1: Extract unique (chrom, start, end, strand) ---
         if progress:
             scan_task = progress.add_task("Scanning RIsearch files...", total=None)
 
-        lazy_frames = []
-        for f in all_files:
-            lf = pl.scan_csv(f, separator="\t", has_header=False).select(
-                [
-                    pl.col("column_4").alias("chrom"),
-                    pl.col("column_5").cast(pl.Int32).alias("start"),
-                    pl.col("column_6").cast(pl.Int32).alias("end"),
-                    pl.col("column_7").alias("strand"),
-                ]
+        if risearch_file:
+            # Single merged file
+            logger.info(f"Scanning merged file {risearch_file}...")
+            unique_sites = (
+                pl.scan_csv(risearch_file, separator="\t", has_header=False)
+                .select(
+                    [
+                        pl.col("column_4").alias("chrom"),
+                        pl.col("column_5").cast(pl.Int32).alias("start"),
+                        pl.col("column_6").cast(pl.Int32).alias("end"),
+                        pl.col("column_7").alias("strand"),
+                    ]
+                )
+                .unique()
+                .collect()
             )
-            lazy_frames.append(lf)
+            source_desc = risearch_file.name
+        else:
+            # Directory of per-siRNA files
+            from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
-        unique_sites = pl.concat(lazy_frames).unique().collect()
+            parser = RIsearchParser()
+            all_files = parser.list_directory_files(risearch_dir)
+            if not all_files:
+                raise AccessibilityError(f"No RIsearch files found in {risearch_dir}")
+
+            logger.info(
+                f"Scanning {len(all_files)} RIsearch files for binding "
+                "site coordinates..."
+            )
+
+            lazy_frames = []
+            for f in all_files:
+                lf = pl.scan_csv(f, separator="\t", has_header=False).select(
+                    [
+                        pl.col("column_4").alias("chrom"),
+                        pl.col("column_5").cast(pl.Int32).alias("start"),
+                        pl.col("column_6").cast(pl.Int32).alias("end"),
+                        pl.col("column_7").alias("strand"),
+                    ]
+                )
+                lazy_frames.append(lf)
+
+            unique_sites = pl.concat(lazy_frames).unique().collect()
+            source_desc = f"{len(all_files)} files"
+
         logger.info(f"Found {unique_sites.height} unique binding site coordinates")
 
         if progress:
             progress.update(
                 scan_task,
                 completed=True,
-                description=f"Scanned {len(all_files)} files → {unique_sites.height} unique sites",
+                description=f"Scanned {source_desc} → {unique_sites.height} unique sites",
             )
             progress.remove_task(scan_task)
 
@@ -322,7 +354,10 @@ class GenomeAccessibilityService:
         chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
         n_chroms = len(chroms_in_predictions)
 
-        all_results: list[dict] = []
+        # --- Temp directory for per-batch Parquet shards ---
+        tmp_dir = tempfile.mkdtemp(prefix="risearch_acc_")
+        shard_idx = 0
+        total_written = 0
 
         # Track overall chromosome progress
         if progress:
@@ -445,14 +480,15 @@ class GenomeAccessibilityService:
                     progress.remove_task(island_task)
                     island_task = None
 
-                # Collect results for this chrom/strand
+                # Collect results for this chrom/strand into a batch
+                chrom_results = []
                 for row_idx in range(strand_sites.height):
                     s_1based = int(starts[row_idx])
                     e_1based = int(ends[row_idx])
                     s0 = s_1based - 1
                     e0 = e_1based
                     oe = pos_energy.get((s0, e0), 10.0)
-                    all_results.append(
+                    chrom_results.append(
                         {
                             "chrom": chrom,
                             "start": s_1based,
@@ -460,6 +496,18 @@ class GenomeAccessibilityService:
                             "strand": strand,
                             "opening_energy": oe,
                         }
+                    )
+
+                # Write this chrom/strand batch as a shard immediately
+                if chrom_results:
+                    batch_df = pl.DataFrame(chrom_results)
+                    shard_path = Path(tmp_dir) / f"shard_{shard_idx:04d}.parquet"
+                    batch_df.write_parquet(shard_path)
+                    shard_idx += 1
+                    total_written += len(chrom_results)
+                    logger.info(
+                        f"  Wrote {len(chrom_results)} results for "
+                        f"{chrom} {strand} (total: {total_written})"
                     )
 
             # chrom_seq goes out of scope here — GC can reclaim
@@ -471,12 +519,29 @@ class GenomeAccessibilityService:
                     description=f"Processing chromosomes ({chroms_done}/{n_chroms})",
                 )
 
-        # --- Step 3: Save as Parquet ---
-        result_df = pl.DataFrame(all_results)
-        result_df.write_parquet(output_path)
+        # --- Step 3: Merge shards into final Parquet ---
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shard_glob = str(Path(tmp_dir) / "shard_*.parquet")
+        if shard_idx > 0:
+            result_df = pl.scan_parquet(shard_glob).collect()
+            result_df.write_parquet(output_path)
+        else:
+            # No results — write empty Parquet with correct schema
+            pl.DataFrame(
+                {
+                    "chrom": pl.Series([], dtype=pl.Utf8),
+                    "start": pl.Series([], dtype=pl.Int32),
+                    "end": pl.Series([], dtype=pl.Int32),
+                    "strand": pl.Series([], dtype=pl.Utf8),
+                    "opening_energy": pl.Series([], dtype=pl.Float64),
+                }
+            ).write_parquet(output_path)
+
+        # Clean up temp shards
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
         logger.info(
-            f"Saved {result_df.height} binding site accessibility values "
-            f"to {output_path}"
+            f"Saved {total_written} binding site accessibility values to {output_path}"
         )
 
         return output_path

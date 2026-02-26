@@ -17,9 +17,13 @@ def run(
         None,
         "--risearch-dir",
         "-r",
-        help="Directory of per-siRNA RIsearch output files. "
-        "When provided, computes accessibility only for binding site regions "
-        "and saves to Parquet instead of full-genome profiles.",
+        help="Directory of per-siRNA RIsearch output files.",
+    ),
+    risearch_file: Optional[Path] = typer.Option(
+        None,
+        "--risearch-file",
+        "-R",
+        help="Single merged RIsearch TSV file (alternative to --risearch-dir).",
     ),
     window_size: int = typer.Option(80, "--window", "-W", help="Window size (W)"),
     max_span: int = typer.Option(40, "--span", "-L", help="Max base pair span (L)"),
@@ -40,9 +44,9 @@ def run(
     Pre-compute accessibility profiles for a genome.
 
     Two modes:
-    - Full-genome: computes profiles for every position (no --risearch-dir).
-    - Binding-site: computes only for predicted binding sites (--risearch-dir).
-      This is ~25x faster and produces a compact Parquet file.
+    - Full-genome: computes profiles for every position.
+    - Binding-site: computes only for predicted binding sites.
+      Accepts --risearch-dir (per-siRNA files) or --risearch-file (single merged TSV).
     """
     from rich.console import Console
     from rich.progress import (
@@ -57,10 +61,13 @@ def run(
 
     console = Console(stderr=True)
 
-    if risearch_dir is not None:
+    if risearch_dir is not None or risearch_file is not None:
         # --- Binding-site mode ---
-        if not risearch_dir.is_dir():
+        if risearch_dir and not risearch_dir.is_dir():
             console.print(f"[red]Error: {risearch_dir} is not a directory[/red]")
+            raise typer.Exit(code=1)
+        if risearch_file and not risearch_file.is_file():
+            console.print(f"[red]Error: {risearch_file} is not a file[/red]")
             raise typer.Exit(code=1)
 
         out_path = (
@@ -68,9 +75,10 @@ def run(
         )
         service = GenomeAccessibilityService(out_path.parent)
 
+        source = risearch_dir or risearch_file
         console.print(f"\n[bold]Binding-site accessibility computation[/bold]")
         console.print(f"  Genome:       {genome}")
-        console.print(f"  RIsearch dir: {risearch_dir}")
+        console.print(f"  Input:        {source}")
         console.print(f"  Output:       {out_path}")
         console.print(
             f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
@@ -87,16 +95,17 @@ def run(
                 TimeRemainingColumn(),
                 console=console,
                 transient=False,
-            ) as progress:
+            ) as prog:
                 result_path = service.compute_binding_site_accessibility(
                     genome_path=genome,
-                    risearch_dir=risearch_dir,
                     output_path=out_path,
+                    risearch_dir=risearch_dir,
+                    risearch_file=risearch_file,
                     window_size=window_size,
                     max_span=max_span,
                     unpaired_prob=unpaired_prob,
                     workers=workers,
-                    progress=progress,
+                    progress=prog,
                     verbose=verbose,
                 )
 
