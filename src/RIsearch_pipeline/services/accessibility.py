@@ -19,6 +19,84 @@ class AccessibilityError(Exception):
     pass
 
 
+def _fold_island(
+    rna_seq: str,
+    binding_sites: list[tuple[int, int]],
+    ctx_start: int,
+    seq_len: int,
+    strand: str,
+    rev_start: int,
+    window_size: int,
+    max_span: int,
+    unpaired_prob: int,
+) -> dict[tuple[int, int], float]:
+    """
+    Worker function: fold a single island and extract opening energies.
+
+    Must be a top-level function (not a method) for ProcessPoolExecutor
+    pickling. Receives only small, pickle-friendly arguments.
+
+    Args:
+        rna_seq: Island subsequence (already T→U converted).
+        binding_sites: List of (orig_s_0based, orig_e_0based) sites in this island.
+        ctx_start: 0-based start of the context window (for + strand positioning).
+        seq_len: Full chromosome length (for - strand positioning).
+        strand: '+' or '-'.
+        rev_start: Reversed start position (only used for - strand).
+        window_size: -W parameter.
+        max_span: -L parameter.
+        unpaired_prob: -u parameter.
+
+    Returns:
+        Dict mapping (orig_s, orig_e) → opening_energy (float).
+
+    Complexity: O(L × W) for pfl_fold_up where L = len(rna_seq).
+    """
+    import RNA as _RNA
+
+    RT = 0.616  # kcal/mol at 37°C
+    sub_len = len(rna_seq)
+    w = min(window_size, sub_len)
+    l_adj = min(max_span, sub_len)
+
+    result: dict[tuple[int, int], float] = {}
+
+    try:
+        probs_matrix = _RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
+    except Exception:
+        # Default penalty for all sites in this island
+        for orig_s, orig_e in binding_sites:
+            result[(orig_s, orig_e)] = 10.0
+        return result
+
+    for orig_s, orig_e in binding_sites:
+        interaction_len = orig_e - orig_s
+
+        if strand == "+":
+            pos_in_sub = (orig_e - 1) - ctx_start
+        else:
+            pos_in_sub = (seq_len - orig_s - 1) - rev_start
+
+        idx_1based = pos_in_sub + 1
+
+        u_col = min(interaction_len, unpaired_prob)
+        if u_col < 1:
+            u_col = 1
+
+        energy_val = 10.0
+        if 0 < idx_1based < len(probs_matrix) and u_col < len(probs_matrix[idx_1based]):
+            p = probs_matrix[idx_1based][u_col]
+            if p is not None and p > 0:
+                import math
+
+                energy_val = -RT * math.log(p)
+                energy_val = int(round(energy_val * 10.0)) / 10.0
+
+        result[(orig_s, orig_e)] = energy_val
+
+    return result
+
+
 class GenomeAccessibilityService:
     """
     Service to pre-compute and query genomic accessibility profiles.
@@ -161,6 +239,7 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
+        workers: int = 1,
         progress_callback=None,
     ) -> Path:
         """
@@ -230,7 +309,6 @@ class GenomeAccessibilityService:
         # --- Step 2: Stream genome FASTA — process one chromosome at a time ---
         chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
 
-        RT = 0.616  # kcal/mol at 37°C
         all_results: list[dict] = []
 
         for chrom, chrom_seq in read_fasta(genome_path):
@@ -271,74 +349,60 @@ class GenomeAccessibilityService:
                 # Build a position→opening_energy map for this chrom/strand
                 pos_energy: dict[tuple[int, int], float] = {}
 
+                # Prepare island tasks for parallel/serial execution
+                island_tasks = []
                 for island_start, island_end in islands:
-                    # Add W-bp flanking context (clamped to sequence bounds)
                     ctx_start = max(0, island_start - window_size)
                     ctx_end = min(seq_len, island_end + window_size)
 
-                    # For minus strand, coordinates are reversed
                     if strand == "-":
                         rev_start = seq_len - ctx_end
                         rev_end = seq_len - ctx_start
                         island_subseq = strand_seq[rev_start:rev_end]
                     else:
+                        rev_start = 0
                         island_subseq = strand_seq[ctx_start:ctx_end]
 
-                    # T→U conversion for ViennaRNA
                     rna_seq = island_subseq.replace("T", "U").replace("t", "u")
 
-                    sub_len = len(rna_seq)
-                    w = min(window_size, sub_len)
-                    l_adj = min(max_span, sub_len)
+                    # Identify which binding sites fall in this island
+                    sites_in_island = [
+                        (s, e)
+                        for s, e in intervals
+                        if island_start <= s and e <= island_end
+                    ]
 
-                    try:
-                        probs_matrix = RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
-                    except Exception as e:
-                        logger.error(
-                            f"ViennaRNA error on {chrom} {strand} "
-                            f"island {island_start}-{island_end}: {e}"
+                    island_tasks.append(
+                        (
+                            rna_seq,
+                            sites_in_island,
+                            ctx_start,
+                            seq_len,
+                            strand,
+                            rev_start,
+                            window_size,
+                            max_span,
+                            unpaired_prob,
                         )
-                        # Default penalty for failed islands
-                        for s, e_val in zip(starts, ends):
-                            s0, e0 = int(s) - 1, int(e_val)
-                            if island_start <= s0 and e0 <= island_end:
-                                pos_energy[(s0, e0)] = 10.0
-                        continue
+                    )
 
-                    # Map each original binding site back to the island profile
-                    for orig_s, orig_e in intervals:
-                        if not (island_start <= orig_s and orig_e <= island_end):
-                            continue
+                # Fold islands (parallel or serial)
+                if workers > 1 and len(island_tasks) > 1:
+                    from concurrent.futures import (
+                        ProcessPoolExecutor,
+                        as_completed,
+                    )
 
-                        interaction_len = orig_e - orig_s
-
-                        # Position within the extracted subsequence
-                        if strand == "+":
-                            # 3'-end position within island context
-                            pos_in_sub = (orig_e - 1) - ctx_start
-                        else:
-                            # For minus strand, map to reversed coordinates
-                            # orig coords are on + strand, but profile is on - strand
-                            pos_in_sub = (seq_len - orig_s - 1) - rev_start
-
-                        # 1-based index for probs_matrix
-                        idx_1based = pos_in_sub + 1
-
-                        u_col = min(interaction_len, unpaired_prob)
-                        if u_col < 1:
-                            u_col = 1
-
-                        energy_val = 10.0  # Default penalty
-                        if 0 < idx_1based < len(probs_matrix) and u_col < len(
-                            probs_matrix[idx_1based]
-                        ):
-                            p = probs_matrix[idx_1based][u_col]
-                            if p is not None and p > 0:
-                                energy_val = -RT * float(np.log(p))
-                                # Quantize to 0.1 resolution
-                                energy_val = int(round(energy_val * 10.0)) / 10.0
-
-                        pos_energy[(orig_s, orig_e)] = energy_val
+                    with ProcessPoolExecutor(max_workers=workers) as pool:
+                        futures = {
+                            pool.submit(_fold_island, *task): i
+                            for i, task in enumerate(island_tasks)
+                        }
+                        for future in as_completed(futures):
+                            pos_energy.update(future.result())
+                else:
+                    for task in island_tasks:
+                        pos_energy.update(_fold_island(*task))
 
                 # Collect results for this chrom/strand
                 for row_idx in range(strand_sites.height):

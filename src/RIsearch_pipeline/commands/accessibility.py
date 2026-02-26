@@ -26,6 +26,12 @@ def run(
     unpaired_prob: int = typer.Option(
         30, "--unpaired", "-u", help="Unpaired probability length (u)"
     ),
+    workers: int = typer.Option(
+        1,
+        "--workers",
+        "-j",
+        help="Number of parallel workers for island folding (binding-site mode only).",
+    ),
 ):
     """
     Pre-compute accessibility profiles for a genome.
@@ -55,6 +61,7 @@ def run(
                 window_size=window_size,
                 max_span=max_span,
                 unpaired_prob=unpaired_prob,
+                workers=workers,
             )
             typer.echo(
                 f"Successfully computed binding-site accessibility: {result_path}"
