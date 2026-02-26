@@ -282,8 +282,8 @@ class GenomeAccessibilityService:
             raise AccessibilityError("Provide either risearch_dir or risearch_file")
 
         import polars as pl
-        import tempfile
-        import shutil
+        import pyarrow as pa
+        import pyarrow.parquet as pq
         from RIsearch_pipeline.services.helpers import (
             read_fasta,
             reverse_complement,
@@ -354,9 +354,18 @@ class GenomeAccessibilityService:
         chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
         n_chroms = len(chroms_in_predictions)
 
-        # --- Temp directory for per-batch Parquet shards ---
-        tmp_dir = tempfile.mkdtemp(prefix="risearch_acc_")
-        shard_idx = 0
+        # --- PyArrow ParquetWriter for streaming row-group writes ---
+        arrow_schema = pa.schema(
+            [
+                ("chrom", pa.string()),
+                ("start", pa.int32()),
+                ("end", pa.int32()),
+                ("strand", pa.string()),
+                ("opening_energy", pa.float64()),
+            ]
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = pq.ParquetWriter(str(output_path), arrow_schema)
         total_written = 0
 
         # Track overall chromosome progress
@@ -498,12 +507,10 @@ class GenomeAccessibilityService:
                         }
                     )
 
-                # Write this chrom/strand batch as a shard immediately
+                # Write this chrom/strand batch as a row group immediately
                 if chrom_results:
                     batch_df = pl.DataFrame(chrom_results)
-                    shard_path = Path(tmp_dir) / f"shard_{shard_idx:04d}.parquet"
-                    batch_df.write_parquet(shard_path)
-                    shard_idx += 1
+                    writer.write_table(batch_df.to_arrow().cast(arrow_schema))
                     total_written += len(chrom_results)
                     logger.info(
                         f"  Wrote {len(chrom_results)} results for "
@@ -519,27 +526,8 @@ class GenomeAccessibilityService:
                     description=f"Processing chromosomes ({chroms_done}/{n_chroms})",
                 )
 
-        # --- Step 3: Merge shards into final Parquet ---
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        shard_glob = str(Path(tmp_dir) / "shard_*.parquet")
-        if shard_idx > 0:
-            result_df = pl.scan_parquet(shard_glob).collect()
-            result_df.write_parquet(output_path)
-        else:
-            # No results — write empty Parquet with correct schema
-            pl.DataFrame(
-                {
-                    "chrom": pl.Series([], dtype=pl.Utf8),
-                    "start": pl.Series([], dtype=pl.Int32),
-                    "end": pl.Series([], dtype=pl.Int32),
-                    "strand": pl.Series([], dtype=pl.Utf8),
-                    "opening_energy": pl.Series([], dtype=pl.Float64),
-                }
-            ).write_parquet(output_path)
-
-        # Clean up temp shards
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
+        # --- Step 3: Finalize Parquet ---
+        writer.close()
         logger.info(
             f"Saved {total_written} binding site accessibility values to {output_path}"
         )
