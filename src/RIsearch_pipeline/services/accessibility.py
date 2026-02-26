@@ -227,26 +227,16 @@ class GenomeAccessibilityService:
         unique_sites = pl.concat(lazy_frames).unique().collect()
         logger.info(f"Found {unique_sites.height} unique binding site coordinates")
 
-        # --- Step 2: Group by chromosome ---
-        chroms_in_predictions = unique_sites["chrom"].unique().to_list()
-
-        # Load genome sequences as a dict (lazy — one at a time via generator)
-        genome_sequences: dict[str, str] = {}
-        for chrom, seq in read_fasta(genome_path):
-            if chrom in chroms_in_predictions:
-                genome_sequences[chrom] = seq
+        # --- Step 2: Stream genome FASTA — process one chromosome at a time ---
+        chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
 
         RT = 0.616  # kcal/mol at 37°C
         all_results: list[dict] = []
 
-        for chrom in chroms_in_predictions:
-            if chrom not in genome_sequences:
-                logger.warning(
-                    f"Chromosome {chrom} not found in genome FASTA, skipping"
-                )
+        for chrom, chrom_seq in read_fasta(genome_path):
+            if chrom not in chroms_in_predictions:
                 continue
 
-            chrom_seq = genome_sequences[chrom]
             seq_len = len(chrom_seq)
             chrom_sites = unique_sites.filter(pl.col("chrom") == chrom)
 
@@ -367,9 +357,7 @@ class GenomeAccessibilityService:
                         }
                     )
 
-            # Free chromosome sequence after processing
-            del genome_sequences[chrom]
-
+            # chrom_seq goes out of scope here — GC can reclaim
             if progress_callback:
                 progress_callback(advance=1, description=f"Processed {chrom}")
 
