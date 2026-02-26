@@ -32,6 +32,9 @@ def run(
         "-j",
         help="Number of parallel workers for island folding (binding-site mode only).",
     ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show detailed progress information."
+    ),
 ):
     """
     Pre-compute accessibility profiles for a genome.
@@ -41,34 +44,69 @@ def run(
     - Binding-site: computes only for predicted binding sites (--risearch-dir).
       This is ~25x faster and produces a compact Parquet file.
     """
+    from rich.console import Console
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        TaskProgressColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+
+    console = Console(stderr=True)
+
     if risearch_dir is not None:
         # --- Binding-site mode ---
         if not risearch_dir.is_dir():
-            typer.echo(f"Error: {risearch_dir} is not a directory", err=True)
+            console.print(f"[red]Error: {risearch_dir} is not a directory[/red]")
             raise typer.Exit(code=1)
 
-        # Ensure output has .parquet extension
         out_path = (
             output if output.suffix == ".parquet" else output / "accessibility.parquet"
         )
         service = GenomeAccessibilityService(out_path.parent)
 
+        console.print(f"\n[bold]Binding-site accessibility computation[/bold]")
+        console.print(f"  Genome:       {genome}")
+        console.print(f"  RIsearch dir: {risearch_dir}")
+        console.print(f"  Output:       {out_path}")
+        console.print(
+            f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
+        )
+        console.print(f"  Workers:      {workers}\n")
+
         try:
-            result_path = service.compute_binding_site_accessibility(
-                genome_path=genome,
-                risearch_dir=risearch_dir,
-                output_path=out_path,
-                window_size=window_size,
-                max_span=max_span,
-                unpaired_prob=unpaired_prob,
-                workers=workers,
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False,
+            ) as progress:
+                result_path = service.compute_binding_site_accessibility(
+                    genome_path=genome,
+                    risearch_dir=risearch_dir,
+                    output_path=out_path,
+                    window_size=window_size,
+                    max_span=max_span,
+                    unpaired_prob=unpaired_prob,
+                    workers=workers,
+                    progress=progress,
+                    verbose=verbose,
+                )
+
+            console.print(
+                f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]"
             )
-            typer.echo(
-                f"Successfully computed binding-site accessibility: {result_path}"
-            )
+
         except Exception as e:
             logger.exception("Failed to compute binding-site accessibility")
-            typer.echo(f"Error: {e}", err=True)
+            console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
     else:
         # --- Full-genome mode (existing behavior) ---

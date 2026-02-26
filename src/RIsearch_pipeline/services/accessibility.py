@@ -240,7 +240,8 @@ class GenomeAccessibilityService:
         max_span: int = 40,
         unpaired_prob: int = 30,
         workers: int = 1,
-        progress_callback=None,
+        progress=None,
+        verbose: bool = False,
     ) -> Path:
         """
         Compute accessibility only for regions with predicted binding sites.
@@ -291,6 +292,9 @@ class GenomeAccessibilityService:
         )
 
         # --- Step 1: Lazy scan to extract unique (chrom, start, end, strand) ---
+        if progress:
+            scan_task = progress.add_task("Scanning RIsearch files...", total=None)
+
         lazy_frames = []
         for f in all_files:
             lf = pl.scan_csv(f, separator="\t", has_header=False).select(
@@ -306,11 +310,28 @@ class GenomeAccessibilityService:
         unique_sites = pl.concat(lazy_frames).unique().collect()
         logger.info(f"Found {unique_sites.height} unique binding site coordinates")
 
+        if progress:
+            progress.update(
+                scan_task,
+                completed=True,
+                description=f"Scanned {len(all_files)} files → {unique_sites.height} unique sites",
+            )
+            progress.remove_task(scan_task)
+
         # --- Step 2: Stream genome FASTA — process one chromosome at a time ---
         chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
+        n_chroms = len(chroms_in_predictions)
 
         all_results: list[dict] = []
 
+        # Track overall chromosome progress
+        if progress:
+            chrom_task = progress.add_task(
+                f"Processing chromosomes (0/{n_chroms})",
+                total=n_chroms,
+            )
+            island_task = None  # Created per chrom/strand
+        chroms_done = 0
         for chrom, chrom_seq in read_fasta(genome_path):
             if chrom not in chroms_in_predictions:
                 continue
@@ -319,9 +340,14 @@ class GenomeAccessibilityService:
             chrom_sites = unique_sites.filter(pl.col("chrom") == chrom)
 
             logger.info(
-                f"Processing {chrom} ({seq_len} bp, "
+                f"Processing {chrom} ({seq_len:,} bp, "
                 f"{chrom_sites.height} binding sites)..."
             )
+            if progress:
+                progress.update(
+                    chrom_task,
+                    description=f"Processing {chrom} ({chrom_sites.height} sites)",
+                )
 
             for strand in ["+", "-"]:
                 strand_sites = chrom_sites.filter(pl.col("strand") == strand)
@@ -386,8 +412,15 @@ class GenomeAccessibilityService:
                         )
                     )
 
-                # Fold islands (parallel or serial)
-                if workers > 1 and len(island_tasks) > 1:
+                # Fold islands (parallel or serial) with progress tracking
+                n_tasks = len(island_tasks)
+                if progress:
+                    island_task = progress.add_task(
+                        f"  {chrom} {strand} strand: folding {n_tasks} islands",
+                        total=n_tasks,
+                    )
+
+                if workers > 1 and n_tasks > 1:
                     from concurrent.futures import (
                         ProcessPoolExecutor,
                         as_completed,
@@ -400,9 +433,17 @@ class GenomeAccessibilityService:
                         }
                         for future in as_completed(futures):
                             pos_energy.update(future.result())
+                            if progress:
+                                progress.advance(island_task)
                 else:
-                    for task in island_tasks:
+                    for i, task in enumerate(island_tasks):
                         pos_energy.update(_fold_island(*task))
+                        if progress:
+                            progress.advance(island_task)
+
+                if progress and island_task is not None:
+                    progress.remove_task(island_task)
+                    island_task = None
 
                 # Collect results for this chrom/strand
                 for row_idx in range(strand_sites.height):
@@ -422,8 +463,13 @@ class GenomeAccessibilityService:
                     )
 
             # chrom_seq goes out of scope here — GC can reclaim
-            if progress_callback:
-                progress_callback(advance=1, description=f"Processed {chrom}")
+            chroms_done += 1
+            if progress:
+                progress.update(
+                    chrom_task,
+                    advance=1,
+                    description=f"Processing chromosomes ({chroms_done}/{n_chroms})",
+                )
 
         # --- Step 3: Save as Parquet ---
         result_df = pl.DataFrame(all_results)
