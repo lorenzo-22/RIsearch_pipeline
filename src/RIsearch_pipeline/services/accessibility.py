@@ -415,8 +415,9 @@ class GenomeAccessibilityService:
                 f"Processing chromosomes (0/{n_chroms})",
                 total=n_chroms,
             )
-            island_task = None  # Created per chrom/strand
+            island_task = None  # Created per chromosome
         chroms_done = 0
+        total_islands = 0
         for chrom, chrom_seq in read_fasta(genome_path):
             if chrom not in chroms_in_predictions:
                 continue
@@ -434,6 +435,7 @@ class GenomeAccessibilityService:
                     description=f"Processing {chrom} ({chrom_sites.height} sites)",
                 )
 
+            all_island_tasks = []
             for strand in ["+", "-"]:
                 strand_sites = chrom_sites.filter(pl.col("strand") == strand)
                 if strand_sites.height == 0:
@@ -457,11 +459,7 @@ class GenomeAccessibilityService:
                 else:
                     strand_seq = chrom_seq
 
-                # Build a position→opening_energy map for this chrom/strand
-                pos_energy: dict[tuple[int, int], float] = {}
-
-                # Prepare island tasks for parallel/serial execution
-                island_tasks = []
+                # Prepare island folding tasks
                 for island_start, island_end in islands:
                     ctx_start = max(0, island_start - window_size)
                     ctx_end = min(seq_len, island_end + window_size)
@@ -476,61 +474,98 @@ class GenomeAccessibilityService:
 
                     rna_seq = island_subseq.replace("T", "U").replace("t", "u")
 
-                    # Identify which binding sites fall in this island
                     sites_in_island = [
                         (s, e)
                         for s, e in intervals
                         if island_start <= s and e <= island_end
                     ]
 
-                    island_tasks.append(
+                    all_island_tasks.append(
                         (
-                            rna_seq,
-                            sites_in_island,
-                            ctx_start,
-                            seq_len,
                             strand,
-                            rev_start,
-                            window_size,
-                            max_span,
-                            unpaired_prob,
+                            starts,
+                            ends,
+                            strand_sites,
+                            (
+                                rna_seq,
+                                sites_in_island,
+                                ctx_start,
+                                seq_len,
+                                strand,
+                                rev_start,
+                                window_size,
+                                max_span,
+                                unpaired_prob,
+                            ),
                         )
                     )
 
-                # Fold islands (parallel or serial) with progress tracking
-                n_tasks = len(island_tasks)
+            # Log total island count for this chromosome
+            n_tasks = len(all_island_tasks)
+            logger.info(f"  {chrom}: {n_tasks} total islands across both strands")
+            total_islands += n_tasks
+
+            if n_tasks == 0:
+                chroms_done += 1
                 if progress:
-                    island_task = progress.add_task(
-                        f"  {chrom} {strand} strand: folding {n_tasks} islands",
-                        total=n_tasks,
+                    progress.update(
+                        chrom_task,
+                        advance=1,
+                        description=f"Processing chromosomes ({chroms_done}/{n_chroms})",
                     )
+                continue
 
-                if workers > 1 and n_tasks > 1:
-                    from concurrent.futures import (
-                        ProcessPoolExecutor,
-                        as_completed,
-                    )
+            # --- Fold all islands (both strands, parallel or serial) ---
+            if progress:
+                island_task = progress.add_task(
+                    f"  {chrom}: folding {n_tasks} islands",
+                    total=n_tasks,
+                )
 
-                    with ProcessPoolExecutor(max_workers=workers) as pool:
-                        futures = {
-                            pool.submit(_fold_island, *task): i
-                            for i, task in enumerate(island_tasks)
-                        }
-                        for future in as_completed(futures):
-                            pos_energy.update(future.result())
-                            if progress:
-                                progress.advance(island_task)
-                else:
-                    for i, task in enumerate(island_tasks):
-                        pos_energy.update(_fold_island(*task))
+            # Collect pos_energy per strand
+            pos_energy_by_strand: dict[str, dict[tuple[int, int], float]] = {
+                "+": {},
+                "-": {},
+            }
+
+            if workers > 1 and n_tasks > 1:
+                from concurrent.futures import (
+                    ProcessPoolExecutor,
+                    as_completed,
+                )
+
+                with ProcessPoolExecutor(max_workers=workers) as pool:
+                    futures = {}
+                    for idx, (strand, _, _, _, fold_args) in enumerate(
+                        all_island_tasks
+                    ):
+                        fut = pool.submit(_fold_island, *fold_args)
+                        futures[fut] = (idx, strand)
+
+                    for future in as_completed(futures):
+                        idx, strand = futures[future]
+                        pos_energy_by_strand[strand].update(future.result())
                         if progress:
                             progress.advance(island_task)
+            else:
+                for idx, (strand, _, _, _, fold_args) in enumerate(all_island_tasks):
+                    pos_energy_by_strand[strand].update(_fold_island(*fold_args))
+                    if progress:
+                        progress.advance(island_task)
 
-                if progress and island_task is not None:
-                    progress.remove_task(island_task)
-                    island_task = None
+            if progress and island_task is not None:
+                progress.remove_task(island_task)
+                island_task = None
 
-                # Collect results for this chrom/strand into a batch
+            # --- Write results per strand ---
+            for strand in ["+", "-"]:
+                strand_sites = chrom_sites.filter(pl.col("strand") == strand)
+                if strand_sites.height == 0:
+                    continue
+                pos_energy = pos_energy_by_strand[strand]
+                starts = strand_sites["start"].to_numpy()
+                ends = strand_sites["end"].to_numpy()
+
                 chrom_results = []
                 for row_idx in range(strand_sites.height):
                     s_1based = int(starts[row_idx])
@@ -568,6 +603,7 @@ class GenomeAccessibilityService:
                 )
 
         # --- Step 3: Finalize Parquet ---
+        logger.info(f"Processed {total_islands} total islands across all chromosomes")
         writer.close()
         logger.info(
             f"Saved {total_written} binding site accessibility values to {output_path}"
