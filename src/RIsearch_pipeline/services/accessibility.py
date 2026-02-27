@@ -290,14 +290,12 @@ class GenomeAccessibilityService:
             merge_intervals,
         )
 
-        # --- Step 1: Extract unique (chrom, start, end, strand) ---
+        # --- Step 1: Build a LazyFrame and extract chromosome names ---
         if progress:
             scan_task = progress.add_task("Scanning RIsearch files...", total=None)
 
         if risearch_file:
             # Single file — auto-detect column layout
-            # 4-col: chrom, start, end, strand (pre-extracted)
-            # 8-col: siRNA_id, col2, col3, chrom, start, end, strand, energy
             import gzip
 
             opener = gzip.open if str(risearch_file).endswith(".gz") else open
@@ -308,35 +306,30 @@ class GenomeAccessibilityService:
             logger.info(f"Scanning {risearch_file.name} ({n_cols}-column format)...")
 
             if n_cols <= 4:
-                # Pre-extracted: columns are chrom, start, end, strand
-                unique_sites = (
-                    pl.scan_csv(risearch_file, separator="\t", has_header=False)
-                    .select(
-                        [
-                            pl.col("column_1").alias("chrom"),
-                            pl.col("column_2").cast(pl.Int32).alias("start"),
-                            pl.col("column_3").cast(pl.Int32).alias("end"),
-                            pl.col("column_4").alias("strand"),
-                        ]
-                    )
-                    .unique()
-                    .collect()
-                )
+                col_map = {
+                    "column_1": "chrom",
+                    "column_2": "start",
+                    "column_3": "end",
+                    "column_4": "strand",
+                }
             else:
-                # Raw RIsearch format: columns 4-7 are chrom, start, end, strand
-                unique_sites = (
-                    pl.scan_csv(risearch_file, separator="\t", has_header=False)
-                    .select(
-                        [
-                            pl.col("column_4").alias("chrom"),
-                            pl.col("column_5").cast(pl.Int32).alias("start"),
-                            pl.col("column_6").cast(pl.Int32).alias("end"),
-                            pl.col("column_7").alias("strand"),
-                        ]
-                    )
-                    .unique()
-                    .collect()
-                )
+                col_map = {
+                    "column_4": "chrom",
+                    "column_5": "start",
+                    "column_6": "end",
+                    "column_7": "strand",
+                }
+
+            base_lf = pl.scan_csv(
+                risearch_file, separator="\t", has_header=False
+            ).select(
+                [
+                    pl.col(list(col_map.keys())[0]).alias("chrom"),
+                    pl.col(list(col_map.keys())[1]).cast(pl.Int32).alias("start"),
+                    pl.col(list(col_map.keys())[2]).cast(pl.Int32).alias("end"),
+                    pl.col(list(col_map.keys())[3]).alias("strand"),
+                ]
+            )
             source_desc = risearch_file.name
         else:
             # Directory of per-siRNA files
@@ -355,7 +348,6 @@ class GenomeAccessibilityService:
             lazy_frames = []
             skipped = 0
             for f in all_files:
-                # Skip empty files (e.g., siRNAs with no hits)
                 if f.stat().st_size == 0:
                     skipped += 1
                     continue
@@ -371,31 +363,28 @@ class GenomeAccessibilityService:
 
             if skipped:
                 logger.info(f"Skipped {skipped} empty files")
-
             if not lazy_frames:
                 raise AccessibilityError("All RIsearch files are empty")
 
-            unique_sites = pl.concat(lazy_frames).unique().collect()
+            base_lf = pl.concat(lazy_frames)
             source_desc = f"{len(all_files)} files"
 
-        logger.info(
-            f"Found {unique_sites.height} unique binding site coordinates "
-            f"({unique_sites.estimated_size('mb'):.1f} MB)"
+        # Extract only the unique chromosome names (tiny: ~24 strings)
+        chroms_in_predictions = set(
+            base_lf.select("chrom").unique().collect()["chrom"].to_list()
         )
+        n_chroms = len(chroms_in_predictions)
+        logger.info(f"Found binding sites on {n_chroms} chromosomes from {source_desc}")
 
         if progress:
             progress.update(
                 scan_task,
                 completed=True,
-                description=f"Scanned {source_desc} → {unique_sites.height} unique sites",
+                description=f"Scanned {source_desc} → {n_chroms} chromosomes",
             )
             progress.remove_task(scan_task)
 
         # --- Step 2: Stream genome FASTA — process one chromosome at a time ---
-        chroms_in_predictions = set(unique_sites["chrom"].unique().to_list())
-        n_chroms = len(chroms_in_predictions)
-
-        # --- PyArrow ParquetWriter for streaming row-group writes ---
         arrow_schema = pa.schema(
             [
                 ("chrom", pa.string()),
@@ -409,25 +398,26 @@ class GenomeAccessibilityService:
         writer = pq.ParquetWriter(str(output_path), arrow_schema)
         total_written = 0
 
-        # Track overall chromosome progress
         if progress:
             chrom_task = progress.add_task(
                 f"Processing chromosomes (0/{n_chroms})",
                 total=n_chroms,
             )
-            island_task = None  # Created per chromosome
+            island_task = None
         chroms_done = 0
         total_islands = 0
         for chrom, chrom_seq in read_fasta(genome_path):
             if chrom not in chroms_in_predictions:
                 continue
 
+            # Lazy scan + filter for this chromosome only — collect just this chrom's sites
+            chrom_sites = base_lf.filter(pl.col("chrom") == chrom).unique().collect()
             seq_len = len(chrom_seq)
-            chrom_sites = unique_sites.filter(pl.col("chrom") == chrom)
 
             logger.info(
                 f"Processing {chrom} ({seq_len:,} bp, "
-                f"{chrom_sites.height} binding sites)..."
+                f"{chrom_sites.height} unique binding sites, "
+                f"{chrom_sites.estimated_size('mb'):.1f} MB)..."
             )
             if progress:
                 progress.update(
