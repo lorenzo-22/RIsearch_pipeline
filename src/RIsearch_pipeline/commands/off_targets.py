@@ -371,8 +371,6 @@ def run(
             acc_service = None
             precomputed_acc = None
             if accessibility_file:
-                import polars as pl
-
                 precomputed_acc = pl.read_parquet(accessibility_file)
                 console.print(
                     f"  [dim]Loaded {precomputed_acc.height} precomputed accessibility values[/dim]"
@@ -622,8 +620,6 @@ def run(
                 acc_service = None
                 precomputed_acc = None
                 if accessibility_file:
-                    import polars as pl
-
                     precomputed_acc = pl.read_parquet(accessibility_file)
                 elif accessibility_dir:
                     acc_service = GenomeAccessibilityService(
@@ -851,8 +847,6 @@ def run(
         temp_dir_obj = None
 
         if accessibility_file:
-            import polars as pl
-
             precomputed_acc = pl.read_parquet(accessibility_file)
             console.print(
                 f"  [dim]Loaded {precomputed_acc.height} precomputed accessibility values from {accessibility_file}...[/dim]"
