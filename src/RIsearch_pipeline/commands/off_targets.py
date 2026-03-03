@@ -303,7 +303,6 @@ def run(
         # Mode 1: Integrated RIsearch execution
         if is_running_risearch:
             from RIsearch_pipeline.services.risearch_service import RIsearchService
-            import tempfile
 
             risearch_service = RIsearchService()
 
@@ -826,7 +825,6 @@ def run(
         # Accessibility and Probability Calculation
         from RIsearch_pipeline.services.probability import ProbabilityService
         from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
-        import tempfile
 
         # Keep reference to temp dir object so it persists until function exit
         temp_dir_obj = None
