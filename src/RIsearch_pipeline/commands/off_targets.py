@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 import typer
 import polars as pl
 from typing import Optional
@@ -18,14 +19,45 @@ from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 console = Console()
 
 
+def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
+    """Downcast columns to minimize Arrow IPC file size.
+
+    - Coordinates: start/end → UInt32 (covers positions up to 4.3B)
+    - Strings: sirna_id, transcript_id, chrom, strand, gene_id → Categorical
+    - Floats: energy, opening_energy, dG_total, P_off_target, exp_value → Float32
+
+    Complexity: O(n) time, O(1) extra space.
+    """
+    casts = {}
+    for col in ["start", "end"]:
+        if col in df.columns:
+            casts[col] = pl.UInt32
+    for col in ["sirna_id", "transcript_id", "chrom", "strand", "gene_id"]:
+        if col in df.columns:
+            casts[col] = pl.Categorical
+    for col in [
+        "energy",
+        "opening_energy",
+        "dG_total",
+        "P_off_target",
+        "exp_value",
+    ]:
+        if col in df.columns:
+            casts[col] = pl.Float32
+    if casts:
+        df = df.cast(casts)
+    return df
+
+
 def run(
     risearch_file: Optional[Path] = typer.Option(
         None,
         "-r",
         "--risearch-file",
-        help="Path to pre-computed RIsearch output TSV file.",
+        help="Path to pre-computed RIsearch output file or directory of files.",
         exists=True,
         readable=True,
+        dir_okay=True,
     ),
     input_dir: Optional[Path] = typer.Option(
         None,
@@ -222,6 +254,16 @@ def run(
         "-b",
         help="Number of siRNAs to process per batch in chunk mode (default: 50).",
     ),
+    scratch_dir: Optional[Path] = typer.Option(
+        None,
+        "--scratch-dir",
+        help="Directory for intermediate Arrow IPC files. Defaults to system temp.",
+    ),
+    output_format: str = typer.Option(
+        "tsv",
+        "--output-format",
+        help="Final output format: 'tsv', 'csv', or 'parquet'.",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
@@ -235,20 +277,31 @@ def run(
 
     try:
         # Validate input options
+        # Handle the case where the user passes a directory to --risearch-file
+        if risearch_file is not None and risearch_file.is_dir():
+            input_dir = risearch_file
+            risearch_file = None
+
         if risearch_file is None and sirna_fasta is None and input_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Must provide either --risearch-file, --input-dir, OR --sirna-fasta"
             )
             raise typer.Exit(code=1)
 
-        if sirna_fasta is not None and target_fasta is None:
+        # Integrated RIsearch execution requires target_fasta
+        is_running_risearch = (
+            (sirna_fasta is not None)
+            and (risearch_file is None)
+            and (input_dir is None)
+        )
+        if is_running_risearch and target_fasta is None:
             console.print(
-                "[bold red]Error:[/bold red] --sirna-fasta requires --target-fasta"
+                "[bold red]Error:[/bold red] --sirna-fasta requires --target-fasta when running RIsearch dynamically"
             )
             raise typer.Exit(code=1)
 
         # Mode 1: Integrated RIsearch execution
-        if sirna_fasta is not None:
+        if is_running_risearch:
             from RIsearch_pipeline.services.risearch_service import RIsearchService
             import tempfile
 
@@ -375,113 +428,154 @@ def run(
                         alpha_gamma_pairs.append((a, g))
             alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
-            # Process in batches - stream results to disk to avoid memory accumulation
+            # Process in batches - write Arrow IPC intermediates to scratch disk
             num_batches = (len(all_files) + batch_size - 1) // batch_size
             total_rows = 0
-            header_written = False
 
             console.print(
                 f"  └─ Processing in {num_batches} batches of up to {batch_size} files"
             )
 
-            # Open output file for streaming writes if specified
-            output_handle = None
-            if output_file:
-                output_handle = open(output_file, "w")
+            # Resolve scratch directory (physical disk, not /dev/shm)
+            scratch_base = str(scratch_dir) if scratch_dir else None
 
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.completed}/{task.total}"),
-                TimeElapsedColumn(),
-                console=console,
-            ) as progress:
-                task = progress.add_task("Processing batches...", total=num_batches)
+            with tempfile.TemporaryDirectory(
+                dir=scratch_base, prefix="risearch_ipc_"
+            ) as tmp_scratch:
+                scratch_path = Path(tmp_scratch)
+                ipc_idx = 0
 
-                for batch_idx in range(num_batches):
-                    start_idx = batch_idx * batch_size
-                    end_idx = min(start_idx + batch_size, len(all_files))
-                    batch_files = all_files[start_idx:end_idx]
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.completed}/{task.total}"),
+                    TimeElapsedColumn(),
+                    console=console,
+                ) as progress:
+                    task = progress.add_task("Processing batches...", total=num_batches)
 
-                    # Load entire batch - Polars parallelizes via Rayon
-                    df_chunk = risearch_parser.load_directory_batch(
-                        input_dir, batch_files
-                    )
+                    for batch_idx in range(num_batches):
+                        start_idx = batch_idx * batch_size
+                        end_idx = min(start_idx + batch_size, len(all_files))
+                        batch_files = all_files[start_idx:end_idx]
 
-                    if sense_only:
-                        df_chunk = df_chunk.filter(pl.col("strand") == "+")
-
-                    if df_chunk.height == 0:
-                        progress.update(
-                            task, advance=1, description=f"Batch {batch_idx + 1}: empty"
+                        # Load entire batch - Polars parallelizes via Rayon
+                        df_chunk = risearch_parser.load_directory_batch(
+                            input_dir, batch_files
                         )
-                        continue
 
-                    # Stream through intersection to avoid memory accumulation
-                    if df_trans is not None and intersector is not None:
-                        # Use streaming intersection - process each sub-batch through full pipeline
-                        for intersect_batch in intersector.intersect_streaming(
-                            df_chunk, df_trans, mode=predictions_type
-                        ):
-                            if intersect_batch.height == 0:
-                                continue
+                        if sense_only:
+                            df_chunk = df_chunk.filter(pl.col("strand") == "+")
 
-                            # Calculate probabilities for this intersection batch
-                            result_batch, _ = (
+                        if df_chunk.height == 0:
+                            progress.update(
+                                task,
+                                advance=1,
+                                description=f"Batch {batch_idx + 1}: empty",
+                            )
+                            continue
+
+                        # Stream through intersection to avoid memory accumulation
+                        if df_trans is not None and intersector is not None:
+                            for intersect_batch in intersector.intersect_streaming(
+                                df_chunk, df_trans, mode=predictions_type
+                            ):
+                                if intersect_batch.height == 0:
+                                    continue
+
+                                result_batch, _ = (
+                                    prob_service.calculate_probabilities_per_sirna(
+                                        intersect_batch,
+                                        alpha_gamma_pairs=alpha_gamma_pairs,
+                                        theta_values=theta_vals,
+                                        on_target_expression=on_target_expression,
+                                    )
+                                )
+
+                                # Drop heavy intermediate columns before serialization
+                                drop_cols = [
+                                    c
+                                    for c in result_batch.columns
+                                    if c.startswith("boltzmann_weight")
+                                    or c.startswith("Z_sirna")
+                                    or c == "E_min"
+                                ]
+                                if drop_cols:
+                                    result_batch = result_batch.drop(drop_cols)
+
+                                # Downcast and write Arrow IPC to scratch disk
+                                result_batch = _downcast_schema(result_batch)
+                                ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
+                                result_batch.write_ipc(ipc_file)
+                                total_rows += result_batch.height
+                                ipc_idx += 1
+                                del result_batch, intersect_batch
+                        else:
+                            # No transcriptome - calculate probabilities on raw data
+                            df_chunk, _ = (
                                 prob_service.calculate_probabilities_per_sirna(
-                                    intersect_batch,
+                                    df_chunk,
                                     alpha_gamma_pairs=alpha_gamma_pairs,
                                     theta_values=theta_vals,
                                     on_target_expression=on_target_expression,
                                 )
                             )
 
-                            # Write immediately to disk
-                            if output_handle:
-                                csv_str = result_batch.write_csv(
-                                    include_header=not header_written
-                                )
-                                output_handle.write(csv_str)
-                                header_written = True
+                            # Drop heavy intermediate columns
+                            drop_cols = [
+                                c
+                                for c in df_chunk.columns
+                                if c.startswith("boltzmann_weight")
+                                or c.startswith("Z_sirna")
+                                or c == "E_min"
+                            ]
+                            if drop_cols:
+                                df_chunk = df_chunk.drop(drop_cols)
 
-                            total_rows += result_batch.height
-                            del result_batch, intersect_batch
-                    else:
-                        # No transcriptome - calculate probabilities on raw data
-                        df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
-                            df_chunk,
-                            alpha_gamma_pairs=alpha_gamma_pairs,
-                            theta_values=theta_vals,
-                            on_target_expression=on_target_expression,
+                            df_chunk = _downcast_schema(df_chunk)
+                            ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
+                            df_chunk.write_ipc(ipc_file)
+                            total_rows += df_chunk.height
+                            ipc_idx += 1
+
+                        # Free memory
+                        del df_chunk
+
+                        progress.update(
+                            task,
+                            advance=1,
+                            description=f"Batch {batch_idx + 1}/{num_batches}",
                         )
 
-                        if output_handle:
-                            csv_str = df_chunk.write_csv(
-                                include_header=not header_written
-                            )
-                            output_handle.write(csv_str)
-                            header_written = True
-
-                        total_rows += df_chunk.height
-
-                    # Free memory
-                    del df_chunk
-
-                    progress.update(
-                        task,
-                        advance=1,
-                        description=f"Batch {batch_idx + 1}/{num_batches}",
+                # Final merge: lazily scan all IPC files and write output
+                if ipc_idx > 0 and output_file:
+                    console.print(
+                        f"  └─ Merging {ipc_idx} intermediate files ({total_rows} rows)..."
                     )
+                    ipc_pattern = sorted(scratch_path.glob("batch_*.arrow"))
+                    lf = pl.scan_ipc(ipc_pattern, memory_map=True)
 
-            # Close output file
-            if output_handle:
-                output_handle.close()
-                console.print(
-                    f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{output_file}[/bold]"
-                )
-            elif total_rows == 0:
-                console.print("[yellow]Warning:[/yellow] No predictions to process")
+                    if output_format == "parquet":
+                        out_path = output_file.with_suffix(".parquet")
+                        lf.sink_parquet(out_path)
+                    else:
+                        sep = "\t" if output_format == "tsv" else ","
+                        suffix = ".tsv" if output_format == "tsv" else ".csv"
+                        out_path = output_file.with_suffix(suffix)
+                        final_df = lf.collect(streaming=True)
+                        final_df.write_csv(out_path, separator=sep)
+                        del final_df
+
+                    console.print(
+                        f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
+                    )
+                elif ipc_idx > 0:
+                    console.print(
+                        f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions (no output file specified)"
+                    )
+                elif total_rows == 0:
+                    console.print("[yellow]Warning:[/yellow] No predictions to process")
 
             return  # Exit after directory mode processing
 

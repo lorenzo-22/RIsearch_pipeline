@@ -169,16 +169,16 @@ class ProbabilityService:
 
         # Metadata collection
         metadata = {
-            "z_total": float(z_total),
-            "z_off_target": float(z_partial),
-            "w_on_target": float(w_on),
-            "dG_on_target": float(dG_total_on),
+            "z_total": z_total,
+            "z_off_target": z_partial,
+            "w_on_target": w_on,
+            "dG_on_target": dG_total_on,
             "has_on_target": bool(on_target_path and query_path),
         }
 
         # Add P_on to metadata if applicable
         if on_target_path and query_path:
-            metadata["p_on_target"] = float(w_on / z_total) if z_total > 0 else 0.0
+            metadata["p_on_target"] = w_on / z_total if z_total > 0 else 0.0
 
         return df, metadata
 
@@ -409,8 +409,8 @@ class ProbabilityService:
         z_stats = z_df.select(["sirna_id", "Z_sirna"]).to_dicts()
         metadata = {
             "n_sirnas": len(unique_sirnas),
-            "z_per_sirna": {row["sirna_id"]: float(row["Z_sirna"]) for row in z_stats},
-            "z_total": float(df["boltzmann_weight"].sum()),
+            "z_per_sirna": {row["sirna_id"]: row["Z_sirna"] for row in z_stats},
+            "z_total": df["boltzmann_weight"].sum(),
             "on_target_count": len(on_target_data) if on_target_data else 0,
         }
 
