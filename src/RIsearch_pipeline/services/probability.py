@@ -302,8 +302,8 @@ class ProbabilityService:
         df = df.join(min_energies, on="sirna_id", how="left")
 
         # Define list of calculations to perform
-        # format: (name_suffix, energy_expression_col)
-        calc_configs = [("", "dG_total")]
+        # format: (name_suffix, energy_expression_col, noacc_energy_expression_col)
+        calc_configs = [("", "dG_total", "energy")]
 
         # Prepare expressions for additional parameters
         if alpha_gamma_pairs:
@@ -314,6 +314,7 @@ class ProbabilityService:
 
                 suffix = f":alpha={alpha},gamma={gamma}"
                 col_name = f"dG_total{suffix}"
+                col_name_noacc = f"energy{suffix}"
 
                 # Logic: if energy < alpha * E_min -> use gamma * E_min + open
                 # otherwise -> use energy + open
@@ -321,64 +322,136 @@ class ProbabilityService:
                     pl.when(pl.col("energy") < alpha * pl.col("E_min"))
                     .then(gamma * pl.col("E_min") + pl.col("opening_energy"))
                     .otherwise(pl.col("energy") + pl.col("opening_energy"))
-                    .alias(col_name)
+                    .alias(col_name),
+                    pl.when(pl.col("energy") < alpha * pl.col("E_min"))
+                    .then(gamma * pl.col("E_min"))
+                    .otherwise(pl.col("energy"))
+                    .alias(col_name_noacc),
                 )
-                calc_configs.append((suffix, col_name))
+                calc_configs.append((suffix, col_name, col_name_noacc))
 
         if theta_values:
             for theta in theta_values:
                 suffix = f":theta={theta}"
                 col_name = f"dG_total{suffix}"
+                col_name_noacc = f"energy{suffix}"
 
                 # Logic: ((theta * (energy + 10)) - 10) + open
                 df = df.with_columns(
                     (
                         ((theta * (pl.col("energy") + 10.0)) - 10.0)
                         + pl.col("opening_energy")
-                    ).alias(col_name)
+                    ).alias(col_name),
+                    ((theta * (pl.col("energy") + 10.0)) - 10.0).alias(col_name_noacc),
                 )
-                calc_configs.append((suffix, col_name))
+                calc_configs.append((suffix, col_name, col_name_noacc))
 
         # 4. & 5. & 6. Calculate W, Z, and P for all configurations
         # We build a list of aggregations to do them all in one group_by pass for efficiency
 
         z_aggs = []
-        for suffix, dG_col in calc_configs:
+        for suffix, dG_col, dG_noacc_col in calc_configs:
             # W = Expr * exp(-dG / RT)
             weight_col = f"boltzmann_weight{suffix}"
+            weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
             df = df.with_columns(
-                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(weight_col)
+                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(
+                    weight_col
+                ),
+                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / RT).exp())).alias(
+                    weight_noacc_col
+                ),
             )
             # Z aggregation
             z_col = f"Z_sirna{suffix}"
+            z_noacc_col = f"Z_sirna_noacc{suffix}"
             z_aggs.append(pl.col(weight_col).sum().alias(z_col))
+            z_aggs.append(pl.col(weight_noacc_col).sum().alias(z_noacc_col))
 
         # Compute all Zs (parallelized reduction)
         z_df = df.group_by("sirna_id").agg(z_aggs)
 
         # Add on-target weights to Z for each siRNA
+        on_target_weight_metadata = {}
+
         if on_target_data:
             import numpy as np
 
-            on_target_weights = {}
-            for sirna_id, data in on_target_data.items():
-                dG_on = data["dG_total"]
-                w_on = on_target_expression * np.exp(-dG_on / RT)
-                on_target_weights[sirna_id] = w_on
+            # Dictionary of E_min per siRNA
+            min_e_dict = {
+                row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()
+            }
 
-            # Update Z_sirna to include on-target weight
-            z_df = z_df.with_columns(
-                [
-                    (
-                        pl.col("Z_sirna")
-                        + pl.col("sirna_id").replace_strict(
-                            on_target_weights, default=0.0
-                        )
-                    ).alias("Z_sirna")
-                ]
-            )
+            z_modifications = []
+
+            for suffix, dG_col, dG_noacc_col in calc_configs:
+                on_target_w = {}
+                on_target_w_noacc = {}
+
+                for sirna_id, data in on_target_data.items():
+                    orig_energy = data["energy"]
+                    orig_open = data.get("opening_energy", 0.0)
+                    e_min = min_e_dict.get(sirna_id, orig_energy)
+                    if orig_energy < e_min:
+                        e_min = orig_energy
+
+                    # Compute assigned energy based on configuration
+                    if suffix.startswith(":alpha="):
+                        parts = suffix.split(",")
+                        alpha = float(parts[0].split("=")[1])
+                        gamma = float(parts[1].split("=")[1])
+
+                        if orig_energy < alpha * e_min:
+                            assigned_e = gamma * e_min + orig_open
+                            assigned_e_noacc = gamma * e_min
+                        else:
+                            assigned_e = orig_energy + orig_open
+                            assigned_e_noacc = orig_energy
+                    elif suffix.startswith(":theta="):
+                        theta = float(suffix.split("=")[1])
+                        assigned_e = ((theta * (orig_energy + 10.0)) - 10.0) + orig_open
+                        assigned_e_noacc = (theta * (orig_energy + 10.0)) - 10.0
+                    else:
+                        assigned_e = orig_energy + orig_open
+                        assigned_e_noacc = orig_energy
+
+                    w_on = on_target_expression * np.exp(-assigned_e / RT)
+                    w_on_noacc = on_target_expression * np.exp(-assigned_e_noacc / RT)
+
+                    on_target_w[sirna_id] = w_on
+                    on_target_w_noacc[sirna_id] = w_on_noacc
+
+                    if sirna_id not in on_target_weight_metadata:
+                        on_target_weight_metadata[sirna_id] = {}
+                    on_target_weight_metadata[sirna_id][f"W_on{suffix}"] = w_on
+                    on_target_weight_metadata[sirna_id][f"W_on_noacc{suffix}"] = (
+                        w_on_noacc
+                    )
+
+                z_col = f"Z_sirna{suffix}"
+                z_noacc_col = f"Z_sirna_noacc{suffix}"
+
+                z_modifications.extend(
+                    [
+                        (
+                            pl.col(z_col)
+                            + pl.col("sirna_id").replace_strict(
+                                on_target_w, default=0.0
+                            )
+                        ).alias(z_col),
+                        (
+                            pl.col(z_noacc_col)
+                            + pl.col("sirna_id").replace_strict(
+                                on_target_w_noacc, default=0.0
+                            )
+                        ).alias(z_noacc_col),
+                    ]
+                )
+
+            z_df = z_df.with_columns(z_modifications)
+
             logger.info(
-                f"Added on-target weights for {len(on_target_weights)} siRNAs to partition functions"
+                f"Added on-target weights for {len(on_target_data)} siRNAs to partition functions"
             )
 
         # Join Zs back
@@ -386,7 +459,7 @@ class ProbabilityService:
 
         # Compute Probabilities for all configs
         probs_exprs = []
-        for suffix, _ in calc_configs:
+        for suffix, _, _ in calc_configs:
             weight_col = f"boltzmann_weight{suffix}"
             z_col = f"Z_sirna{suffix}"
             p_col = f"P_off_target{suffix}"
@@ -400,21 +473,68 @@ class ProbabilityService:
 
         df = df.with_columns(probs_exprs)
 
-        # Cleanup intermediate columns (optional, but good for memory)
-        # We verify by checking if dG_total is base dict
-        # We keep the base P_off_target and others.
+        # Collect metadata (FULL Z DATAFRAME)
+        z_stats = z_df.to_dicts()
+        z_stats_dict = {row["sirna_id"]: row for row in z_stats}
 
-        # Collect metadata (base Z)
-        # For metadata return, we use the base config Z
-        z_stats = z_df.select(["sirna_id", "Z_sirna"]).to_dicts()
         metadata = {
             "n_sirnas": len(unique_sirnas),
-            "z_per_sirna": {row["sirna_id"]: row["Z_sirna"] for row in z_stats},
-            "z_total": df["boltzmann_weight"].sum(),
+            "z_per_sirna": z_stats_dict,
+            "on_target_weights": on_target_weight_metadata,
             "on_target_count": len(on_target_data) if on_target_data else 0,
         }
 
         return df, metadata
+
+    def format_legacy_summary(
+        self,
+        sirna_id: str,
+        z_per_config: dict[str, float],
+        on_target_weights: dict[str, float],
+        alpha_gamma_pairs: list[tuple[float, float]],
+        theta_values: list[float],
+    ) -> str:
+        """Format the aggregated metadata into the exact legacy .off header block."""
+        lines = []
+        lines.append(f"# On-target info for {sirna_id} #")
+
+        suffixes = [("", 1.0, 1.0)]
+        for theta in theta_values or []:
+            suffixes.append((f":theta={theta}", theta, None))
+        for alpha, gamma in alpha_gamma_pairs or []:
+            if alpha == 1.0 and gamma == 1.0:
+                continue
+            suffixes.append((f":alpha={alpha},gamma={gamma}", alpha, gamma))
+
+        for suffix_info in suffixes:
+            suffix = suffix_info[0]
+
+            if suffix == "":
+                preamble = "# For alpha=1.0 and gamma=1.0;"
+            elif suffix.startswith(":theta="):
+                preamble = f"# For theta={suffix_info[1]};"
+            else:
+                preamble = f"# For alpha={suffix_info[1]} and gamma={suffix_info[2]};"
+
+            z = z_per_config.get(f"Z_sirna{suffix}", 0.0)
+            z_noacc = z_per_config.get(f"Z_sirna_noacc{suffix}", 0.0)
+            w_on = on_target_weights.get(f"W_on{suffix}", 0.0)
+            w_on_noacc = on_target_weights.get(f"W_on_noacc{suffix}", 0.0)
+
+            z_off = z - w_on
+            z_off_noacc = z_noacc - w_on_noacc
+
+            p_on = w_on / z if z > 0 else 0.0
+            p_on_noacc = w_on_noacc / z_noacc if z_noacc > 0 else 0.0
+
+            lines.append(
+                f"{preamble} P: {p_on!s}; P_noacc: {p_on_noacc!s}; "
+                f"Z: {z!s}; Z_noacc: {z_noacc!s}; "
+                f"Zoff: {z_off!s}; Zoff_noacc: {z_off_noacc!s}"
+            )
+
+        lines.append("## End of on-target info ##\n")
+        return "\n".join(lines)
 
     def calculate_legacy_format(
         self,

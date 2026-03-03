@@ -450,6 +450,10 @@ def run(
             # Resolve scratch directory (physical disk, not /dev/shm)
             scratch_base = str(scratch_dir) if scratch_dir else None
 
+            # Storage for global metadata
+            global_z_stats = {}
+            global_on_w_stats = {}
+
             with tempfile.TemporaryDirectory(
                 dir=scratch_base, prefix="risearch_ipc_"
             ) as tmp_scratch:
@@ -487,70 +491,59 @@ def run(
                             )
                             continue
 
-                        # Stream through intersection to avoid memory accumulation
+                        # Accumulate intersection for the full batch to compute probabilities correctly
                         if df_trans is not None and intersector is not None:
+                            intersected_chunks = []
                             for intersect_batch in intersector.intersect_streaming(
                                 df_chunk, df_trans, mode=predictions_type
                             ):
-                                if intersect_batch.height == 0:
-                                    continue
+                                if intersect_batch.height > 0:
+                                    intersected_chunks.append(intersect_batch)
 
-                                result_batch, _ = (
-                                    prob_service.calculate_probabilities_per_sirna(
-                                        intersect_batch,
-                                        alpha_gamma_pairs=alpha_gamma_pairs,
-                                        theta_values=theta_vals,
-                                        on_target_expression=on_target_expression,
-                                        on_target_map=on_target_map,
-                                    )
+                            if not intersected_chunks:
+                                progress.update(
+                                    task,
+                                    advance=1,
+                                    description=f"Batch {batch_idx + 1}/{num_batches}",
                                 )
+                                continue
 
-                                # Drop heavy intermediate columns before serialization
-                                drop_cols = [
-                                    c
-                                    for c in result_batch.columns
-                                    if c.startswith("boltzmann_weight")
-                                    or c.startswith("Z_sirna")
-                                    or c == "E_min"
-                                ]
-                                if drop_cols:
-                                    result_batch = result_batch.drop(drop_cols)
+                            df_chunk = pl.concat(intersected_chunks)
+                            del intersected_chunks
 
-                                # Downcast and write Arrow IPC to scratch disk
-                                result_batch = _downcast_schema(result_batch)
-                                ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
-                                result_batch.write_ipc(ipc_file)
-                                total_rows += result_batch.height
-                                ipc_idx += 1
-                                del result_batch, intersect_batch
-                        else:
-                            # No transcriptome - calculate probabilities on raw data
-                            df_chunk, _ = (
-                                prob_service.calculate_probabilities_per_sirna(
-                                    df_chunk,
-                                    alpha_gamma_pairs=alpha_gamma_pairs,
-                                    theta_values=theta_vals,
-                                    on_target_expression=on_target_expression,
-                                    on_target_map=on_target_map,
-                                )
+                        df_chunk, batch_metadata = (
+                            prob_service.calculate_probabilities_per_sirna(
+                                df_chunk,
+                                alpha_gamma_pairs=alpha_gamma_pairs,
+                                theta_values=theta_vals,
+                                on_target_expression=on_target_expression,
+                                on_target_map=on_target_map,
                             )
+                        )
 
-                            # Drop heavy intermediate columns
-                            drop_cols = [
-                                c
-                                for c in df_chunk.columns
-                                if c.startswith("boltzmann_weight")
-                                or c.startswith("Z_sirna")
-                                or c == "E_min"
-                            ]
-                            if drop_cols:
-                                df_chunk = df_chunk.drop(drop_cols)
+                        # Accumulate Z metadata
+                        for sid, z_dict in batch_metadata["z_per_sirna"].items():
+                            global_z_stats[sid] = z_dict
+                        for sid, w_dict in batch_metadata["on_target_weights"].items():
+                            global_on_w_stats[sid] = w_dict
 
-                            df_chunk = _downcast_schema(df_chunk)
-                            ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
-                            df_chunk.write_ipc(ipc_file)
-                            total_rows += df_chunk.height
-                            ipc_idx += 1
+                        # Drop heavy intermediate columns before serialization
+                        drop_cols = [
+                            c
+                            for c in df_chunk.columns
+                            if c.startswith("boltzmann_weight")
+                            or c.startswith("Z_sirna")
+                            or c == "E_min"
+                        ]
+                        if drop_cols:
+                            df_chunk = df_chunk.drop(drop_cols)
+
+                        # Downcast and write Arrow IPC to scratch disk
+                        df_chunk = _downcast_schema(df_chunk)
+                        ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
+                        df_chunk.write_ipc(ipc_file)
+                        total_rows += df_chunk.height
+                        ipc_idx += 1
 
                         # Free memory
                         del df_chunk
@@ -582,6 +575,24 @@ def run(
 
                     console.print(
                         f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
+                    )
+
+                    # Write .summary files next to the output_file's directory
+                    out_dir = output_file.parent
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    for sid in global_z_stats:
+                        summary_text = prob_service.format_legacy_summary(
+                            sid,
+                            global_z_stats[sid],
+                            global_on_w_stats.get(sid, {}),
+                            alpha_gamma_pairs,
+                            theta_vals,
+                        )
+                        summary_file = out_dir / f"{sid}.summary"
+                        summary_file.write_text(summary_text)
+
+                    console.print(
+                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
                     )
                 elif ipc_idx > 0:
                     console.print(
@@ -681,6 +692,10 @@ def run(
                             alpha_gamma_pairs.append((a, g))
                 alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
+                # Storage for global metadata
+                global_z_stats = {}
+                global_on_w_stats = {}
+
                 # Step 2: Process siRNAs in batches
                 all_results = []
                 num_batches = (
@@ -739,13 +754,21 @@ def run(
                             }
 
                         # Calculate probabilities - Polars parallelizes across all rows
-                        df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
-                            df_chunk,
-                            alpha_gamma_pairs=alpha_gamma_pairs,
-                            theta_values=theta_vals,
-                            on_target_map=batch_map if batch_map else None,
-                            on_target_expression=on_target_expression,
+                        df_chunk, batch_metadata = (
+                            prob_service.calculate_probabilities_per_sirna(
+                                df_chunk,
+                                alpha_gamma_pairs=alpha_gamma_pairs,
+                                theta_values=theta_vals,
+                                on_target_map=batch_map if batch_map else None,
+                                on_target_expression=on_target_expression,
+                            )
                         )
+
+                        # Accumulate metadata
+                        for sid, z_dict in batch_metadata["z_per_sirna"].items():
+                            global_z_stats[sid] = z_dict
+                        for sid, w_dict in batch_metadata["on_target_weights"].items():
+                            global_on_w_stats[sid] = w_dict
 
                         all_results.append(df_chunk)
                         progress.update(
@@ -769,6 +792,24 @@ def run(
                     df.write_csv(output_file, separator="\t")
                     console.print(
                         f"[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
+                    )
+
+                    # Write .summary files
+                    out_dir = output_file.parent
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    for sid in global_z_stats:
+                        summary_text = prob_service.format_legacy_summary(
+                            sid,
+                            global_z_stats[sid],
+                            global_on_w_stats.get(sid, {}),
+                            alpha_gamma_pairs,
+                            theta_vals,
+                        )
+                        summary_file = out_dir / f"{sid}.summary"
+                        summary_file.write_text(summary_text)
+
+                    console.print(
+                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
                     )
                 else:
                     console.print(df.head(10))
@@ -820,7 +861,7 @@ def run(
             )
 
             if verbose:
-                console.print(f"[dim]--- Transcriptome Data (First 5 rows) ---[/dim]")
+                console.print("[dim]--- Transcriptome Data (First 5 rows) ---[/dim]")
                 console.print(df_trans.head(5))
 
             summary_trans = trans_parser.summary(df_trans)
@@ -994,6 +1035,23 @@ def run(
                 on_target_map=on_target_map if on_target_map else None,
                 on_target_expression=on_target_expression,
             )
+
+            # Write .summary files if output_file is provided
+            if output_file:
+                out_dir = output_file.parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                global_z_stats = meta["z_per_sirna"]
+                global_on_w_stats = meta["on_target_weights"]
+                for sid in global_z_stats:
+                    summary_text = prob_service.format_legacy_summary(
+                        sid,
+                        global_z_stats[sid],
+                        global_on_w_stats.get(sid, {}),
+                        alpha_gamma_pairs,
+                        theta_vals,
+                    )
+                    summary_file = out_dir / f"{sid}.summary"
+                    summary_file.write_text(summary_text)
 
             # Display per-siRNA Z summary
             console.print("  └─ Computing per-siRNA Boltzmann weights...")
