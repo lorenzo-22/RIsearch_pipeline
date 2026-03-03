@@ -193,7 +193,7 @@ def run(
         None,
         "-oi",
         "--on-target-ids",
-        help="File with on-target transcript IDs (one per line), ordered to match siRNA order.",
+        help="TSV file mapping siRNA IDs to on-target transcript IDs (sirna_id \\t transcript_id).",
         exists=True,
         readable=True,
     ),
@@ -413,6 +413,20 @@ def run(
                     f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
                 )
 
+            # Parse on-target map
+            on_target_map = {}
+            if on_target_ids_file is not None:
+                with open(on_target_ids_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            parts = line.split("\t")
+                            if len(parts) >= 2:
+                                on_target_map[parts[0]] = parts[1]
+                console.print(
+                    f"  [dim]Loaded {len(on_target_map)} on-target mappings[/dim]"
+                )
+
             # Parse parameter lists
             alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
             gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
@@ -489,6 +503,7 @@ def run(
                                         alpha_gamma_pairs=alpha_gamma_pairs,
                                         theta_values=theta_vals,
                                         on_target_expression=on_target_expression,
+                                        on_target_map=on_target_map,
                                     )
                                 )
 
@@ -518,6 +533,7 @@ def run(
                                     alpha_gamma_pairs=alpha_gamma_pairs,
                                     theta_values=theta_vals,
                                     on_target_expression=on_target_expression,
+                                    on_target_map=on_target_map,
                                 )
                             )
 
@@ -644,13 +660,16 @@ def run(
                         f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
                     )
 
-                # Parse on-target IDs file
-                on_target_ids_list = []
+                # Parse on-target IDs map
+                on_target_map = {}
                 if on_target_ids_file is not None:
                     with open(on_target_ids_file, "r") as f:
-                        on_target_ids_list = [
-                            line.strip() for line in f if line.strip()
-                        ]
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                parts = line.split("\t")
+                                if len(parts) >= 2:
+                                    on_target_map[parts[0]] = parts[1]
 
                 # Parse parameter lists
                 alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
@@ -715,18 +734,20 @@ def run(
                             )
 
                         # Build on-target map for all siRNAs in this batch
-                        on_target_map = {}
-                        for i, sid in enumerate(batch_sirnas):
-                            global_idx = start_idx + i
-                            if global_idx < len(on_target_ids_list):
-                                on_target_map[sid] = on_target_ids_list[global_idx]
+                        batch_map = None
+                        if on_target_map:
+                            batch_map = {
+                                sid: on_target_map.get(sid)
+                                for sid in batch_sirnas
+                                if sid in on_target_map
+                            }
 
                         # Calculate probabilities - Polars parallelizes across all rows
                         df_chunk, _ = prob_service.calculate_probabilities_per_sirna(
                             df_chunk,
                             alpha_gamma_pairs=alpha_gamma_pairs,
                             theta_values=theta_vals,
-                            on_target_map=on_target_map if on_target_map else None,
+                            on_target_map=batch_map if batch_map else None,
                             on_target_expression=on_target_expression,
                         )
 
