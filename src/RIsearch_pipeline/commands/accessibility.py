@@ -34,7 +34,7 @@ def run(
         1,
         "--workers",
         "-j",
-        help="Number of parallel workers for island folding (binding-site mode only).",
+        help="Number of parallel workers for chromosome/island folding.",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Show detailed progress information."
@@ -76,7 +76,7 @@ def run(
         service = GenomeAccessibilityService(out_path.parent)
 
         source = risearch_dir or risearch_file
-        console.print(f"\n[bold]Binding-site accessibility computation[/bold]")
+        console.print("\n[bold]Binding-site accessibility computation[/bold]")
         console.print(f"  Genome:       {genome}")
         console.print(f"  Input:        {source}")
         console.print(f"  Output:       {out_path}")
@@ -118,19 +118,45 @@ def run(
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
     else:
-        # --- Full-genome mode (existing behavior) ---
+        # --- Full-genome mode ---
+        output.mkdir(parents=True, exist_ok=True)
         service = GenomeAccessibilityService(output)
+
+        console.print("\n[bold]Full-genome accessibility computation[/bold]")
+        console.print(f"  Genome:       {genome}")
+        console.print(f"  Output dir:   {output}")
+        console.print(
+            f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
+        )
+        console.print(f"  Workers:      {workers}\n")
+
         try:
-            results = service.compute_genome_accessibility(
-                genome,
-                window_size=window_size,
-                max_span=max_span,
-                unpaired_prob=unpaired_prob,
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False,
+            ) as prog:
+                results = service.compute_genome_accessibility(
+                    genome,
+                    window_size=window_size,
+                    max_span=max_span,
+                    unpaired_prob=unpaired_prob,
+                    workers=workers,
+                    progress=prog,
+                )
+
+            console.print(
+                f"\n[green bold]✓[/green bold] Processed {len(results)} chromosome(s)"
             )
-            typer.echo(f"Successfully processed {len(results)} sequences.")
             for chrom, path in results.items():
-                typer.echo(f"  {chrom}: {path}")
+                console.print(f"  {chrom}: [cyan]{path}[/cyan]")
+
         except Exception as e:
             logger.exception("Failed to compute accessibility")
-            typer.echo(f"Error: {e}", err=True)
+            console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)

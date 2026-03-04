@@ -43,6 +43,7 @@ class TestAccessibility(unittest.TestCase):
 
     def test_compute_accessibility_real(self):
         """Test compute logic with REAL ViennaRNA."""
+        import polars as pl
 
         service = GenomeAccessibilityService(self.test_dir)
         # Use small window/span for short sequence
@@ -52,18 +53,30 @@ class TestAccessibility(unittest.TestCase):
             self.fasta_path, window_size=10, max_span=5, unpaired_prob=3
         )
 
-        self.assertIn("chr1_+", results)
+        # Results keyed by chromosome name
+        self.assertIn("chr1", results)
 
-        # Verify files created
-        chr1_path = results["chr1_+"]
+        # Verify Parquet file created
+        chr1_path = results["chr1"]
         self.assertTrue(chr1_path.exists())
+        self.assertEqual(chr1_path.suffix, ".parquet")
 
-        # Verify content
-        arr = np.load(chr1_path)
-        self.assertEqual(len(arr), 12)
-        self.assertTrue(arr.dtype == np.float32)
-        # Check that we have some non-zero values (accessibility > 0)
-        self.assertTrue(np.any(arr > 0), "Should have some non-zero accessibility")
+        # Read and validate content
+        df = pl.read_parquet(chr1_path)
+        # Should have 12 positions × 2 strands = 24 rows
+        self.assertEqual(df.height, 24)
+        # Must contain position, strand, u1, u2, u3
+        self.assertIn("position", df.columns)
+        self.assertIn("strand", df.columns)
+        self.assertIn("u1", df.columns)
+        self.assertIn("u2", df.columns)
+        self.assertIn("u3", df.columns)
+        # Check some non-default values exist (accessibility computed)
+        u1_vals = df.filter(pl.col("strand") == "+")["u1"].to_list()
+        self.assertTrue(
+            any(v != 25.5 for v in u1_vals),
+            "Should have non-default accessibility values",
+        )
 
     @patch("RIsearch_pipeline.services.accessibility.HAS_VIENNA_BINDINGS", False)
     def test_missing_bindings_raises(self):

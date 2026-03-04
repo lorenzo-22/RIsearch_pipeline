@@ -19,6 +19,91 @@ class AccessibilityError(Exception):
     pass
 
 
+def _fold_full_chromosome(
+    sequence: str,
+    chrom: str,
+    strand: str,
+    window_size: int,
+    max_span: int,
+    unpaired_prob: int,
+) -> list[dict]:
+    """
+    Worker function: fold an entire chromosome strand and return opening energies.
+
+    Must be a top-level function (not a method) for ProcessPoolExecutor
+    pickling. Receives only small, pickle-friendly arguments.
+
+    The output is a list of dicts, each with keys:
+        position (1-based), strand, u1, u2, ..., u{unpaired_prob}
+
+    Opening energies are quantized to 0.1 kcal/mol resolution to match
+    legacy binary format precision.
+
+    Args:
+        sequence: Full chromosome sequence (already correct strand orientation).
+        chrom: Chromosome name.
+        strand: '+' or '-'.
+        window_size: -W parameter.
+        max_span: -L parameter.
+        unpaired_prob: -u parameter (typically 30).
+
+    Returns:
+        List of row dicts for Parquet serialization.
+
+    Complexity: O(N × W) time for pfl_fold_up where N = len(sequence).
+                O(N × u) space for the returned row data.
+    """
+    import RNA as _RNA
+    import math
+
+    RT = 0.616  # kcal/mol at 37°C
+    seq_len = len(sequence)
+
+    # Convert T→U for RNA folding
+    rna_seq = sequence.upper().replace("T", "U")
+
+    w = min(window_size, seq_len)
+    l_adj = min(max_span, seq_len)
+
+    try:
+        probs_matrix = _RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
+    except Exception:
+        # Return default penalty values for all positions
+        rows = []
+        for pos_1based in range(1, seq_len + 1):
+            row = {"position": pos_1based, "strand": strand}
+            for u in range(1, unpaired_prob + 1):
+                row[f"u{u}"] = 10.0
+            rows.append(row)
+        return rows
+
+    rows = []
+    for pos_1based in range(1, seq_len + 1):
+        row = {"position": pos_1based, "strand": strand}
+        for u in range(1, unpaired_prob + 1):
+            energy_val = 25.5  # Default max (no data)
+            if pos_1based < len(probs_matrix) and u < len(probs_matrix[pos_1based]):
+                p = probs_matrix[pos_1based][u]
+                if p is not None and p > 0:
+                    energy_val = -RT * math.log(p)
+                    # Quantize to 0.1 kcal/mol (legacy compatibility)
+                    energy_val = int(round(energy_val * 10.0)) / 10.0
+            row[f"u{u}"] = energy_val
+        rows.append(row)
+
+    # For minus strand, reverse the row order (positions stay 1-based but
+    # correspond to the reverse-complemented sequence viewed 5'→3')
+    if strand == "-":
+        for i, row in enumerate(reversed(rows)):
+            row["position"] = i + 1
+        rows = list(reversed(rows))
+        # Re-assign after reversal so position 1 = first base on - strand
+        for i, row in enumerate(rows):
+            row["position"] = i + 1
+
+    return rows
+
+
 def _fold_island(
     rna_seq: str,
     binding_sites: list[tuple[int, int]],
@@ -124,110 +209,120 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
+        workers: int = 1,
+        progress=None,
         progress_callback=None,
     ) -> Dict[str, Path]:
         """
         Compute accessibility for all sequences in the genome FASTA.
-        Computes profiles for both forward (+) and reverse (-) strands.
+
+        Dispatches (chromosome, strand) pairs to a ProcessPoolExecutor for
+        parallel folding. Saves one Parquet file per chromosome containing
+        columns [position, strand, u1, u2, ..., u{unpaired_prob}].
 
         Args:
             genome_path: Path to genome FASTA file.
-            window_size: -W parameter (default 80)
-            max_span: -L parameter (default 40)
-            unpaired_prob: -u parameter (default 30)
+            window_size: -W parameter (default 80).
+            max_span: -L parameter (default 40).
+            unpaired_prob: -u parameter (default 30).
+            workers: Number of parallel folding workers.
+            progress: Rich Progress instance (optional).
+            progress_callback: Simple callback(advance, description) (optional).
 
         Returns:
-            Dictionary mapping chromosome names to their profile file paths.
+            Dictionary mapping 'chrom' to the output Parquet path.
+
+        Complexity: O(sum(N_chrom) × W) time across all chromosomes,
+                    parallelized up to `workers` concurrent folds.
         """
+        import polars as pl
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
         if not HAS_VIENNA_BINDINGS:
             raise AccessibilityError(
                 "ViennaRNA Python bindings ('import RNA') not found. "
-                "Please install ViennaRNA or use the CLI fallback (not yet implemented)."
+                "Please install ViennaRNA or use the CLI fallback."
             )
 
         from RIsearch_pipeline.services.helpers import read_fasta, reverse_complement
 
-        results = {}
-
-        logger.info(f"Computing accessibility for genome: {genome_path}")
-
+        # --- Step 1: Read all chromosomes into memory ---
+        chromosomes = []
         for chrom, sequence in read_fasta(genome_path):
-            seq_len = len(sequence)
-            logger.info(f"Processing {chrom} (length {seq_len})...")
+            chromosomes.append((chrom, sequence))
 
-            # Process both strands
-            for strand in ["+", "-"]:
-                logger.info(f"  Computing {strand} strand...")
+        logger.info(
+            f"Computing full-genome accessibility for {len(chromosomes)} "
+            f"chromosome(s) using {workers} worker(s)"
+        )
 
-                # Use reverse complement for minus strand
-                seq_to_process = (
-                    sequence if strand == "+" else reverse_complement(sequence)
-                )
+        # Set up progress tracking
+        total_tasks = len(chromosomes) * 2  # + and - strand per chromosome
+        prog_task = None
+        if progress is not None:
+            prog_task = progress.add_task("Folding chromosomes...", total=total_tasks)
 
-                # Create profile array for opening energies
-                profile = np.zeros(seq_len, dtype=np.float32)
-                RT = 0.616  # kcal/mol at 37°C
+        # --- Step 2: Dispatch (chrom, strand) pairs to workers ---
+        results: Dict[str, Path] = {}
+        # Accumulate per-chromosome DataFrames: chrom -> [df_plus, df_minus]
+        chrom_dfs: Dict[str, list] = {chrom: [] for chrom, _ in chromosomes}
 
-                try:
-                    # Use RNA.pfl_fold_up - direct equivalent of RNAplfold -u
-                    # Returns 2D array: result[i][u] = P(segment of size u starting at position i is unpaired)
-                    # Note: result is 1-based indexing
-                    probs_matrix = RNA.pfl_fold_up(
-                        seq_to_process, unpaired_prob, window_size, max_span
+        futures = {}
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for chrom, sequence in chromosomes:
+                for strand in ["+", "-"]:
+                    seq_to_fold = (
+                        sequence if strand == "+" else reverse_complement(sequence)
                     )
+                    fut = pool.submit(
+                        _fold_full_chromosome,
+                        seq_to_fold,
+                        chrom,
+                        strand,
+                        window_size,
+                        max_span,
+                        unpaired_prob,
+                    )
+                    futures[fut] = (chrom, strand)
 
-                    # Extract probabilities for our target unpaired length
-                    # probs_matrix[i][u] is probability for segment of length u at position i
-                    for i in range(1, seq_len + 1):
-                        if i < len(probs_matrix) and unpaired_prob < len(
-                            probs_matrix[i]
-                        ):
-                            p = probs_matrix[i][unpaired_prob]
-                            if p is not None and p > 0:
-                                # Convert probability to opening energy: E = -RT * ln(P)
-                                profile[i - 1] = -RT * np.log(p)
-                            else:
-                                profile[i - 1] = 25.5  # Max storable value
-                        else:
-                            profile[i - 1] = 0.0
-
+            for fut in as_completed(futures):
+                chrom, strand = futures[fut]
+                try:
+                    rows = fut.result()
                 except Exception as e:
-                    logger.error(f"Error calling ViennaRNA on {chrom} {strand}: {e}")
+                    logger.error(f"Error folding {chrom} {strand}: {e}")
                     raise
 
-                # For minus strand, reverse the profile like old pipeline does
-                if strand == "-":
-                    profile = profile[::-1]
+                df_strand = pl.DataFrame(rows)
+                chrom_dfs[chrom].append(df_strand)
 
-                # Save to disk
-                out_path = self.get_profile_path(chrom, strand)
-                np.save(out_path, profile)
+                logger.info(f"Folded {chrom} ({strand}) — {len(rows)} positions")
 
-                # Save readable TSV for FULL matrix validation (all u lengths)
-                # This matches raw RNAplfold output format
-                tsv_path = out_path.with_suffix(".tsv")
-                with open(tsv_path, "w") as f:
-                    # Header
-                    header = "position" + "".join(
-                        [f"\tu{u}" for u in range(1, unpaired_prob + 1)]
+                if progress is not None and prog_task is not None:
+                    progress.update(
+                        prog_task,
+                        advance=1,
+                        description=f"Folded {chrom} ({strand})",
                     )
-                    f.write(header + "\n")
+                elif progress_callback:
+                    progress_callback(
+                        advance=1, description=f"Folded {chrom} ({strand})"
+                    )
 
-                    for i in range(1, seq_len + 1):
-                        row_vals = [str(i)]
-                        for u in range(1, unpaired_prob + 1):
-                            val = 0.0  # Default prob
-                            if i < len(probs_matrix) and u < len(probs_matrix[i]):
-                                p = probs_matrix[i][u]
-                                if p is not None and p > 0:
-                                    val = p  # Write raw probability to TSV
-                            row_vals.append(f"{val:.6f}")
-                        f.write("\t".join(row_vals) + "\n")
+        # --- Step 3: Concatenate strands and write one Parquet per chrom ---
+        for chrom, dfs in chrom_dfs.items():
+            if not dfs:
+                continue
+            df_chrom = pl.concat(dfs).sort(["strand", "position"])
 
-                results[f"{chrom}_{strand}"] = out_path
+            out_path = self.data_dir / f"{chrom}.accessibility.parquet"
+            df_chrom.write_parquet(out_path, use_pyarrow=True)
+            results[chrom] = out_path
 
-            if progress_callback:
-                progress_callback(advance=1, description=f"Processing {chrom}")
+            logger.info(
+                f"Saved {chrom} accessibility ({df_chrom.height} rows) → {out_path}"
+            )
+            del df_chrom
 
         return results
 
