@@ -986,13 +986,19 @@ class GenomeAccessibilityService:
 
         # 3b. Legacy open/rev naming (open.acc.bin / rev.open.acc.bin)
         if strand == "+":
-            for candidate in self.data_dir.glob(f"{chrom}*.open.acc.bin"):
-                if "rev.open.acc.bin" not in candidate.name:
-                    return candidate
+            cand1 = self.data_dir / f"{chrom}.open.acc.bin"
+            if cand1.exists():
+                return cand1
+            cand2 = self.data_dir / f"{chrom}_open.acc.bin"
+            if cand2.exists():
+                return cand2
         else:
-            candidates_rev = list(self.data_dir.glob(f"{chrom}*rev.open.acc.bin"))
-            if candidates_rev:
-                return candidates_rev[0]
+            cand1 = self.data_dir / f"{chrom}.rev.open.acc.bin"
+            if cand1.exists():
+                return cand1
+            cand2 = self.data_dir / f"{chrom}_rev.open.acc.bin"
+            if cand2.exists():
+                return cand2
 
         # 4. Legacy Text (openen)
         # e.g. chr1_0_75631_openen
