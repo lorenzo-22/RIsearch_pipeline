@@ -189,27 +189,36 @@ class ProbabilityService:
         theta_values: Optional[list[float]] = None,
         on_target_map: Optional[dict[str, str]] = None,
         on_target_expression: float = 1000.0,
+        on_target_fasta_data: Optional[dict[str, dict]] = None,
     ) -> Tuple[pl.DataFrame, Dict]:
         """
         Calculate P(OT) per siRNA using per-siRNA partition functions.
 
-        When processing multiple siRNAs, each siRNA should have its own partition
-        function Z. This method uses native Polars group_by operations for
-        efficient parallel computation.
+        Two on-target modes:
+
+        1. **In-predictions mode** (on_target_map provided, no fasta_data):
+           Finds on-target binding sites within the predictions by gene/transcript
+           ID matching. Rows stay in the DataFrame and use their BED expression.
+           Matches old pipeline behavior.
+
+        2. **FASTA mode** (on_target_fasta_data provided):
+           On-target energy is computed separately (from FASTA + RIsearch/ViennaRNA).
+           A fixed on_target_expression is used. The on-target weight is added
+           to Z as a separate term.
 
         Args:
             df: DataFrame with predictions.
             alpha_gamma_pairs: List of (alpha, gamma) tuples for clamping.
             theta_values: List of theta scaling values.
-            on_target_map: Mapping of siRNA_id -> on_target_transcript_id.
-            on_target_expression: Expression level for on-targets (default 1000.0).
-
-        Formula per siRNA:
-          Z_s = Sum_i(Expr_i * exp(-dG_total_i / RT)) + W_on_s
-          P_s(t) = (Expr_t * exp(-dG_total_t / RT)) / Z_s
+            on_target_map: Mapping of siRNA_id -> on_target_gene_or_transcript_id.
+            on_target_expression: Expression for FASTA mode on-targets (default 1000.0).
+            on_target_fasta_data: Dict of {siRNA_id: {energy, opening_energy}} from
+                separate FASTA computation. When provided, activates FASTA mode.
 
         Returns:
             Tuple of (DataFrame with P_off_target per siRNA, metadata dict).
+
+        Complexity: O(N) time where N = number of predictions.
         """
         if "energy" not in df.columns:
             logger.warning("No 'energy' column found. Cannot calculate probabilities.")
@@ -220,13 +229,13 @@ class ProbabilityService:
             return self.calculate_probabilities(df)
 
         # Check if single siRNA (optimization)
-        # Only fallback if no custom parameters are active (since standard calc doesn't support them)
         unique_sirnas = df["sirna_id"].unique()
         if (
             len(unique_sirnas) == 1
             and not alpha_gamma_pairs
             and not theta_values
             and not on_target_map
+            and not on_target_fasta_data
         ):
             logger.info("Single siRNA detected; using standard calculation")
             return self.calculate_probabilities(df)
@@ -253,46 +262,75 @@ class ProbabilityService:
         if "exp_value" not in df.columns:
             df = df.with_columns(pl.lit(1.0).alias("exp_value"))
 
-        # Extract on-target rows if on_target_map is provided
-        on_target_data: dict[str, dict] = {}
-        if on_target_map and "transcript_id" in df.columns:
-            for sirna_id, target_tid in on_target_map.items():
-                # Find matching rows for this siRNA and transcript
-                matches = df.filter(
-                    (pl.col("sirna_id") == sirna_id)
-                    & (pl.col("transcript_id") == target_tid)
-                )
-                if matches.height > 0:
-                    # Use best (lowest energy) match as on-target
-                    best = matches.sort("energy").head(1).to_dicts()[0]
-                    on_target_data[sirna_id] = {
-                        "transcript_id": target_tid,
-                        "energy": best["energy"],
-                        "opening_energy": best.get("opening_energy", 0.0),
-                        "dG_total": best.get("dG_total", best["energy"]),
-                    }
-                    logger.debug(
-                        f"On-target for {sirna_id}: {target_tid} (dG={best['energy']:.2f})"
-                    )
-                else:
-                    logger.warning(
-                        f"On-target transcript '{target_tid}' not found for siRNA '{sirna_id}'"
-                    )
+        # --- Determine on-target mode ---
+        # Mode A: In-predictions (old pipeline behavior) — tag rows, keep in DF
+        # Mode B: FASTA mode — remove rows and re-add with fixed expression
+        use_fasta_mode = on_target_fasta_data is not None
+        in_predictions_mode = (
+            on_target_map is not None
+            and not use_fasta_mode
+            and "transcript_id" in df.columns
+        )
+
+        # Extracted on-target data for FASTA mode only
+        on_target_data_fasta: dict[str, dict] = {}
+
+        if in_predictions_mode:
+            # --- Mode A: Tag on-target rows in place ---
+            # Build a condition that matches on-target rows by gene_id or transcript_id
+            # The old pipeline checks: gid == on_id OR tid == on_id
+            tag_conditions = []
+            for sirna_id, target_id in on_target_map.items():
+                cond = pl.col("sirna_id") == sirna_id
+                id_match = pl.col("transcript_id") == target_id
+                if "gene_id" in df.columns:
+                    id_match = id_match | (pl.col("gene_id") == target_id)
+                tag_conditions.append(cond & id_match)
+
+            if tag_conditions:
+                combined = tag_conditions[0]
+                for c in tag_conditions[1:]:
+                    combined = combined | c
+                df = df.with_columns(combined.alias("is_on_target"))
+            else:
+                df = df.with_columns(pl.lit(False).alias("is_on_target"))
+
+            n_on = df.filter(pl.col("is_on_target")).height
+            logger.info(
+                f"In-predictions on-target mode: tagged {n_on} rows as on-target "
+                f"(from {len(on_target_map)} mappings)"
+            )
+
+        elif use_fasta_mode and on_target_map and "transcript_id" in df.columns:
+            # --- Mode B: FASTA mode — extract and remove on-target rows ---
+            on_target_data_fasta = on_target_fasta_data
 
             # Remove on-target rows from off-target set to avoid double-counting
-            if on_target_data:
-                exclude_conditions = [
-                    (pl.col("sirna_id") == sid)
-                    & (pl.col("transcript_id") == data["transcript_id"])
-                    for sid, data in on_target_data.items()
-                ]
+            exclude_conditions = [
+                (pl.col("sirna_id") == sid)
+                & (
+                    (pl.col("transcript_id") == on_target_map[sid])
+                    | (
+                        pl.col("gene_id") == on_target_map[sid]
+                        if "gene_id" in df.columns
+                        else pl.lit(False)
+                    )
+                )
+                for sid in on_target_fasta_data
+                if sid in on_target_map
+            ]
+            if exclude_conditions:
                 exclude_expr = exclude_conditions[0]
                 for cond in exclude_conditions[1:]:
                     exclude_expr = exclude_expr | cond
                 df = df.filter(~exclude_expr)
                 logger.info(
-                    f"Excluded {len(on_target_data)} on-target entries from off-target set"
+                    f"FASTA mode: excluded on-target rows for {len(on_target_fasta_data)} siRNAs"
                 )
+
+            df = df.with_columns(pl.lit(False).alias("is_on_target"))
+        else:
+            df = df.with_columns(pl.lit(False).alias("is_on_target"))
 
         # Calculate E_min per siRNA (required for alpha/gamma clamping)
         # We assume E_min is the minimum hybridization energy observed for that siRNA
@@ -371,13 +409,50 @@ class ProbabilityService:
         # Compute all Zs (parallelized reduction)
         z_df = df.group_by("sirna_id").agg(z_aggs)
 
-        # Add on-target weights to Z for each siRNA
+        # --- Compute on-target weights ---
         on_target_weight_metadata = {}
 
-        if on_target_data:
+        if in_predictions_mode:
+            # Mode A: On-target rows are IN the DataFrame.
+            # Z already includes them from the group_by sum above.
+            # We just need to extract W_on = sum(weight WHERE is_on_target) per siRNA.
+            on_aggs = []
+            for suffix, dG_col, dG_noacc_col in calc_configs:
+                weight_col = f"boltzmann_weight{suffix}"
+                weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
+                w_on_col = f"W_on{suffix}"
+                w_on_noacc_col = f"W_on_noacc{suffix}"
+
+                on_aggs.append(
+                    pl.col(weight_col)
+                    .filter(pl.col("is_on_target"))
+                    .sum()
+                    .alias(w_on_col)
+                )
+                on_aggs.append(
+                    pl.col(weight_noacc_col)
+                    .filter(pl.col("is_on_target"))
+                    .sum()
+                    .alias(w_on_noacc_col)
+                )
+
+            on_df = df.group_by("sirna_id").agg(on_aggs)
+
+            for row in on_df.to_dicts():
+                sid = row["sirna_id"]
+                on_target_weight_metadata[sid] = {
+                    k: v for k, v in row.items() if k != "sirna_id"
+                }
+
+            logger.info(
+                f"In-predictions mode: computed on-target weights for "
+                f"{on_df.height} siRNAs"
+            )
+
+        elif on_target_data_fasta:
+            # Mode B: FASTA mode — add separate W_on to Z
             import numpy as np
 
-            # Dictionary of E_min per siRNA
             min_e_dict = {
                 row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()
             }
@@ -388,19 +463,17 @@ class ProbabilityService:
                 on_target_w = {}
                 on_target_w_noacc = {}
 
-                for sirna_id, data in on_target_data.items():
+                for sirna_id, data in on_target_data_fasta.items():
                     orig_energy = data["energy"]
                     orig_open = data.get("opening_energy", 0.0)
                     e_min = min_e_dict.get(sirna_id, orig_energy)
                     if orig_energy < e_min:
                         e_min = orig_energy
 
-                    # Compute assigned energy based on configuration
                     if suffix.startswith(":alpha="):
                         parts = suffix.split(",")
                         alpha = float(parts[0].split("=")[1])
                         gamma = float(parts[1].split("=")[1])
-
                         if orig_energy < alpha * e_min:
                             assigned_e = gamma * e_min + orig_open
                             assigned_e_noacc = gamma * e_min
@@ -451,7 +524,8 @@ class ProbabilityService:
             z_df = z_df.with_columns(z_modifications)
 
             logger.info(
-                f"Added on-target weights for {len(on_target_data)} siRNAs to partition functions"
+                f"FASTA mode: added on-target weights for "
+                f"{len(on_target_data_fasta)} siRNAs to partition functions"
             )
 
         # Join Zs back
@@ -481,7 +555,7 @@ class ProbabilityService:
             "n_sirnas": len(unique_sirnas),
             "z_per_sirna": z_stats_dict,
             "on_target_weights": on_target_weight_metadata,
-            "on_target_count": len(on_target_data) if on_target_data else 0,
+            "on_target_count": len(on_target_weight_metadata),
         }
 
         return df, metadata

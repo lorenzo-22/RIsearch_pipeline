@@ -991,34 +991,27 @@ def run(
 
         is_multi_sirna = len(unique_sirnas) > 1 or has_custom_params
 
-        # Parse on-target IDs file if provided (for multi-siRNA mode)
+        # Parse on-target IDs file if provided
         on_target_map: dict[str, str] = {}
         if on_target_ids_file is not None:
-            with open(on_target_ids_file, "r") as f:
-                on_target_ids = [line.strip() for line in f if line.strip()]
-
-            # Get siRNA IDs in order of first appearance
-            if "sirna_id" in df.columns:
-                sirna_order = df["sirna_id"].unique(maintain_order=True).to_list()
-
-                if len(on_target_ids) != len(sirna_order):
-                    console.print(
-                        f"[bold yellow]Warning:[/bold yellow] On-target IDs file has {len(on_target_ids)} entries, "
-                        f"but found {len(sirna_order)} siRNAs. Using available mappings."
+            try:
+                mapping_df = pl.read_csv(
+                    on_target_ids_file, separator="\t", has_header=False
+                )
+                on_target_map = dict(
+                    zip(
+                        mapping_df.get_column("column_1"),
+                        mapping_df.get_column("column_2"),
                     )
-
-                # Build mapping: siRNA_id -> on_target_transcript_id
-                for i, sirna_id in enumerate(sirna_order):
-                    if i < len(on_target_ids):
-                        on_target_map[sirna_id] = on_target_ids[i]
-
+                )
                 console.print(
                     f"[green]✓[/green] Loaded {len(on_target_map)} on-target ID mappings from {on_target_ids_file.name}"
                 )
-            else:
+            except Exception as e:
                 console.print(
-                    "[bold yellow]Warning:[/bold yellow] No sirna_id column found. Cannot map on-target IDs."
+                    f"[bold red]Error parsing on-target mapping file:[/bold red] {e}"
                 )
+                raise typer.Exit(code=1)
 
         if is_multi_sirna:
             mode_msg = (
@@ -1060,8 +1053,12 @@ def run(
                     f"  └─ Applied {len(alpha_gamma_pairs) - 1} alpha/gamma pairs and {len(theta_vals)} theta values"
                 )
 
+            # Compute total Z from per-siRNA data
+            total_z = sum(
+                z_dict.get("Z_sirna", 0.0) for z_dict in meta["z_per_sirna"].values()
+            )
             console.print(
-                f"  └─ Total Z across all siRNAs (base): [bold]{meta['z_total']:.2e}[/bold]"
+                f"  └─ Total Z across all siRNAs (base): [bold]{total_z:.2e}[/bold]"
             )
         else:
             df, meta = prob_service.calculate_probabilities(
