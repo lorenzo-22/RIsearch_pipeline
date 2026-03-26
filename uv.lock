@@ -806,6 +806,17 @@ wheels = [
 ]
 
 [[package]]
+name = "risearch"
+version = "0.0.0a1"
+source = { directory = "../risearch/risearch-python" }
+dependencies = [
+    { name = "polars" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "polars", specifier = ">=1.0" }]
+
+[[package]]
 name = "risearch-pipeline"
 version = "0.1.0"
 source = { editable = "." }
@@ -822,6 +833,7 @@ dependencies = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "rich" },
+    { name = "risearch" },
     { name = "seaborn" },
     { name = "typer" },
     { name = "viennarna" },
@@ -851,6 +863,7 @@ requires-dist = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "rich", specifier = ">=14.3.0" },
+    { name = "risearch", directory = "../risearch/risearch-python" },
     { name = "seaborn", specifier = ">=0.12.0" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },

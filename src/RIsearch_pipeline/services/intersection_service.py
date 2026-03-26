@@ -4,6 +4,8 @@ import polars as pl
 import numpy as np
 from typing import Iterator, Optional
 
+from loguru import logger
+
 try:
     from ncls import NCLS
 except Exception:  # pragma: no cover - optional dependency
@@ -87,6 +89,7 @@ class IntersectionService:
             # Build transcript index once per chromosome
             trans_sorted = trans.sort("start")
             trans_index = self._build_transcript_index(trans_sorted)
+            logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
 
             # Process predictions in batches
             for batch_start in range(0, preds.height, BATCH_SIZE):
@@ -99,7 +102,14 @@ class IntersectionService:
         if not all_results:
             return self._empty_result_schema(risearch_df)
 
-        return pl.concat(all_results, how="diagonal")
+        result = pl.concat(all_results, how="diagonal")
+        pre_dedup = result.height
+        result = result.unique(
+            subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+            keep="first",
+        )
+        logger.debug(f"GW dedup: {pre_dedup:,} → {result.height:,} rows ({pre_dedup - result.height:,} removed)")
+        return result
 
     def _build_transcript_index(self, trans_sorted: pl.DataFrame) -> dict:
         """Pre-build numpy arrays and optional interval index for fast lookup."""

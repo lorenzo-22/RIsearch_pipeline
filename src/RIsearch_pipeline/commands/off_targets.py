@@ -14,6 +14,8 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from loguru import logger
+
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
 console = Console()
@@ -328,18 +330,12 @@ def run(
                     console.print(f"[green]✓[/green] Created index: {index_path.name}")
 
             # Run RIsearch
-            with tempfile.TemporaryDirectory(prefix="risearch_") as tmpdir:
-                output_path = Path(tmpdir) / "predictions.out"
-
-                with console.status("[bold green]Running RIsearch..."):
-                    risearch_service.run_search(
-                        query_path=sirna_fasta,
-                        index_path=index_path,
-                        output_path=output_path,
-                    )
-
-                # Load predictions
-                df = risearch_parser.load(output_path)
+            with console.status("[bold green]Running RIsearch..."):
+                df = risearch_service.run_search(
+                    query_path=sirna_fasta,
+                    index_path=index_path,
+                    target_fasta=target_fasta,
+                )
 
         # Mode 3: Directory of per-siRNA files
         elif input_dir is not None:
@@ -819,6 +815,8 @@ def run(
             # Standard mode: Load entire file
             df = risearch_parser.load(risearch_file)
 
+        logger.info(f"Loaded {df.height:,} predictions for {df['sirna_id'].n_unique()} siRNAs")
+
         # Apply --sense-only filter (Sense strand only)
         if sense_only:
             df = df.filter(pl.col("strand") == "+")
@@ -868,6 +866,7 @@ def run(
             console.print(
                 f"[green]✓[/green] Loaded [bold]{summary_trans['row_count']}[/bold] features from {gtf_file.name}"
             )
+            logger.info(f"Transcriptome: {df_trans.height:,} rows, {df_trans['gene_id'].n_unique()} genes")
 
             # Perform intersection
             with console.status(
@@ -879,6 +878,7 @@ def run(
             console.print(
                 f"[green]✓[/green] Found [bold]{df.height}[/bold] intersecting off-target candidates"
             )
+            logger.info(f"After intersection: {df.height:,} rows")
 
         # Accessibility and Probability Calculation
         from RIsearch_pipeline.services.probability import ProbabilityService
@@ -1028,6 +1028,7 @@ def run(
                 on_target_map=on_target_map if on_target_map else None,
                 on_target_expression=on_target_expression,
             )
+            logger.info(f"After probabilities: {df.height:,} rows")
 
             # Write .summary files if output_file is provided
             if output_file:
@@ -1165,6 +1166,7 @@ def run(
 
         # Save to Output File
         if output_file:
+            logger.info(f"Writing {df.height:,} rows to {output_file}")
             df.write_csv(output_file, separator="\t")
             console.print(
                 f"\n[green]✓[/green] Results saved to [bold]{output_file}[/bold]"

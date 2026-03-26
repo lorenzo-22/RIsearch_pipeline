@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 
+import polars as pl
 import pytest
 
 from RIsearch_pipeline.services.risearch_service import RIsearchService, RIsearchError
@@ -76,9 +77,6 @@ class TestIndexTarget:
 
     def test_creates_index(self, service: RIsearchService, genome_path: Path) -> None:
         """Creates index file from genome FASTA."""
-        if not service.binary_path.exists():
-            pytest.skip("RIsearch binary not found")
-
         with tempfile.TemporaryDirectory() as tmpdir:
             index_path = Path(tmpdir) / "genome.idx"
             result = service.index_target(genome_path, index_path)
@@ -90,9 +88,6 @@ class TestIndexTarget:
         self, service: RIsearchService, genome_path: Path
     ) -> None:
         """Reuses index if newer than source."""
-        if not service.binary_path.exists():
-            pytest.skip("RIsearch binary not found")
-
         with tempfile.TemporaryDirectory() as tmpdir:
             index_path = Path(tmpdir) / "genome.idx"
 
@@ -108,32 +103,23 @@ class TestIndexTarget:
 class TestRunSearch:
     """Tests for run_search()."""
 
-    def test_search_produces_output(
+    def test_search_returns_dataframe(
         self,
         service: RIsearchService,
         sirna_single_path: Path,
         genome_path: Path,
     ) -> None:
-        """Search produces non-empty output file."""
-        if not service.binary_path.exists():
-            pytest.skip("RIsearch binary not found")
-
+        """Search returns a Polars DataFrame with RISEARCH_SCHEMA columns."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            index_path = tmpdir_path / "genome.idx"
-            output_path = tmpdir_path / "results.out"
+            index_path = Path(tmpdir) / "genome.idx"
 
-            # Index and search
             service.index_target(genome_path, index_path)
-            result = service.run_search(
-                sirna_single_path,
-                index_path,
-                output_path,
-            )
+            result = service.run_search(sirna_single_path, index_path)
 
-            assert result.exists()
-            # Output may be empty if energy threshold is too strict
-            # but file should exist
+            assert isinstance(result, pl.DataFrame)
+            assert set(["sirna_id", "chrom", "start", "end", "strand", "energy"]).issubset(
+                set(result.columns)
+            )
 
 
 class TestSearchSingleSirna:
@@ -146,13 +132,10 @@ class TestSearchSingleSirna:
         genome_path: Path,
     ) -> None:
         """Returns tuple with energy, start, end, strand."""
-        if not service.binary_path.exists():
-            pytest.skip("RIsearch binary not found")
-
         energy, start, end, strand = service.search_single_sirna(
             sirna_single_path, genome_path
         )
 
         # Should find some hits with negative energy
-        assert energy < 0 or energy == 0.0
+        assert energy <= 0 or energy == 0.0
         assert strand in ["+", "-"]

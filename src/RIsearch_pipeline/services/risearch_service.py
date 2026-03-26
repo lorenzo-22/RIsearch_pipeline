@@ -1,16 +1,15 @@
-"""Service for executing RIsearch binary and validating siRNA inputs.
+"""Service for executing RIsearch and validating siRNA inputs.
 
 Provides a clean interface to run RIsearch searches, index targets, and validate
-siRNA FASTA files before processing. Designed for both single-siRNA and batch
-multi-siRNA workflows.
+siRNA FASTA files before processing. Uses the risearch Python bindings (PyO3/maturin)
+for in-process execution — no subprocess or intermediate TSV files.
 """
 
-import os
-import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import polars as pl
 from loguru import logger
 
 
@@ -21,29 +20,22 @@ class RIsearchError(Exception):
 
 
 class RIsearchService:
-    """Wrapper for RIsearch binary execution.
+    """Wrapper for the risearch Python bindings.
 
     Encapsulates index creation, search execution, and input validation.
     Supports both single and multi-siRNA FASTA inputs.
 
-    Attributes:
-        binary_path: Path to the RIsearch binary.
+    An internal registry maps each index path to its source target FASTA so
+    that ``run_search()`` can resolve integer target indices to sequence names.
     """
 
-    def __init__(self, binary_path: Optional[Path] = None):
-        """Initialize with optional custom binary path.
+    def __init__(self) -> None:
+        # Maps str(index_path) → target_fasta path for name resolution
+        self._target_registry: Dict[str, Path] = {}
 
-        Args:
-            binary_path: Path to RIsearch binary. If None, uses default location
-                         at ~/.cargo/bin/RIsearch.
-        """
-        if binary_path is None:
-            binary_path = Path.home() / ".cargo" / "bin" / "RIsearch"
-
-        self.binary_path = binary_path
-
-        if not self.binary_path.exists():
-            logger.warning(f"RIsearch binary not found at {self.binary_path}")
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def validate_sirna_fasta(self, path: Path) -> List[str]:
         """Validate siRNA FASTA and return list of sequence IDs.
@@ -91,12 +83,13 @@ class RIsearchService:
     ) -> Path:
         """Create or retrieve RIsearch index for a target FASTA.
 
-        If index_path is None, creates a temporary index file.
+        If index_path is None, creates an index next to the target file.
         If index already exists and is newer than target, reuses it.
+        Registers the target_path so run_search() can resolve target names.
 
         Args:
             target_path: Path to target FASTA (genome/transcriptome).
-            index_path: Optional path for index output. If None, uses temp file.
+            index_path: Optional path for index output.
 
         Returns:
             Path to the created/existing index.
@@ -105,15 +98,17 @@ class RIsearchService:
             RIsearchError: If indexing fails.
             FileNotFoundError: If target FASTA doesn't exist.
         """
+        import risearch
+
         if not target_path.exists():
             raise FileNotFoundError(f"Target FASTA not found: {target_path}")
 
-        # Generate default index path if not provided
         if index_path is None:
-            # Use target name with .idx suffix in same directory
             index_path = target_path.with_suffix(".idx")
 
-        # Check if index exists and is up-to-date
+        # Always register so run_search() can resolve target names
+        self._target_registry[str(index_path)] = target_path
+
         if index_path.exists():
             if index_path.stat().st_mtime > target_path.stat().st_mtime:
                 logger.info(f"Reusing existing index: {index_path}")
@@ -121,101 +116,102 @@ class RIsearchService:
             else:
                 logger.info(f"Index outdated, rebuilding: {index_path}")
 
-        # Build index
-        cmd = [str(self.binary_path), "index", str(target_path), str(index_path)]
-        logger.debug(f"Running: {' '.join(cmd)}")
-
         try:
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            risearch.index(target_path, index_path)
             logger.info(
                 f"Created index: {index_path} ({index_path.stat().st_size} bytes)"
             )
             return index_path
-
-        except subprocess.CalledProcessError as e:
-            raise RIsearchError(f"RIsearch index failed: {e.stderr}") from e
+        except Exception as e:
+            raise RIsearchError(f"RIsearch index failed: {e}") from e
 
     def run_search(
         self,
         query_path: Path,
         index_path: Path,
-        output_path: Optional[Path] = None,
-        seed_length: str = "6",
-        extension_length: int = 20,
+        target_fasta: Optional[Path] = None,
+        seed_length: int = 6,
+        max_extension: int = 20,
         energy_threshold: float = -10.0,
-        threads: Optional[int] = None,
-    ) -> Path:
-        """Run RIsearch search and return path to output.
+    ) -> pl.DataFrame:
+        """Run RIsearch search and return results as a DataFrame.
 
         Args:
             query_path: Path to siRNA FASTA (single or multiple sequences).
             index_path: Path to pre-built RIsearch index.
-            output_path: Path for output file. If None, uses stdout to temp file.
-            seed_length: Seed length or range (e.g., "6" or "6:12").
-            extension_length: Maximum extension length on each side.
+            target_fasta: Path to the target FASTA used to build the index.
+                          Required when the index was not created in this
+                          session via index_target(). Needed for name resolution.
+            seed_length: Seed length integer (default 6).
+            max_extension: Max extension length on each side (default 20).
             energy_threshold: Energy cutoff in kcal/mol (default -10.0).
-            threads: Number of threads. If None, uses RIsearch default.
 
         Returns:
-            Path to the output file containing predictions.
+            Polars DataFrame with columns: sirna_id, chrom, start, end, strand, energy.
 
         Raises:
-            RIsearchError: If search fails.
+            RIsearchError: If search fails or target names cannot be resolved.
             FileNotFoundError: If query or index don't exist.
         """
+        import risearch
+
         if not query_path.exists():
             raise FileNotFoundError(f"Query FASTA not found: {query_path}")
         if not index_path.exists():
             raise FileNotFoundError(f"Index not found: {index_path}")
 
-        # Use temp file if no output path specified
-        if output_path is None:
-            output_fd, output_path_str = tempfile.mkstemp(
-                suffix=".out", prefix="risearch_"
+        # Resolve target FASTA for name lookup
+        resolved_target = target_fasta or self._target_registry.get(str(index_path))
+        if resolved_target is None:
+            raise RIsearchError(
+                "Cannot resolve target sequence names: pass target_fasta= or "
+                "build the index via index_target() first."
             )
-            os.close(output_fd)
-            output_path = Path(output_path_str)
-
-        # Build command
-        cmd = [
-            str(self.binary_path),
-            "search",
-            "-q",
-            str(query_path),
-            "-i",
-            str(index_path),
-            "-o",
-            str(output_path),
-            "-s",
-            seed_length,
-            "-l",
-            str(extension_length),
-            "-e",
-            str(energy_threshold),
-        ]
-
-        if threads is not None:
-            cmd.extend(["-t", str(threads)])
-
-        logger.debug(f"Running: {' '.join(cmd)}")
 
         try:
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
+            store = risearch.TargetStore.open(index_path)
+            raw = risearch.search(
+                query_path,
+                store,
+                seed_length=seed_length,
+                max_extension=max_extension,
+                energy_threshold=energy_threshold,
             )
-            logger.info(f"Search complete: {output_path}")
-            return output_path
+        except Exception as e:
+            raise RIsearchError(f"RIsearch search failed: {e}") from e
 
-        except subprocess.CalledProcessError as e:
-            raise RIsearchError(f"RIsearch search failed: {e.stderr}") from e
+        if raw.is_empty():
+            logger.info("Search complete: 0 hits")
+            return pl.DataFrame(
+                schema={
+                    "sirna_id": pl.Utf8,
+                    "chrom": pl.Utf8,
+                    "start": pl.Int32,
+                    "end": pl.Int32,
+                    "strand": pl.Utf8,
+                    "energy": pl.Float32,
+                }
+            )
+
+        # Build name lookup arrays
+        query_names = _fasta_names(query_path)
+        target_names = _fasta_names(resolved_target)
+
+        sirna_ids = [query_names[i] for i in raw["query_idx"].to_list()]
+        chroms = [target_names[i] for i in raw["target_idx"].to_list()]
+
+        df = (
+            raw.with_columns([
+                pl.Series("sirna_id", sirna_ids),
+                pl.Series("chrom", chroms),
+            ])
+            .rename({"t_start": "start", "t_end": "end"})
+            .select(["sirna_id", "chrom", "start", "end", "strand", "energy"])
+            .cast({"start": pl.Int32, "end": pl.Int32, "energy": pl.Float32})
+        )
+
+        logger.info(f"Search complete: {df.height} hits")
+        return df
 
     def search_single_sirna(
         self,
@@ -224,7 +220,7 @@ class RIsearchService:
     ) -> Tuple[float, int, int, str]:
         """Run RIsearch for a single siRNA and return best hit.
 
-        Convenience method for on-target calculations. Creates temporary
+        Convenience method for on-target calculations. Creates a temporary
         index, runs search, and returns the best (lowest energy) result.
 
         Args:
@@ -236,54 +232,34 @@ class RIsearchService:
             Returns (0.0, 0, 0, "+") if no hits found.
         """
         with tempfile.TemporaryDirectory(prefix="risearch_") as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            index_path = tmpdir_path / "target.idx"
-            output_path = tmpdir_path / "results.out"
+            index_path = Path(tmpdir) / "target.idx"
 
             try:
-                # Index and search
                 self.index_target(target_path, index_path)
-                self.run_search(query_path, index_path, output_path)
+                df = self.run_search(query_path, index_path)
 
-                # Parse results
-                return self._parse_best_hit(output_path)
+                if df.is_empty():
+                    logger.warning("No valid hits found")
+                    return 0.0, 0, 0, "+"
+
+                best = df.sort("energy").row(0, named=True)
+                return (
+                    float(best["energy"]),
+                    int(best["start"]),
+                    int(best["end"]),
+                    str(best["strand"]),
+                )
 
             except RIsearchError as e:
                 logger.error(f"RIsearch failed: {e}")
                 return 0.0, 0, 0, "+"
 
-    def _parse_best_hit(self, output_path: Path) -> Tuple[float, int, int, str]:
-        """Parse RIsearch output and return best (lowest energy) hit.
 
-        Args:
-            output_path: Path to RIsearch output file.
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
 
-        Returns:
-            Tuple of (energy, start, end, strand) for best hit.
-            Returns (0.0, 0, 0, "+") if no valid hits.
-        """
-        best_hit: Optional[Tuple[float, int, int, str]] = None
-
-        with open(output_path, "r") as f:
-            for line in f:
-                if line.startswith("#"):
-                    continue
-                parts = line.strip().split("\t")
-                # Format: QueryID, QStart, QEnd, TargetID, TStart, TEnd, Strand, Energy
-                if len(parts) >= 8:
-                    try:
-                        energy = float(parts[7])
-                        t_start = int(parts[4])
-                        t_end = int(parts[5])
-                        strand = parts[6]
-
-                        if best_hit is None or energy < best_hit[0]:
-                            best_hit = (energy, t_start, t_end, strand)
-                    except ValueError:
-                        continue
-
-        if best_hit:
-            return best_hit
-
-        logger.warning(f"No valid hits found in {output_path}")
-        return 0.0, 0, 0, "+"
+def _fasta_names(path: Path) -> List[str]:
+    """Return sequence IDs from a FASTA file in order of appearance."""
+    from Bio import SeqIO
+    return [r.id for r in SeqIO.parse(path, "fasta")]
