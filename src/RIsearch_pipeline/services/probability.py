@@ -332,11 +332,21 @@ class ProbabilityService:
         else:
             df = df.with_columns(pl.lit(False).alias("is_on_target"))
 
-        # Calculate E_min per siRNA (required for alpha/gamma clamping)
-        # We assume E_min is the minimum hybridization energy observed for that siRNA
-        min_energies = df.group_by("sirna_id").agg(
-            pl.col("energy").min().alias("E_min")
-        )
+        # Calculate E_min per siRNA (required for alpha/gamma clamping).
+        # Replicate old-pipeline behaviour: anchor clamping to the minimum
+        # energy from the RAW RIsearch file (all genome hits, including those
+        # that don't overlap any annotated transcript).  The parser attaches
+        # this as `raw_e_min` when loading per-siRNA directory files.
+        # Fall back to the post-intersection minimum when `raw_e_min` is absent
+        # (e.g. when loading a single merged file).
+        if "raw_e_min" in df.columns:
+            min_energies = df.group_by("sirna_id").agg(
+                pl.col("raw_e_min").min().alias("E_min")
+            )
+        else:
+            min_energies = df.group_by("sirna_id").agg(
+                pl.col("energy").min().alias("E_min")
+            )
         df = df.join(min_energies, on="sirna_id", how="left")
 
         # Define list of calculations to perform

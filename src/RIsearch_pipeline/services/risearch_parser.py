@@ -227,7 +227,14 @@ class RIsearchParser:
             )
 
         # Create lazy frames for each file - Polars parallelizes this
+        # Also compute raw E_min per siRNA from the full file before any
+        # intersection filtering.  The old pipeline anchors alpha/gamma clamping
+        # to the minimum hybridisation energy across ALL genome hits (including
+        # those that don't overlap any annotated transcript), not just the
+        # post-intersection subset.  Attaching raw_e_min here lets
+        # ProbabilityService replicate that behaviour.
         lazy_frames = []
+        raw_emin_frames = []
         for f in file_paths:
             lf = pl.scan_csv(f, separator="\t", has_header=False).select(
                 [
@@ -240,9 +247,22 @@ class RIsearchParser:
                 ]
             )
             lazy_frames.append(lf)
+            # Per-siRNA minimum energy from the raw file
+            raw_emin_frames.append(
+                pl.scan_csv(f, separator="\t", has_header=False)
+                .select(
+                    pl.col("column_1").alias("sirna_id"),
+                    pl.col("column_8").cast(pl.Float32).alias("energy"),
+                )
+                .group_by("sirna_id")
+                .agg(pl.col("energy").min().alias("raw_e_min"))
+            )
 
         # Concat and collect - Rayon parallelizes across all rows
         df = pl.concat(lazy_frames).collect()
+        raw_emin = pl.concat(raw_emin_frames).collect()
+
+        df = df.join(raw_emin, on="sirna_id", how="left")
 
         return df
 
