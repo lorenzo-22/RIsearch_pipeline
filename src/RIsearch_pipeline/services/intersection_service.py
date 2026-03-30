@@ -21,7 +21,7 @@ class IntersectionService:
         transcriptome_df: pl.DataFrame,
         mode: str = "gw",
     ) -> pl.DataFrame:
-        """Filter predictions to those contained within transcriptome features.
+        """Filter predictions to those overlapping transcriptome features.
 
         Args:
             risearch_df: DataFrame from RIsearchParser.
@@ -126,9 +126,9 @@ class IntersectionService:
         }
 
         if NCLS is not None and len(starts) > 0:
-            # NCLS uses half-open intervals [start, end); add 1 to preserve inclusive end
+            # BED ends are already exclusive (half-open); pass them directly to NCLS.
             interval_ids = np.arange(len(starts), dtype=np.int64)
-            index["ncls"] = NCLS(starts, ends + 1, interval_ids)
+            index["ncls"] = NCLS(starts, ends, interval_ids)
 
         return index
 
@@ -161,23 +161,15 @@ class IntersectionService:
         pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
         pred_ids = np.arange(preds.height, dtype=np.int64)
 
-        # Query overlaps using half-open intervals to preserve inclusive end semantics
+        # Query with BED half-open intervals — pred_ends is already the exclusive end.
+        # all_overlaps_both returns all pairs where intervals overlap (any overlap),
+        # matching bedtools intersect default behaviour.
         query_starts = pred_starts
-        query_ends = pred_ends + 1
+        query_ends = pred_ends
         pred_idx, trans_idx = ncls.all_overlaps_both(query_starts, query_ends, pred_ids)
 
         if len(pred_idx) == 0:
             return None
-
-        # Filter to strict containment: trans_start <= pred_start and trans_end >= pred_end
-        mask = (trans_starts[trans_idx] <= pred_starts[pred_idx]) & (
-            trans_ends[trans_idx] >= pred_ends[pred_idx]
-        )
-        if not np.any(mask):
-            return None
-
-        pred_idx = pred_idx[mask]
-        trans_idx = trans_idx[mask]
 
         preds_sel = preds[pred_idx]
         trans_sel = trans_df[trans_idx].select(
@@ -219,18 +211,20 @@ class IntersectionService:
             t_start = trans_starts[t_idx]
             t_end = trans_ends[t_idx]
 
-            left = np.searchsorted(pred_starts_sorted, t_start, side="left")
-            right = np.searchsorted(pred_starts_sorted, t_end, side="right")
+            # Any-overlap: pred_start < t_end AND pred_end > t_start.
+            # All predictions starting before t_end may overlap; then filter
+            # to those whose end is past t_start.
+            right = np.searchsorted(pred_starts_sorted, t_end, side="left")
 
-            if left >= right:
+            if right == 0:
                 continue
 
-            ends_slice = pred_ends_sorted[left:right]
-            mask = ends_slice <= t_end
+            ends_slice = pred_ends_sorted[:right]
+            mask = ends_slice > t_start
             if not np.any(mask):
                 continue
 
-            pred_match_idx = order[left:right][mask]
+            pred_match_idx = order[:right][mask]
             pred_match_idx_list.append(pred_match_idx)
             trans_match_idx_list.append(
                 np.full(pred_match_idx.shape[0], t_idx, dtype=np.int64)

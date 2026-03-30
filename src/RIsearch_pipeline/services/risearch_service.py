@@ -213,6 +213,72 @@ class RIsearchService:
         logger.info(f"Search complete: {df.height} hits")
         return df
 
+    def self_hybridization_emin(self, sequence: str, sirna_id: str = "query") -> float:
+        """Compute E_min via self-hybridization (siRNA vs itself).
+
+        Replicates old pipeline: ``risearch2.x -q siRNA.fa -i siRNA.pksuf -s len-1 -e 0``
+        Seed length = len(seq)-1 ensures near-full-length hybridizations only.
+
+        Args:
+            sequence: siRNA nucleotide sequence (RNA or DNA; U→T conversion applied).
+            sirna_id: ID label used for the FASTA header.
+
+        Returns:
+            Minimum hybridisation energy (most negative value). Returns 0.0 if no hits.
+        """
+        seq_dna = sequence.upper().replace("U", "T")
+        with tempfile.TemporaryDirectory(prefix="risearch_self_") as tmpdir:
+            fasta_path = Path(tmpdir) / "sirna.fa"
+            index_path = Path(tmpdir) / "sirna.idx"
+            fasta_path.write_text(f">{sirna_id}\n{seq_dna}\n")
+            self.index_target(fasta_path, index_path)
+            df = self.run_search(
+                fasta_path,
+                index_path,
+                target_fasta=fasta_path,
+                seed_length=len(seq_dna) - 1,
+                energy_threshold=0.0,
+            )
+            if df.is_empty():
+                logger.warning(
+                    f"No self-hybridisation hits for {sirna_id}, using E_min=0.0"
+                )
+                return 0.0
+            emin = float(df["energy"].min())
+            logger.debug(f"Self-hyb E_min {sirna_id}: {emin:.4f} kcal/mol")
+            return emin
+
+    def self_hybridization_emin_batch(self, fasta_path: Path) -> Dict[str, float]:
+        """Compute self-hybridisation E_min for all siRNAs in a FASTA file.
+
+        Each siRNA is searched against itself with seed_length = len(seq) - 1
+        and energy_threshold = 0.0, replicating the old pipeline's minimum-energy
+        anchor used for alpha/gamma clamping.
+
+        Args:
+            fasta_path: Path to FASTA file containing one or more siRNA sequences.
+
+        Returns:
+            Dict mapping siRNA ID → minimum self-hybridisation energy (float).
+
+        Raises:
+            FileNotFoundError: If fasta_path does not exist.
+        """
+        from Bio import SeqIO
+
+        if not fasta_path.exists():
+            raise FileNotFoundError(f"siRNA FASTA not found: {fasta_path}")
+
+        records = list(SeqIO.parse(fasta_path, "fasta"))
+        logger.info(
+            f"Computing self-hybridisation E_min for {len(records)} siRNA(s)..."
+        )
+        result: Dict[str, float] = {}
+        for record in records:
+            result[record.id] = self.self_hybridization_emin(str(record.seq), record.id)
+        logger.info(f"Self-hybridisation complete: {len(result)} siRNA(s) processed")
+        return result
+
     def search_single_sirna(
         self,
         query_path: Path,

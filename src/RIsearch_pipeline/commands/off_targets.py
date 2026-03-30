@@ -73,7 +73,7 @@ def run(
         None,
         "-s",
         "--sirna-fasta",
-        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch internally.",
+        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch internally when used alone; also used in directory mode to compute self-hybridisation E_min.",
         exists=True,
         readable=True,
     ),
@@ -421,6 +421,21 @@ def run(
                     f"  [dim]Loaded {len(on_target_map)} on-target mappings[/dim]"
                 )
 
+            # Compute self-hybridisation E_min for each siRNA if FASTA provided.
+            # This replicates the old pipeline's behaviour where E_min is the minimum
+            # energy of the siRNA hybridised against itself (not the genome-wide min).
+            self_hyb_emin: dict[str, float] = {}
+            if sirna_fasta is not None:
+                from RIsearch_pipeline.services.risearch_service import RIsearchService
+                _ris_svc = RIsearchService()
+                console.print(
+                    f"  └─ Computing self-hybridisation E_min from [bold]{sirna_fasta.name}[/bold]..."
+                )
+                self_hyb_emin = _ris_svc.self_hybridization_emin_batch(sirna_fasta)
+                console.print(
+                    f"  [dim]Self-hyb E_min computed for {len(self_hyb_emin)} siRNA(s)[/dim]"
+                )
+
             # Parse parameter lists
             alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
             gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
@@ -506,6 +521,35 @@ def run(
 
                             df_chunk = pl.concat(intersected_chunks)
                             del intersected_chunks
+                            # Dedup: a prediction can be contained in multiple exons of the
+                            # same transcript (exon-level BED). Keep one row per
+                            # (siRNA, genomic hit, transcript) triple.
+                            df_chunk = df_chunk.unique(
+                                subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+                                keep="first",
+                            )
+
+                        # Override raw_e_min with self-hybridisation values when available.
+                        # self_hyb_emin anchors alpha/gamma clamping to the siRNA's own
+                        # complement energy (more negative than any genomic hit), matching
+                        # the old pipeline's behaviour.
+                        if self_hyb_emin and "raw_e_min" in df_chunk.columns:
+                            emin_lut = pl.DataFrame({
+                                "sirna_id": list(self_hyb_emin.keys()),
+                                "_self_hyb_emin": pl.Series(
+                                    list(self_hyb_emin.values()), dtype=pl.Float32
+                                ),
+                            })
+                            df_chunk = (
+                                df_chunk.join(emin_lut, on="sirna_id", how="left")
+                                .with_columns(
+                                    pl.when(pl.col("_self_hyb_emin").is_not_null())
+                                    .then(pl.col("_self_hyb_emin"))
+                                    .otherwise(pl.col("raw_e_min"))
+                                    .alias("raw_e_min")
+                                )
+                                .drop("_self_hyb_emin")
+                            )
 
                         df_chunk, batch_metadata = (
                             prob_service.calculate_probabilities_per_sirna(
