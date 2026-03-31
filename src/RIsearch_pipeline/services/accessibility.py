@@ -182,6 +182,31 @@ def _fold_island(
     return result
 
 
+def _fold_island_batch(
+    tasks: list[tuple],
+) -> dict[str, dict[tuple[int, int], float]]:
+    """
+    Worker function: fold a batch of islands and merge their results.
+
+    Groups multiple _fold_island calls into one task to reduce
+    ProcessPoolExecutor per-task overhead and IPC round-trips.
+
+    Args:
+        tasks: List of (strand, fold_args) tuples, where fold_args are the
+               arguments accepted by _fold_island().
+
+    Returns:
+        Dict mapping strand → {(orig_s, orig_e): opening_energy}.
+    """
+    merged: dict[str, dict[tuple[int, int], float]] = {}
+    for strand, fold_args in tasks:
+        result = _fold_island(*fold_args)
+        if strand not in merged:
+            merged[strand] = {}
+        merged[strand].update(result)
+    return merged
+
+
 class GenomeAccessibilityService:
     """
     Service to pre-compute and query genomic accessibility profiles.
@@ -618,20 +643,36 @@ class GenomeAccessibilityService:
                     ProcessPoolExecutor,
                     as_completed,
                 )
+                from itertools import islice as _islice
+
+                # Pack each task as (strand, fold_args) for the batch worker.
+                packed = [
+                    (strand, fold_args)
+                    for strand, _, _, _, fold_args in all_island_tasks
+                ]
+
+                # Chunk into at most workers×4 batches to amortise IPC overhead
+                # while keeping load balanced across cores.
+                chunk_size = max(1, (n_tasks + workers * 4 - 1) // (workers * 4))
+                chunks = []
+                it = iter(packed)
+                while batch_chunk := list(_islice(it, chunk_size)):
+                    chunks.append(batch_chunk)
 
                 with ProcessPoolExecutor(max_workers=workers) as pool:
-                    futures = {}
-                    for idx, (strand, _, _, _, fold_args) in enumerate(
-                        all_island_tasks
-                    ):
-                        fut = pool.submit(_fold_island, *fold_args)
-                        futures[fut] = (idx, strand)
+                    futures = {
+                        pool.submit(_fold_island_batch, chunk): len(chunk)
+                        for chunk in chunks
+                    }
 
                     for future in as_completed(futures):
-                        idx, strand = futures[future]
-                        pos_energy_by_strand[strand].update(future.result())
+                        batch_results = future.result()
+                        n_done = futures[future]
+                        for strand, energy_map in batch_results.items():
+                            pos_energy_by_strand[strand].update(energy_map)
                         if progress:
-                            progress.advance(island_task)
+                            for _ in range(n_done):
+                                progress.advance(island_task)
             else:
                 for idx, (strand, _, _, _, fold_args) in enumerate(all_island_tasks):
                     pos_energy_by_strand[strand].update(_fold_island(*fold_args))

@@ -97,18 +97,19 @@ class IntersectionService:
                 batch_result = self._process_batch(batch, trans_index)
 
                 if batch_result is not None and batch_result.height > 0:
+                    # Deduplicate each batch before accumulating to keep peak
+                    # memory proportional to batch size rather than total rows.
+                    batch_result = batch_result.unique(
+                        subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+                        keep="first",
+                    )
                     all_results.append(batch_result)
 
         if not all_results:
             return self._empty_result_schema(risearch_df)
 
         result = pl.concat(all_results, how="diagonal")
-        pre_dedup = result.height
-        result = result.unique(
-            subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-            keep="first",
-        )
-        logger.debug(f"GW dedup: {pre_dedup:,} → {result.height:,} rows ({pre_dedup - result.height:,} removed)")
+        logger.debug(f"GW intersection: {result.height:,} rows after per-batch dedup")
         return result
 
     def _build_transcript_index(self, trans_sorted: pl.DataFrame) -> dict:

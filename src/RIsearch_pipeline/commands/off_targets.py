@@ -460,7 +460,7 @@ def run(
                         alpha_gamma_pairs.append((a, g))
             alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
-            # Process in batches - write Arrow IPC intermediates to scratch disk
+            # Process in batches, streaming directly to the final output format
             num_batches = (len(all_files) + batch_size - 1) // batch_size
             total_rows = 0
 
@@ -468,18 +468,24 @@ def run(
                 f"  └─ Processing in {num_batches} batches of up to {batch_size} files"
             )
 
-            # Resolve scratch directory (physical disk, not /dev/shm)
-            scratch_base = str(scratch_dir) if scratch_dir else None
+            # Resolve output path up-front so each batch can stream directly
+            out_path = None
+            _csv_first_batch = True
+            _pq_writer = None
+            if output_file:
+                if output_format == "parquet":
+                    out_path = output_file.with_suffix(".parquet")
+                elif output_format == "tsv":
+                    out_path = output_file.with_suffix(".tsv")
+                else:
+                    out_path = output_file.with_suffix(".csv")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Storage for global metadata
             global_z_stats = {}
             global_on_w_stats = {}
 
-            with tempfile.TemporaryDirectory(
-                dir=scratch_base, prefix="risearch_ipc_"
-            ) as tmp_scratch:
-                scratch_path = Path(tmp_scratch)
-                ipc_idx = 0
+            try:
 
                 with Progress(
                     SpinnerColumn(),
@@ -595,13 +601,23 @@ def run(
                         if drop_cols:
                             df_chunk = df_chunk.drop(drop_cols)
 
-                        # Downcast and write Arrow IPC to scratch disk
-                        with profiler.stage(f"[dir] Write IPC batch {batch_idx + 1}", rows_in=df_chunk.height):
-                            df_chunk = _downcast_schema(df_chunk)
-                            ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
-                            df_chunk.write_ipc(ipc_file)
+                        # Write directly to the final output format (Opt 6: no IPC
+                        # intermediate). Opt 7: only downcast for Parquet; CSV/TSV
+                        # writes strings so downcasting provides no benefit there.
                         total_rows += df_chunk.height
-                        ipc_idx += 1
+                        if out_path is not None:
+                            with profiler.stage(f"[dir] Write batch {batch_idx + 1}", rows_in=df_chunk.height):
+                                if output_format == "parquet":
+                                    arrow_table = _downcast_schema(df_chunk).to_arrow()
+                                    if _pq_writer is None:
+                                        import pyarrow.parquet as pq
+                                        _pq_writer = pq.ParquetWriter(out_path, arrow_table.schema)
+                                    _pq_writer.write_table(arrow_table)
+                                else:
+                                    sep = "\t" if output_format == "tsv" else ","
+                                    with open(out_path, "w" if _csv_first_batch else "a") as _f:
+                                        df_chunk.write_csv(_f, separator=sep, include_header=_csv_first_batch)
+                                    _csv_first_batch = False
 
                         # Free memory
                         del df_chunk
@@ -612,52 +628,43 @@ def run(
                             description=f"Batch {batch_idx + 1}/{num_batches}",
                         )
 
-                # Final merge: lazily scan all IPC files and write output
-                if ipc_idx > 0 and output_file:
-                    console.print(
-                        f"  └─ Merging {ipc_idx} intermediate files ({total_rows} rows)..."
-                    )
-                    ipc_pattern = sorted(scratch_path.glob("batch_*.arrow"))
-                    lf = pl.scan_ipc(ipc_pattern, memory_map=True)
-
-                    if output_format == "parquet":
-                        out_path = output_file.with_suffix(".parquet")
-                        lf.sink_parquet(out_path)
-                    else:
-                        sep = "\t" if output_format == "tsv" else ","
-                        suffix = ".tsv" if output_format == "tsv" else ".csv"
-                        out_path = output_file.with_suffix(suffix)
-                        final_df = lf.collect(streaming=True)
-                        final_df.write_csv(out_path, separator=sep)
-                        del final_df
-
+                # Report results
+                if total_rows > 0 and out_path is not None:
                     console.print(
                         f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
                     )
 
-                    # Write .summary files next to the output_file's directory
-                    out_dir = output_file.parent
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    for sid in global_z_stats:
-                        summary_text = prob_service.format_legacy_summary(
-                            sid,
-                            global_z_stats[sid],
-                            global_on_w_stats.get(sid, {}),
-                            alpha_gamma_pairs,
-                            theta_vals,
+                    # Write .summary files (Opt 8: generate all text first, then
+                    # flush each file in one write_text call per siRNA)
+                    if global_z_stats:
+                        out_dir = output_file.parent
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        summary_texts = {
+                            sid: prob_service.format_legacy_summary(
+                                sid,
+                                global_z_stats[sid],
+                                global_on_w_stats.get(sid, {}),
+                                alpha_gamma_pairs,
+                                theta_vals,
+                            )
+                            for sid in global_z_stats
+                        }
+                        for sid, text in summary_texts.items():
+                            (out_dir / f"{sid}.summary").write_text(text)
+                        console.print(
+                            f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
                         )
-                        summary_file = out_dir / f"{sid}.summary"
-                        summary_file.write_text(summary_text)
-
-                    console.print(
-                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
-                    )
-                elif ipc_idx > 0:
+                elif total_rows > 0:
                     console.print(
                         f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions (no output file specified)"
                     )
                 elif total_rows == 0:
                     console.print("[yellow]Warning:[/yellow] No predictions to process")
+
+            finally:
+                # Ensure Parquet writer is always closed (flushes footer)
+                if _pq_writer is not None:
+                    _pq_writer.close()
 
             profiler.print_summary(console)
             return  # Exit after directory mode processing

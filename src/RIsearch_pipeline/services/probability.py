@@ -353,7 +353,10 @@ class ProbabilityService:
         # format: (name_suffix, energy_expression_col, noacc_energy_expression_col)
         calc_configs = [("", "dG_total", "energy")]
 
-        # Prepare expressions for additional parameters
+        # Collect all dG variant expressions so they can be applied in a single
+        # with_columns() call (one pass over the data regardless of parameter count).
+        all_dG_exprs = []
+
         if alpha_gamma_pairs:
             for alpha, gamma in alpha_gamma_pairs:
                 # Skip default base case if present
@@ -366,7 +369,7 @@ class ProbabilityService:
 
                 # Logic: if energy < alpha * E_min -> use gamma * E_min + open
                 # otherwise -> use energy + open
-                df = df.with_columns(
+                all_dG_exprs.extend([
                     pl.when(pl.col("energy") < alpha * pl.col("E_min"))
                     .then(gamma * pl.col("E_min") + pl.col("opening_energy"))
                     .otherwise(pl.col("energy") + pl.col("opening_energy"))
@@ -375,7 +378,7 @@ class ProbabilityService:
                     .then(gamma * pl.col("E_min"))
                     .otherwise(pl.col("energy"))
                     .alias(col_name_noacc),
-                )
+                ])
                 calc_configs.append((suffix, col_name, col_name_noacc))
 
         if theta_values:
@@ -385,39 +388,59 @@ class ProbabilityService:
                 col_name_noacc = f"energy{suffix}"
 
                 # Logic: ((theta * (energy + 10)) - 10) + open
-                df = df.with_columns(
+                all_dG_exprs.extend([
                     (
                         ((theta * (pl.col("energy") + 10.0)) - 10.0)
                         + pl.col("opening_energy")
                     ).alias(col_name),
                     ((theta * (pl.col("energy") + 10.0)) - 10.0).alias(col_name_noacc),
-                )
+                ])
                 calc_configs.append((suffix, col_name, col_name_noacc))
 
-        # 4. & 5. & 6. Calculate W, Z, and P for all configurations
-        # We build a list of aggregations to do them all in one group_by pass for efficiency
+        # Single pass for all dG variant columns
+        if all_dG_exprs:
+            df = df.with_columns(all_dG_exprs)
 
+        # 4. & 5. & 6. Calculate W, Z, and P for all configurations
+        # Build all weight expressions and aggregations up-front, then apply in
+        # two single passes (weights) and one group_by (Z + on-target combined).
+
+        all_weight_exprs = []
         z_aggs = []
+        on_aggs = []  # populated below when in_predictions_mode
+        z_col_names = []
+
         for suffix, dG_col, dG_noacc_col in calc_configs:
             # W = Expr * exp(-dG / RT)
             weight_col = f"boltzmann_weight{suffix}"
             weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
-            df = df.with_columns(
-                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(
-                    weight_col
-                ),
-                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / RT).exp())).alias(
-                    weight_noacc_col
-                ),
-            )
+            all_weight_exprs.extend([
+                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(weight_col),
+                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / RT).exp())).alias(weight_noacc_col),
+            ])
             # Z aggregation
             z_col = f"Z_sirna{suffix}"
             z_noacc_col = f"Z_sirna_noacc{suffix}"
-            z_aggs.append(pl.col(weight_col).sum().alias(z_col))
-            z_aggs.append(pl.col(weight_noacc_col).sum().alias(z_noacc_col))
+            z_aggs.extend([
+                pl.col(weight_col).sum().alias(z_col),
+                pl.col(weight_noacc_col).sum().alias(z_noacc_col),
+            ])
+            z_col_names.extend([z_col, z_noacc_col])
 
-        # Compute all Zs (parallelized reduction)
-        z_df = df.group_by("sirna_id").agg(z_aggs)
+            if in_predictions_mode:
+                w_on_col = f"W_on{suffix}"
+                w_on_noacc_col = f"W_on_noacc{suffix}"
+                on_aggs.extend([
+                    pl.col(weight_col).filter(pl.col("is_on_target")).sum().alias(w_on_col),
+                    pl.col(weight_noacc_col).filter(pl.col("is_on_target")).sum().alias(w_on_noacc_col),
+                ])
+
+        # Single pass for all Boltzmann weight columns
+        df = df.with_columns(all_weight_exprs)
+
+        # Single group_by for Z sums and (when applicable) on-target weight sums
+        agg_df = df.group_by("sirna_id").agg(z_aggs + on_aggs)
+        z_df = agg_df.select(["sirna_id"] + z_col_names)
 
         # --- Compute on-target weights ---
         on_target_weight_metadata = {}
@@ -425,28 +448,8 @@ class ProbabilityService:
         if in_predictions_mode:
             # Mode A: On-target rows are IN the DataFrame.
             # Z already includes them from the group_by sum above.
-            # We just need to extract W_on = sum(weight WHERE is_on_target) per siRNA.
-            on_aggs = []
-            for suffix, dG_col, dG_noacc_col in calc_configs:
-                weight_col = f"boltzmann_weight{suffix}"
-                weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
-                w_on_col = f"W_on{suffix}"
-                w_on_noacc_col = f"W_on_noacc{suffix}"
-
-                on_aggs.append(
-                    pl.col(weight_col)
-                    .filter(pl.col("is_on_target"))
-                    .sum()
-                    .alias(w_on_col)
-                )
-                on_aggs.append(
-                    pl.col(weight_noacc_col)
-                    .filter(pl.col("is_on_target"))
-                    .sum()
-                    .alias(w_on_noacc_col)
-                )
-
-            on_df = df.group_by("sirna_id").agg(on_aggs)
+            # Extract W_on columns from the combined aggregation result.
+            on_df = agg_df.drop(z_col_names)
 
             for row in on_df.to_dicts():
                 sid = row["sirna_id"]
