@@ -112,7 +112,11 @@ class IntersectionService:
         if workers > 1 and len(chrom_strand_pairs) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Cap concurrent threads to avoid peak-memory explosion from
+            # simultaneously materialising many chromosome-sized DataFrames.
+            # Empirically, 8 threads balances throughput and memory well.
+            safe_workers = min(workers, 8)
+            with ThreadPoolExecutor(max_workers=safe_workers) as pool:
                 futures = {pool.submit(_process_pair, pair): pair for pair in chrom_strand_pairs}
                 for future in as_completed(futures):
                     all_results.extend(future.result())
