@@ -20,6 +20,7 @@ class IntersectionService:
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
         mode: str = "gw",
+        workers: int = 1,
     ) -> pl.DataFrame:
         """Filter predictions to those overlapping transcriptome features.
 
@@ -27,6 +28,7 @@ class IntersectionService:
             risearch_df: DataFrame from RIsearchParser.
             transcriptome_df: DataFrame from TranscriptomeParser.
             mode: "gw" (genome-wide) or "tw" (transcriptome-wide).
+            workers: Number of threads for parallel chromosome processing.
 
         Returns:
             DataFrame containing intersected results.
@@ -34,7 +36,7 @@ class IntersectionService:
         if mode == "tw":
             return self._transcriptome_wide_join(risearch_df, transcriptome_df)
         else:
-            return self._genome_wide_streaming(risearch_df, transcriptome_df)
+            return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers)
 
     def _transcriptome_wide_join(
         self,
@@ -59,23 +61,23 @@ class IntersectionService:
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
+        workers: int = 1,
     ) -> pl.DataFrame:
         """Genome-wide intersection with streaming to limit memory.
 
-        Processes predictions in small batches and yields results immediately.
+        Processes predictions in small batches per (chrom, strand) pair.
+        When workers > 1, pairs are processed in parallel via ThreadPoolExecutor
+        (NCLS and Polars/Rust operations release the GIL).
         """
         BATCH_SIZE = 50000  # Process 50K predictions at a time
-
-        all_results = []
 
         # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
 
-        for pair in chrom_strand_pairs:
+        def _process_pair(pair: dict) -> list[pl.DataFrame]:
             chrom = pair["chrom"]
             strand = pair["strand"]
 
-            # Filter to this chromosome+strand
             preds = risearch_df.filter(
                 (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
             )
@@ -84,14 +86,13 @@ class IntersectionService:
             )
 
             if preds.height == 0 or trans.height == 0:
-                continue
+                return []
 
-            # Build transcript index once per chromosome
             trans_sorted = trans.sort("start")
             trans_index = self._build_transcript_index(trans_sorted)
             logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
 
-            # Process predictions in batches
+            results = []
             for batch_start in range(0, preds.height, BATCH_SIZE):
                 batch = preds.slice(batch_start, BATCH_SIZE)
                 batch_result = self._process_batch(batch, trans_index)
@@ -103,7 +104,21 @@ class IntersectionService:
                         subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
                         keep="first",
                     )
-                    all_results.append(batch_result)
+                    results.append(batch_result)
+            return results
+
+        all_results: list[pl.DataFrame] = []
+
+        if workers > 1 and len(chrom_strand_pairs) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_process_pair, pair): pair for pair in chrom_strand_pairs}
+                for future in as_completed(futures):
+                    all_results.extend(future.result())
+        else:
+            for pair in chrom_strand_pairs:
+                all_results.extend(_process_pair(pair))
 
         if not all_results:
             return self._empty_result_schema(risearch_df)
@@ -255,13 +270,24 @@ class IntersectionService:
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
         mode: str = "gw",
+        workers: int = 1,
     ) -> Iterator[pl.DataFrame]:
         """Streaming intersection that yields batches instead of accumulating.
 
         Use this for large datasets to avoid OOM.
+        When workers > 1, delegates to _genome_wide_streaming for parallel
+        chromosome processing, then yields results in chunks.
         """
         if mode == "tw":
             yield self._transcriptome_wide_join(risearch_df, transcriptome_df)
+            return
+
+        if workers > 1:
+            # Parallel path: collect all results, then yield in BATCH_SIZE chunks
+            result = self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers)
+            BATCH_SIZE = 50000
+            for offset in range(0, result.height, BATCH_SIZE):
+                yield result.slice(offset, BATCH_SIZE)
             return
 
         BATCH_SIZE = 50000

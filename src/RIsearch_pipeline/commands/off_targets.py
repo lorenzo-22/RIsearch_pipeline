@@ -98,7 +98,7 @@ def run(
         None,
         "-j",
         "--workers",
-        help="Number of parallel workers for multi-siRNA processing (default: CPU count).",
+        help="Number of parallel threads for intersection (default: CPU count).",
     ),
     gtf_file: Path = typer.Option(
         None,
@@ -284,6 +284,9 @@ def run(
     console.print(Panel("RIsearch Pipeline", style="bold cyan"))
 
     profiler = PipelineProfiler(enabled=profile)
+
+    import os
+    n_workers: int = workers if workers is not None else os.cpu_count() or 1
 
     try:
         # Validate input options
@@ -524,7 +527,7 @@ def run(
                             with profiler.stage(f"[dir] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
                                 intersected_chunks = []
                                 for intersect_batch in intersector.intersect_streaming(
-                                    df_chunk, df_trans, mode=predictions_type
+                                    df_chunk, df_trans, mode=predictions_type, workers=n_workers
                                 ):
                                     if intersect_batch.height > 0:
                                         intersected_chunks.append(intersect_batch)
@@ -811,7 +814,7 @@ def run(
                         if df_trans is not None:
                             with profiler.stage(f"[chunk] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
                                 df_chunk = intersector.intersect(
-                                    df_chunk, df_trans, mode=predictions_type
+                                    df_chunk, df_trans, mode=predictions_type, workers=n_workers
                                 )
                                 _s.rows_out = df_chunk.height
 
@@ -956,7 +959,7 @@ def run(
                     f"[bold green]Intersecting predictions (mode={predictions_type})..."
                 ):
                     intersector = IntersectionService()
-                    df = intersector.intersect(df, df_trans, mode=predictions_type)
+                    df = intersector.intersect(df, df_trans, mode=predictions_type, workers=n_workers)
                     _s.rows_out = df.height
 
             console.print(
