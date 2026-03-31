@@ -139,8 +139,10 @@ class PipelineProfiler:
         table.add_column("Time (s)", justify="right")
         table.add_column("% Total", justify="right")
         table.add_column("Rows in → out", justify="right")
-        table.add_column("ΔRSS (MB)", justify="right")
+        table.add_column("RSS (MB)", justify="right")
         table.add_column("Throughput (K rows/s)", justify="right")
+
+        peak_rss = max((s.mem_after_mb for s in self._stages), default=0.0)
 
         for s in self._stages:
             pct = (s.elapsed / total_time * 100) if total_time > 0 else 0.0
@@ -158,7 +160,12 @@ class PipelineProfiler:
             else:
                 rows_str = "–"
 
-            mem_str = f"{delta_mem:+.0f}" if abs(delta_mem) >= 1 else "–"
+            # Show absolute RSS after stage + delta in parentheses.
+            # RSS is always shown; delta shown only when ≥ 0.5 MB to avoid noise.
+            rss_str = f"{s.mem_after_mb:.0f}"
+            if abs(delta_mem) >= 0.5:
+                sign = "+" if delta_mem > 0 else ""
+                rss_str += f" ({sign}{delta_mem:.0f})"
             tput_str = f"{throughput:.1f}" if throughput > 0 else "–"
 
             table.add_row(
@@ -166,18 +173,18 @@ class PipelineProfiler:
                 f"{s.elapsed:.2f}",
                 f"{pct:.1f}%",
                 rows_str,
-                mem_str,
+                rss_str,
                 tput_str,
             )
 
-        # Separator + total
+        # Separator + total (peak RSS shown in the RSS column)
         table.add_section()
         table.add_row(
             "[bold]TOTAL[/bold]",
             f"[bold]{total_time:.2f}[/bold]",
             "[bold]100%[/bold]",
             "",
-            "",
+            f"[bold]peak {peak_rss:.0f}[/bold]",
             "",
         )
 
@@ -190,8 +197,9 @@ class PipelineProfiler:
                 {
                     "name": s.name,
                     "elapsed_s": round(s.elapsed, 4),
-                    "mem_before_mb": round(s.mem_before_mb, 1),
-                    "mem_after_mb": round(s.mem_after_mb, 1),
+                    "rss_before_mb": round(s.mem_before_mb, 1),
+                    "rss_after_mb": round(s.mem_after_mb, 1),
+                    "rss_delta_mb": round(s.mem_after_mb - s.mem_before_mb, 1),
                     "rows_in": s.rows_in,
                     "rows_out": s.rows_out,
                 }
