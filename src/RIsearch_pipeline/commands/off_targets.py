@@ -17,6 +17,7 @@ from rich.progress import (
 from loguru import logger
 
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+from RIsearch_pipeline.services.profiling import PipelineProfiler
 
 console = Console()
 
@@ -240,6 +241,11 @@ def run(
         "-v",
         help="Show detailed output (tables, stats).",
     ),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Print a per-stage timing and memory profile table at the end of the run.",
+    ),
     use_rnaplfold_cli: bool = typer.Option(
         False,
         "--use-rnaplfold-cli",
@@ -276,6 +282,8 @@ def run(
     risearch_parser = RIsearchParser()
 
     console.print(Panel("RIsearch Pipeline", style="bold cyan"))
+
+    profiler = PipelineProfiler(enabled=profile)
 
     try:
         # Validate input options
@@ -396,12 +404,14 @@ def run(
                     gtf_file = Path(gtf_file)
 
                 trans_parser = TranscriptomeParser()
-                df_trans = trans_parser.load_gtf(
-                    gtf_file,
-                    feature=feature_type,
-                    score_col=expression_metric,
-                    format=transcriptome_format,
-                )
+                with profiler.stage("Load transcriptome") as _s:
+                    df_trans = trans_parser.load_gtf(
+                        gtf_file,
+                        feature=feature_type,
+                        score_col=expression_metric,
+                        format=transcriptome_format,
+                    )
+                    _s.rows_out = df_trans.height
                 intersector = IntersectionService()
                 console.print(
                     f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
@@ -487,12 +497,13 @@ def run(
                         batch_files = all_files[start_idx:end_idx]
 
                         # Load entire batch - Polars parallelizes via Rayon
-                        df_chunk = risearch_parser.load_directory_batch(
-                            input_dir, batch_files
-                        )
-
-                        if sense_only:
-                            df_chunk = df_chunk.filter(pl.col("strand") == "+")
+                        with profiler.stage(f"[dir] Load batch {batch_idx + 1}") as _s:
+                            df_chunk = risearch_parser.load_directory_batch(
+                                input_dir, batch_files
+                            )
+                            if sense_only:
+                                df_chunk = df_chunk.filter(pl.col("strand") == "+")
+                            _s.rows_out = df_chunk.height
 
                         if df_chunk.height == 0:
                             progress.update(
@@ -504,12 +515,16 @@ def run(
 
                         # Accumulate intersection for the full batch to compute probabilities correctly
                         if df_trans is not None and intersector is not None:
-                            intersected_chunks = []
-                            for intersect_batch in intersector.intersect_streaming(
-                                df_chunk, df_trans, mode=predictions_type
-                            ):
-                                if intersect_batch.height > 0:
-                                    intersected_chunks.append(intersect_batch)
+                            with profiler.stage(f"[dir] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
+                                intersected_chunks = []
+                                for intersect_batch in intersector.intersect_streaming(
+                                    df_chunk, df_trans, mode=predictions_type
+                                ):
+                                    if intersect_batch.height > 0:
+                                        intersected_chunks.append(intersect_batch)
+
+                                if not intersected_chunks:
+                                    _s.rows_out = 0
 
                             if not intersected_chunks:
                                 progress.update(
@@ -551,15 +566,17 @@ def run(
                                 .drop("_self_hyb_emin")
                             )
 
-                        df_chunk, batch_metadata = (
-                            prob_service.calculate_probabilities_per_sirna(
-                                df_chunk,
-                                alpha_gamma_pairs=alpha_gamma_pairs,
-                                theta_values=theta_vals,
-                                on_target_expression=on_target_expression,
-                                on_target_map=on_target_map,
+                        with profiler.stage(f"[dir] Probabilities batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
+                            df_chunk, batch_metadata = (
+                                prob_service.calculate_probabilities_per_sirna(
+                                    df_chunk,
+                                    alpha_gamma_pairs=alpha_gamma_pairs,
+                                    theta_values=theta_vals,
+                                    on_target_expression=on_target_expression,
+                                    on_target_map=on_target_map,
+                                )
                             )
-                        )
+                            _s.rows_out = df_chunk.height
 
                         # Accumulate Z metadata
                         for sid, z_dict in batch_metadata["z_per_sirna"].items():
@@ -579,9 +596,10 @@ def run(
                             df_chunk = df_chunk.drop(drop_cols)
 
                         # Downcast and write Arrow IPC to scratch disk
-                        df_chunk = _downcast_schema(df_chunk)
-                        ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
-                        df_chunk.write_ipc(ipc_file)
+                        with profiler.stage(f"[dir] Write IPC batch {batch_idx + 1}", rows_in=df_chunk.height):
+                            df_chunk = _downcast_schema(df_chunk)
+                            ipc_file = scratch_path / f"batch_{ipc_idx:06d}.arrow"
+                            df_chunk.write_ipc(ipc_file)
                         total_rows += df_chunk.height
                         ipc_idx += 1
 
@@ -641,6 +659,7 @@ def run(
                 elif total_rows == 0:
                     console.print("[yellow]Warning:[/yellow] No predictions to process")
 
+            profiler.print_summary(console)
             return  # Exit after directory mode processing
 
         # Mode 2: Pre-computed RIsearch file
@@ -696,12 +715,14 @@ def run(
                         gtf_file = Path(gtf_file)
 
                     trans_parser = TranscriptomeParser()
-                    df_trans = trans_parser.load_gtf(
-                        gtf_file,
-                        feature=feature_type,
-                        score_col=expression_metric,
-                        format=transcriptome_format,
-                    )
+                    with profiler.stage("Load transcriptome") as _s:
+                        df_trans = trans_parser.load_gtf(
+                            gtf_file,
+                            feature=feature_type,
+                            score_col=expression_metric,
+                            format=transcriptome_format,
+                        )
+                        _s.rows_out = df_trans.height
                     intersector = IntersectionService()
                     console.print(
                         f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
@@ -763,12 +784,13 @@ def run(
                         batch_sirnas = sirna_ids[start_idx:end_idx]
 
                         # Load entire batch at once (enables Polars/Rayon parallelization)
-                        df_chunk = risearch_parser.load_by_sirna_batch(
-                            risearch_file, batch_sirnas
-                        )
-
-                        if sense_only:
-                            df_chunk = df_chunk.filter(pl.col("strand") == "+")
+                        with profiler.stage(f"[chunk] Load batch {batch_idx + 1}") as _s:
+                            df_chunk = risearch_parser.load_by_sirna_batch(
+                                risearch_file, batch_sirnas
+                            )
+                            if sense_only:
+                                df_chunk = df_chunk.filter(pl.col("strand") == "+")
+                            _s.rows_out = df_chunk.height
 
                         if df_chunk.height == 0:
                             progress.update(
@@ -780,9 +802,11 @@ def run(
 
                         # Intersect with transcriptome - Polars parallelizes this
                         if df_trans is not None:
-                            df_chunk = intersector.intersect(
-                                df_chunk, df_trans, mode=predictions_type
-                            )
+                            with profiler.stage(f"[chunk] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
+                                df_chunk = intersector.intersect(
+                                    df_chunk, df_trans, mode=predictions_type
+                                )
+                                _s.rows_out = df_chunk.height
 
                         # Build on-target map for all siRNAs in this batch
                         batch_map = None
@@ -794,15 +818,17 @@ def run(
                             }
 
                         # Calculate probabilities - Polars parallelizes across all rows
-                        df_chunk, batch_metadata = (
-                            prob_service.calculate_probabilities_per_sirna(
-                                df_chunk,
-                                alpha_gamma_pairs=alpha_gamma_pairs,
-                                theta_values=theta_vals,
-                                on_target_map=batch_map if batch_map else None,
-                                on_target_expression=on_target_expression,
+                        with profiler.stage(f"[chunk] Probabilities batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
+                            df_chunk, batch_metadata = (
+                                prob_service.calculate_probabilities_per_sirna(
+                                    df_chunk,
+                                    alpha_gamma_pairs=alpha_gamma_pairs,
+                                    theta_values=theta_vals,
+                                    on_target_map=batch_map if batch_map else None,
+                                    on_target_expression=on_target_expression,
+                                )
                             )
-                        )
+                            _s.rows_out = df_chunk.height
 
                         # Accumulate metadata
                         for sid, z_dict in batch_metadata["z_per_sirna"].items():
@@ -854,10 +880,13 @@ def run(
                 else:
                     console.print(df.head(10))
 
+                profiler.print_summary(console)
                 return  # Exit after chunk mode processing
 
             # Standard mode: Load entire file
-            df = risearch_parser.load(risearch_file)
+            with profiler.stage("Load predictions") as _s:
+                df = risearch_parser.load(risearch_file)
+                _s.rows_out = df.height
 
         logger.info(f"Loaded {df.height:,} predictions for {df['sirna_id'].n_unique()} siRNAs")
 
@@ -895,12 +924,14 @@ def run(
                 gtf_file = Path(gtf_file)
 
             trans_parser = TranscriptomeParser()
-            df_trans = trans_parser.load_gtf(
-                gtf_file,
-                feature=feature_type,
-                score_col=expression_metric,
-                format=transcriptome_format,
-            )
+            with profiler.stage("Load transcriptome") as _s:
+                df_trans = trans_parser.load_gtf(
+                    gtf_file,
+                    feature=feature_type,
+                    score_col=expression_metric,
+                    format=transcriptome_format,
+                )
+                _s.rows_out = df_trans.height
 
             if verbose:
                 console.print("[dim]--- Transcriptome Data (First 5 rows) ---[/dim]")
@@ -913,11 +944,13 @@ def run(
             logger.info(f"Transcriptome: {df_trans.height:,} rows, {df_trans['gene_id'].n_unique()} genes")
 
             # Perform intersection
-            with console.status(
-                f"[bold green]Intersecting predictions (mode={predictions_type})..."
-            ):
-                intersector = IntersectionService()
-                df = intersector.intersect(df, df_trans, mode=predictions_type)
+            with profiler.stage("Intersection", rows_in=df.height) as _s:
+                with console.status(
+                    f"[bold green]Intersecting predictions (mode={predictions_type})..."
+                ):
+                    intersector = IntersectionService()
+                    df = intersector.intersect(df, df_trans, mode=predictions_type)
+                    _s.rows_out = df.height
 
             console.print(
                 f"[green]✓[/green] Found [bold]{df.height}[/bold] intersecting off-target candidates"
@@ -1065,13 +1098,15 @@ def run(
             )
             console.print(f"  └─ {mode_msg} detection: {len(unique_sirnas)} siRNAs")
 
-            df, meta = prob_service.calculate_probabilities_per_sirna(
-                df,
-                alpha_gamma_pairs=alpha_gamma_pairs,
-                theta_values=theta_vals,
-                on_target_map=on_target_map if on_target_map else None,
-                on_target_expression=on_target_expression,
-            )
+            with profiler.stage("Probabilities (per-siRNA)", rows_in=df.height) as _s:
+                df, meta = prob_service.calculate_probabilities_per_sirna(
+                    df,
+                    alpha_gamma_pairs=alpha_gamma_pairs,
+                    theta_values=theta_vals,
+                    on_target_map=on_target_map if on_target_map else None,
+                    on_target_expression=on_target_expression,
+                )
+                _s.rows_out = df.height
             logger.info(f"After probabilities: {df.height:,} rows")
 
             # Write .summary files if output_file is provided
@@ -1106,14 +1141,16 @@ def run(
                 f"  └─ Total Z across all siRNAs (base): [bold]{total_z:.2e}[/bold]"
             )
         else:
-            df, meta = prob_service.calculate_probabilities(
-                df,
-                on_target_path=on_target_file,
-                query_path=query_file,
-                on_target_expression=on_target_expression,
-                on_target_accessibility_path=on_target_accessibility,
-                on_target_risearch_path=on_target_risearch_file,
-            )
+            with profiler.stage("Probabilities (single-siRNA)", rows_in=df.height) as _s:
+                df, meta = prob_service.calculate_probabilities(
+                    df,
+                    on_target_path=on_target_file,
+                    query_path=query_file,
+                    on_target_expression=on_target_expression,
+                    on_target_accessibility_path=on_target_accessibility,
+                    on_target_risearch_path=on_target_risearch_file,
+                )
+                _s.rows_out = df.height
 
             # 2. Boltzmann Weights
             console.print("  └─ Computing Boltzmann weights (α=1.0, γ=1.0)...")
@@ -1211,10 +1248,13 @@ def run(
         # Save to Output File
         if output_file:
             logger.info(f"Writing {df.height:,} rows to {output_file}")
-            df.write_csv(output_file, separator="\t")
+            with profiler.stage("Write output", rows_in=df.height):
+                df.write_csv(output_file, separator="\t")
             console.print(
                 f"\n[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
             )
+
+        profiler.print_summary(console)
 
     except FileNotFoundError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
