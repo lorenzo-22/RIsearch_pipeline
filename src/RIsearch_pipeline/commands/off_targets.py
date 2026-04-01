@@ -400,6 +400,11 @@ def run(
         "--output-format",
         help="Final output format: 'tsv', 'csv', or 'parquet'.",
     ),
+    summary_only: bool = typer.Option(
+        False,
+        "--summary-only",
+        help="Write only .summary files (partition-function stats per siRNA); skip the per-prediction output TSV/parquet. Equivalent to the old pipeline's default output.",
+    ),
 ) -> None:
     """
     Analyze siRNA off-target predictions.
@@ -598,11 +603,12 @@ def run(
                 f"  └─ Processing {len(all_files)} siRNAs with up to {n_proc} parallel workers"
             )
 
-            # Resolve output path up-front so each batch can stream directly
+            # Resolve output path up-front so each batch can stream directly.
+            # --summary-only skips writing the per-prediction file entirely.
             out_path = None
             _csv_first_batch = True
             _pq_writer = None
-            if output_file:
+            if output_file and not summary_only:
                 if output_format == "parquet":
                     out_path = output_file.with_suffix(".parquet")
                 elif output_format == "tsv":
@@ -721,33 +727,35 @@ def run(
                     console.print(
                         f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
                     )
-
-                    # Write .summary files (Opt 8: generate all text first, then
-                    # flush each file in one write_text call per siRNA)
-                    if global_z_stats:
-                        out_dir = output_file.parent
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        summary_texts = {
-                            sid: prob_service.format_legacy_summary(
-                                sid,
-                                global_z_stats[sid],
-                                global_on_w_stats.get(sid, {}),
-                                alpha_gamma_pairs,
-                                theta_vals,
-                            )
-                            for sid in global_z_stats
-                        }
-                        for sid, text in summary_texts.items():
-                            (out_dir / f"{sid}.summary").write_text(text)
-                        console.print(
-                            f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
-                        )
                 elif total_rows > 0:
                     console.print(
                         f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions (no output file specified)"
                     )
                 elif total_rows == 0:
                     console.print("[yellow]Warning:[/yellow] No predictions to process")
+
+                # Write .summary files whenever an output location is known.
+                # This always runs with --summary-only; also runs with -o even
+                # without --summary-only (generate all text first, then one
+                # write_text call per siRNA to minimise syscalls).
+                if global_z_stats and output_file:
+                    out_dir = output_file.parent
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    summary_texts = {
+                        sid: prob_service.format_legacy_summary(
+                            sid,
+                            global_z_stats[sid],
+                            global_on_w_stats.get(sid, {}),
+                            alpha_gamma_pairs,
+                            theta_vals,
+                        )
+                        for sid in global_z_stats
+                    }
+                    for sid, text in summary_texts.items():
+                        (out_dir / f"{sid}.summary").write_text(text)
+                    console.print(
+                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
+                    )
 
             finally:
                 # Ensure Parquet writer is always closed (flushes footer)

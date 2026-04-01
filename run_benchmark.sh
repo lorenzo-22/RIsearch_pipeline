@@ -116,7 +116,8 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 --gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 --theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \
 -oi ${SUBSET_ON_TARGET_MAP} \
--o ${SCRATCH}/new/output_${SUBSET_SIZE}.tsv"
+-o ${SCRATCH}/new/output_${SUBSET_SIZE}.tsv \
+--summary-only"
 
 # --- EXECUTION ---
 hyperfine \
