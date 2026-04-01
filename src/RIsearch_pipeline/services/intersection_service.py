@@ -74,18 +74,31 @@ class IntersectionService:
         # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
 
+        # Pre-partition predictions by (chrom, strand) once so each pair's
+        # processing function gets an O(1) lookup instead of an O(N) filter
+        # scan over the full DataFrame per pair.
+        preds_by_pair: dict[tuple, pl.DataFrame] = {
+            (key, val): sub_df
+            for (key, val), sub_df in risearch_df.partition_by(
+                ["chrom", "strand"], as_dict=True
+            ).items()
+        }
+        # Pre-partition transcriptome the same way
+        trans_by_pair: dict[tuple, pl.DataFrame] = {
+            (key, val): sub_df
+            for (key, val), sub_df in transcriptome_df.partition_by(
+                ["chrom", "strand"], as_dict=True
+            ).items()
+        }
+
         def _process_pair(pair: dict) -> list[pl.DataFrame]:
             chrom = pair["chrom"]
             strand = pair["strand"]
 
-            preds = risearch_df.filter(
-                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
-            )
-            trans = transcriptome_df.filter(
-                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
-            )
+            preds = preds_by_pair.get((chrom, strand))
+            trans = trans_by_pair.get((chrom, strand))
 
-            if preds.height == 0 or trans.height == 0:
+            if preds is None or preds.height == 0 or trans is None or trans.height == 0:
                 return []
 
             trans_sorted = trans.sort("start")
@@ -96,16 +109,17 @@ class IntersectionService:
             for batch_start in range(0, preds.height, BATCH_SIZE):
                 batch = preds.slice(batch_start, BATCH_SIZE)
                 batch_result = self._process_batch(batch, trans_index)
-
                 if batch_result is not None and batch_result.height > 0:
-                    # Deduplicate each batch before accumulating to keep peak
-                    # memory proportional to batch size rather than total rows.
-                    batch_result = batch_result.unique(
-                        subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-                        keep="first",
-                    )
                     results.append(batch_result)
-            return results
+
+            # Deduplicate once per (chrom, strand) pair rather than per batch.
+            if results:
+                combined = pl.concat(results, how="diagonal")
+                return [combined.unique(
+                    subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+                    keep="first",
+                )]
+            return []
 
         all_results: list[pl.DataFrame] = []
 

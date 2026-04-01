@@ -21,6 +21,134 @@ from RIsearch_pipeline.services.profiling import PipelineProfiler
 
 console = Console()
 
+# ---------------------------------------------------------------------------
+# Per-worker state for directory-mode parallel processing (spawn-safe).
+# _init_worker() runs once per spawned worker process and populates these
+# module-level globals.  spawn (not fork) is used to avoid Rayon/Polars
+# thread-pool deadlocks that occur when forking a process that already has
+# background threads active.
+# ---------------------------------------------------------------------------
+_WORKER_DF_TRANS: Optional[pl.DataFrame] = None
+_WORKER_INTERSECTOR: Optional[object] = None
+_WORKER_PROB_SERVICE: Optional[object] = None
+
+
+def _init_worker(
+    gtf_path: str,
+    feature: str,
+    score_col: str,
+    transcriptome_format: str,
+    accessibility_dir: str,
+    accessibility_file: str,
+    use_rnaplfold_cli: bool,
+    polars_max_threads: int,
+) -> None:
+    """Initialise per-worker state.  Called once per spawned worker process."""
+    import os
+    os.environ["POLARS_MAX_THREADS"] = str(polars_max_threads)
+
+    global _WORKER_DF_TRANS, _WORKER_INTERSECTOR, _WORKER_PROB_SERVICE
+
+    from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
+    from RIsearch_pipeline.services.intersection_service import IntersectionService
+    from RIsearch_pipeline.services.probability import ProbabilityService
+
+    if gtf_path:
+        _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
+            Path(gtf_path),
+            feature=feature,
+            score_col=score_col,
+            format=transcriptome_format,
+        )
+        _WORKER_INTERSECTOR = IntersectionService()
+
+    acc_service = None
+    precomputed_acc = None
+    if accessibility_file:
+        precomputed_acc = pl.read_parquet(accessibility_file)
+    elif accessibility_dir:
+        from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+        acc_service = GenomeAccessibilityService(Path(accessibility_dir), max_cached=4)
+
+    _WORKER_PROB_SERVICE = ProbabilityService(
+        acc_service,
+        use_rnaplfold_cli=use_rnaplfold_cli,
+        precomputed_accessibility=precomputed_acc,
+    )
+
+
+def _process_one_sirna(
+    file_path_str: str,
+    on_target_map: dict,
+    self_hyb_emin: dict,
+    alpha_gamma_pairs: list,
+    theta_vals: list,
+    on_target_expression: float,
+    sense_only: bool,
+    predictions_type: str,
+) -> tuple:
+    """Process a single siRNA file through the full pipeline.
+
+    Runs in a spawned worker process.  Reads worker state from module-level
+    globals populated by _init_worker().
+
+    Returns:
+        (PyArrow Table, metadata dict) or (None, {}) if no predictions remain.
+    """
+    import sys
+    _m = sys.modules[__name__]
+
+    df_trans = _m._WORKER_DF_TRANS
+    intersector = _m._WORKER_INTERSECTOR
+    prob_service = _m._WORKER_PROB_SERVICE
+
+    from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+
+    parser = RIsearchParser()
+    df = parser.load_single_file(Path(file_path_str))
+
+    if sense_only:
+        df = df.filter(pl.col("strand") == "+")
+    if df.height == 0:
+        return None, {}
+
+    # Apply self-hybridisation E_min override (one value per siRNA file)
+    if self_hyb_emin and "raw_e_min" in df.columns:
+        sirna_id = str(df["sirna_id"][0])
+        if sirna_id in self_hyb_emin:
+            df = df.with_columns(
+                pl.lit(self_hyb_emin[sirna_id]).cast(pl.Float32).alias("raw_e_min")
+            )
+
+    # Intersect with transcriptome (sequential — each worker owns its CPU)
+    if df_trans is not None and intersector is not None:
+        df = intersector.intersect(df, df_trans, mode=predictions_type, workers=1)
+        if df.height == 0:
+            return None, {}
+        df = df.unique(
+            subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+            keep="first",
+        )
+
+    # Probabilities
+    df, meta = prob_service.calculate_probabilities_per_sirna(
+        df,
+        alpha_gamma_pairs=alpha_gamma_pairs,
+        theta_values=theta_vals,
+        on_target_map=on_target_map,
+        on_target_expression=on_target_expression,
+    )
+
+    # Drop heavy intermediate columns before returning
+    drop_cols = [
+        c for c in df.columns
+        if c.startswith("boltzmann_weight") or c.startswith("Z_sirna") or c == "E_min"
+    ]
+    if drop_cols:
+        df = df.drop(drop_cols)
+
+    return df.to_arrow(), meta
+
 
 def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
     """Downcast columns to minimize Arrow IPC file size.
@@ -463,12 +591,11 @@ def run(
                         alpha_gamma_pairs.append((a, g))
             alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
 
-            # Process in batches, streaming directly to the final output format
-            num_batches = (len(all_files) + batch_size - 1) // batch_size
             total_rows = 0
+            n_proc = min(n_workers, len(all_files))
 
             console.print(
-                f"  └─ Processing in {num_batches} batches of up to {batch_size} files"
+                f"  └─ Processing {len(all_files)} siRNAs with up to {n_proc} parallel workers"
             )
 
             # Resolve output path up-front so each batch can stream directly
@@ -489,6 +616,24 @@ def run(
             global_on_w_stats = {}
 
             try:
+                from concurrent.futures import ProcessPoolExecutor, as_completed
+                import multiprocessing as _mp
+
+                # Polars threads per worker: 2 keeps N_workers × 2 ≤ available cores.
+                polars_threads_per_worker = max(1, n_workers // n_proc)
+
+                # Build initializer args so each spawned worker loads the
+                # transcriptome independently (avoids fork+Rayon deadlocks).
+                _init_args = (
+                    str(gtf_file) if gtf_file else "",
+                    feature_type,
+                    expression_metric,
+                    transcriptome_format,
+                    str(accessibility_dir) if accessibility_dir else "",
+                    str(accessibility_file) if accessibility_file else "",
+                    use_rnaplfold_cli,
+                    polars_threads_per_worker,
+                )
 
                 with Progress(
                     SpinnerColumn(),
@@ -498,138 +643,73 @@ def run(
                     TimeElapsedColumn(),
                     console=console,
                 ) as progress:
-                    task = progress.add_task("Processing batches...", total=num_batches)
+                    task = progress.add_task(
+                        f"Processing siRNAs...", total=len(all_files)
+                    )
 
-                    for batch_idx in range(num_batches):
-                        start_idx = batch_idx * batch_size
-                        end_idx = min(start_idx + batch_size, len(all_files))
-                        batch_files = all_files[start_idx:end_idx]
+                    with ProcessPoolExecutor(
+                        max_workers=n_proc,
+                        mp_context=_mp.get_context("spawn"),
+                        initializer=_init_worker,
+                        initargs=_init_args,
+                    ) as pool:
+                        futures = {
+                            pool.submit(
+                                _process_one_sirna,
+                                str(f),
+                                on_target_map,
+                                self_hyb_emin,
+                                alpha_gamma_pairs,
+                                theta_vals,
+                                on_target_expression,
+                                sense_only,
+                                predictions_type,
+                            ): f
+                            for f in all_files
+                        }
 
-                        # Load entire batch - Polars parallelizes via Rayon
-                        with profiler.stage(f"[dir] Load batch {batch_idx + 1}") as _s:
-                            df_chunk = risearch_parser.load_directory_batch(
-                                input_dir, batch_files
-                            )
-                            if sense_only:
-                                df_chunk = df_chunk.filter(pl.col("strand") == "+")
-                            _s.rows_out = df_chunk.height
-
-                        if df_chunk.height == 0:
+                        completed = 0
+                        for future in as_completed(futures):
+                            completed += 1
                             progress.update(
                                 task,
                                 advance=1,
-                                description=f"Batch {batch_idx + 1}: empty",
+                                description=f"Batch {completed}/{len(all_files)}",
                             )
-                            continue
 
-                        # Accumulate intersection for the full batch to compute probabilities correctly
-                        if df_trans is not None and intersector is not None:
-                            with profiler.stage(f"[dir] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
-                                intersected_chunks = []
-                                for intersect_batch in intersector.intersect_streaming(
-                                    df_chunk, df_trans, mode=predictions_type, workers=n_workers
-                                ):
-                                    if intersect_batch.height > 0:
-                                        intersected_chunks.append(intersect_batch)
-
-                                if not intersected_chunks:
-                                    _s.rows_out = 0
-
-                            if not intersected_chunks:
-                                progress.update(
-                                    task,
-                                    advance=1,
-                                    description=f"Batch {batch_idx + 1}/{num_batches}",
-                                )
+                            try:
+                                arrow_table, batch_metadata = future.result()
+                            except Exception as exc:
+                                f = futures[future]
+                                logger.error(f"Worker failed for {f.name}: {exc}")
                                 continue
 
-                            df_chunk = pl.concat(intersected_chunks)
-                            del intersected_chunks
-                            # Dedup: a prediction can be contained in multiple exons of the
-                            # same transcript (exon-level BED). Keep one row per
-                            # (siRNA, genomic hit, transcript) triple.
-                            df_chunk = df_chunk.unique(
-                                subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-                                keep="first",
-                            )
+                            if arrow_table is None:
+                                continue
 
-                        # Override raw_e_min with self-hybridisation values when available.
-                        # self_hyb_emin anchors alpha/gamma clamping to the siRNA's own
-                        # complement energy (more negative than any genomic hit), matching
-                        # the old pipeline's behaviour.
-                        if self_hyb_emin and "raw_e_min" in df_chunk.columns:
-                            emin_lut = pl.DataFrame({
-                                "sirna_id": list(self_hyb_emin.keys()),
-                                "_self_hyb_emin": pl.Series(
-                                    list(self_hyb_emin.values()), dtype=pl.Float32
-                                ),
-                            })
-                            df_chunk = (
-                                df_chunk.join(emin_lut, on="sirna_id", how="left")
-                                .with_columns(
-                                    pl.when(pl.col("_self_hyb_emin").is_not_null())
-                                    .then(pl.col("_self_hyb_emin"))
-                                    .otherwise(pl.col("raw_e_min"))
-                                    .alias("raw_e_min")
-                                )
-                                .drop("_self_hyb_emin")
-                            )
+                            df_chunk = pl.from_arrow(arrow_table)
+                            total_rows += df_chunk.height
 
-                        with profiler.stage(f"[dir] Probabilities batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
-                            df_chunk, batch_metadata = (
-                                prob_service.calculate_probabilities_per_sirna(
-                                    df_chunk,
-                                    alpha_gamma_pairs=alpha_gamma_pairs,
-                                    theta_values=theta_vals,
-                                    on_target_expression=on_target_expression,
-                                    on_target_map=on_target_map,
-                                )
-                            )
-                            _s.rows_out = df_chunk.height
+                            # Accumulate Z metadata
+                            for sid, z_dict in batch_metadata.get("z_per_sirna", {}).items():
+                                global_z_stats[sid] = z_dict
+                            for sid, w_dict in batch_metadata.get("on_target_weights", {}).items():
+                                global_on_w_stats[sid] = w_dict
 
-                        # Accumulate Z metadata
-                        for sid, z_dict in batch_metadata["z_per_sirna"].items():
-                            global_z_stats[sid] = z_dict
-                        for sid, w_dict in batch_metadata["on_target_weights"].items():
-                            global_on_w_stats[sid] = w_dict
-
-                        # Drop heavy intermediate columns before serialization
-                        drop_cols = [
-                            c
-                            for c in df_chunk.columns
-                            if c.startswith("boltzmann_weight")
-                            or c.startswith("Z_sirna")
-                            or c == "E_min"
-                        ]
-                        if drop_cols:
-                            df_chunk = df_chunk.drop(drop_cols)
-
-                        # Write directly to the final output format (Opt 6: no IPC
-                        # intermediate). Opt 7: only downcast for Parquet; CSV/TSV
-                        # writes strings so downcasting provides no benefit there.
-                        total_rows += df_chunk.height
-                        if out_path is not None:
-                            with profiler.stage(f"[dir] Write batch {batch_idx + 1}", rows_in=df_chunk.height):
+                            if out_path is not None:
                                 if output_format == "parquet":
-                                    arrow_table = _downcast_schema(df_chunk).to_arrow()
+                                    arrow_tbl = _downcast_schema(df_chunk).to_arrow()
                                     if _pq_writer is None:
                                         import pyarrow.parquet as pq
-                                        _pq_writer = pq.ParquetWriter(out_path, arrow_table.schema)
-                                    _pq_writer.write_table(arrow_table)
+                                        _pq_writer = pq.ParquetWriter(out_path, arrow_tbl.schema)
+                                    _pq_writer.write_table(arrow_tbl)
                                 else:
                                     sep = "\t" if output_format == "tsv" else ","
                                     with open(out_path, "w" if _csv_first_batch else "a") as _f:
                                         df_chunk.write_csv(_f, separator=sep, include_header=_csv_first_batch)
                                     _csv_first_batch = False
 
-                        # Free memory
-                        del df_chunk
-
-                        progress.update(
-                            task,
-                            advance=1,
-                            description=f"Batch {batch_idx + 1}/{num_batches}",
-                        )
+                            del df_chunk
 
                 # Report results
                 if total_rows > 0 and out_path is not None:

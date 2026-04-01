@@ -266,6 +266,36 @@ class RIsearchParser:
 
         return df
 
+    def load_single_file(self, file_path: Path) -> pl.DataFrame:
+        """Load one per-siRNA RIsearch file in a single scan.
+
+        Unlike load_directory_batch, which scans each file twice (once for
+        predictions, once for raw_e_min), this reads the file once and
+        derives raw_e_min from the already-loaded data.
+
+        Args:
+            file_path: Path to a single RIsearch output file (.tsv or .gz).
+
+        Returns:
+            Polars DataFrame with predictions and raw_e_min column.
+        """
+        df = (
+            pl.scan_csv(file_path, separator="\t", has_header=False)
+            .select([
+                pl.col("column_1").alias("sirna_id"),
+                pl.col("column_4").alias("chrom"),
+                pl.col("column_5").cast(pl.Int32).alias("start"),
+                pl.col("column_6").cast(pl.Int32).alias("end"),
+                pl.col("column_7").alias("strand"),
+                pl.col("column_8").cast(pl.Float32).alias("energy"),
+            ])
+            .collect()
+        )
+        raw_emin = df.group_by("sirna_id").agg(
+            pl.col("energy").min().alias("raw_e_min")
+        )
+        return df.join(raw_emin, on="sirna_id", how="left")
+
     def list_directory_files(self, directory: Path) -> list[Path]:
         """List all RIsearch output files in a directory.
 
