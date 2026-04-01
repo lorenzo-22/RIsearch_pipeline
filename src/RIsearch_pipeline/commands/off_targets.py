@@ -622,8 +622,13 @@ def run(
                 # Polars threads per worker: 2 keeps N_workers × 2 ≤ available cores.
                 polars_threads_per_worker = max(1, n_workers // n_proc)
 
-                # Build initializer args so each spawned worker loads the
-                # transcriptome independently (avoids fork+Rayon deadlocks).
+                # spawn: each worker starts a fresh Python interpreter, avoiding
+                # fork+Rayon deadlocks. Benchmarks show spawn is faster than
+                # forkserver for this workload (13.8s vs 17.6s at 32 workers).
+                _ctx = _mp.get_context("spawn")
+
+                # Build initializer args so each worker process loads the
+                # transcriptome independently.
                 _init_args = (
                     str(gtf_file) if gtf_file else "",
                     feature_type,
@@ -649,7 +654,7 @@ def run(
 
                     with ProcessPoolExecutor(
                         max_workers=n_proc,
-                        mp_context=_mp.get_context("spawn"),
+                        mp_context=_ctx,
                         initializer=_init_worker,
                         initargs=_init_args,
                     ) as pool:
