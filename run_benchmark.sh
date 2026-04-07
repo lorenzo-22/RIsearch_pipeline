@@ -80,9 +80,24 @@ echo "  IDs:     $SUBSET_IDS"
 echo "  Results: $SUBSET_RESULTS ($(ls "$SUBSET_RESULTS" | wc -l) files)"
 echo "  OT map:  $SUBSET_ON_TARGET_MAP"
 
+ACC_PARQUET="${RAMDISK}/subset_input/subset_${SUBSET_SIZE}_accessibility.parquet"
+
+# --- 3. Pre-compute accessibility Parquet (one-time, not benchmarked) ---
+echo "--- Pre-computing accessibility Parquet from binary profiles ---"
+if [ ! -f "$ACC_PARQUET" ]; then
+    cd "${NEW_PIPELINE_DIR}" && \
+    uv run src/RIsearch_pipeline/cli.py accessibility \
+        --profiles-dir "${TMP_ACC}" \
+        --risearch-dir "${SUBSET_RESULTS}" \
+        --output "${ACC_PARQUET}"
+    echo "  Parquet written to: ${ACC_PARQUET}"
+else
+    echo "  Using cached: ${ACC_PARQUET}"
+fi
+
 TIME_LOG="${RAMDISK}/benchmark_metrics_${SUBSET_SIZE}.log"
 
-# --- 3. Hyperfine Benchmark ---
+# --- 4. Hyperfine Benchmark ---
 echo "--- Starting Hyperfine Benchmark ---"
 
 # --- COMMAND DEFINITIONS ---
@@ -111,7 +126,7 @@ mkdir -p ${SCRATCH}/new && \
 uv run src/RIsearch_pipeline/cli.py off-targets \
 -r ${SUBSET_RESULTS} \
 -t ${RAMDISK}/E-MTAB-2770_fixed.bed \
--a ${TMP_ACC} \
+--accessibility-file ${ACC_PARQUET} \
 --alpha '0.5;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 --gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 --theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \

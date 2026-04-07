@@ -6,12 +6,12 @@ from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
 
 
 def run(
-    genome: Path = typer.Option(..., "--fasta", "-f", help="Path to genome FASTA file"),
+    genome: Optional[Path] = typer.Option(None, "--fasta", "-f", help="Path to genome FASTA file (not needed with --profiles-dir)"),
     output: Path = typer.Option(
         ...,
         "--output",
         "-o",
-        help="Output directory (full-genome mode) or .parquet file (binding-site mode)",
+        help="Output directory (full-genome mode) or .parquet file (binding-site / profiles mode)",
     ),
     risearch_dir: Optional[Path] = typer.Option(
         None,
@@ -24,6 +24,14 @@ def run(
         "--risearch-file",
         "-R",
         help="Single merged RIsearch TSV file (alternative to --risearch-dir).",
+    ),
+    profiles_dir: Optional[Path] = typer.Option(
+        None,
+        "--profiles-dir",
+        "-p",
+        help="Directory of pre-computed binary/npy accessibility profiles. "
+             "Use with --risearch-dir to convert existing profiles to Parquet "
+             "without re-running ViennaRNA.",
     ),
     window_size: int = typer.Option(80, "--window", "-W", help="Window size (W)"),
     max_span: int = typer.Option(40, "--span", "-L", help="Max base pair span (L)"),
@@ -43,10 +51,11 @@ def run(
     """
     Pre-compute accessibility profiles for a genome.
 
-    Two modes:
-    - Full-genome: computes profiles for every position.
-    - Binding-site: computes only for predicted binding sites.
-      Accepts --risearch-dir (per-siRNA files) or --risearch-file (single merged TSV).
+    Three modes:
+    - Full-genome: computes profiles for every position (requires --fasta).
+    - Binding-site: computes only for predicted binding sites via ViennaRNA (requires --fasta + --risearch-dir).
+    - Profiles-to-Parquet: converts existing binary/npy profiles to a per-site
+      Parquet (no ViennaRNA needed). Use --profiles-dir + --risearch-dir.
     """
     from rich.console import Console
     from rich.progress import (
@@ -60,6 +69,38 @@ def run(
     )
 
     console = Console(stderr=True)
+
+    # --- Profiles-to-Parquet mode ---
+    if profiles_dir is not None:
+        if risearch_dir is None:
+            console.print("[red]Error: --profiles-dir requires --risearch-dir[/red]")
+            raise typer.Exit(code=1)
+
+        out_path = output if output.suffix == ".parquet" else output / "accessibility.parquet"
+        service = GenomeAccessibilityService(profiles_dir)
+
+        console.print("\n[bold]Profiles → Parquet conversion[/bold]")
+        console.print(f"  Profiles dir: {profiles_dir}")
+        console.print(f"  RIsearch dir: {risearch_dir}")
+        console.print(f"  Output:       {out_path}\n")
+
+        try:
+            result_path = service.precompute_parquet_from_profiles(
+                risearch_dir=risearch_dir,
+                output_path=out_path,
+            )
+            console.print(
+                f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]"
+            )
+        except Exception as e:
+            logger.exception("Failed to convert profiles to Parquet")
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+        return
+
+    if genome is None:
+        console.print("[red]Error: --fasta is required for full-genome and binding-site modes[/red]")
+        raise typer.Exit(code=1)
 
     if risearch_dir is not None or risearch_file is not None:
         # --- Binding-site mode ---

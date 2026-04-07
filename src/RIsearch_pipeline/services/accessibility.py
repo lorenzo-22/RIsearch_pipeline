@@ -1148,3 +1148,123 @@ class GenomeAccessibilityService:
             return candidates_txt[0]
 
         return None
+
+    def precompute_parquet_from_profiles(
+        self,
+        risearch_dir: Path,
+        output_path: Path,
+    ) -> Path:
+        """Convert existing binary/npy profiles to a per-site accessibility Parquet.
+
+        Scans all RIsearch files in risearch_dir to collect unique
+        (chrom, start, end, strand) binding sites, then batch-looks up the
+        opening energy for each site using vectorized numpy indexing against
+        the already-computed profiles in self.data_dir.  No ViennaRNA folding
+        is performed — profiles must exist on disk.
+
+        The output Parquet has columns:
+            chrom (Utf8), start (Int32), end (Int32), strand (Utf8),
+            opening_energy (Float32)
+
+        This Parquet can then be passed to ``off-targets --accessibility-file``
+        to replace the per-row query_single() loop with a single Polars join.
+
+        Args:
+            risearch_dir: Directory of per-siRNA RIsearch output files.
+            output_path:  Destination .parquet file path.
+
+        Returns:
+            output_path after writing.
+        """
+        import polars as pl
+
+        from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+
+        # --- 1. Collect unique binding sites ---
+        parser = RIsearchParser()
+        all_files = parser.list_directory_files(risearch_dir)
+        if not all_files:
+            raise AccessibilityError(f"No RIsearch files found in {risearch_dir}")
+
+        logger.info(f"Scanning {len(all_files)} files for unique binding sites...")
+        lazy_frames = [
+            pl.scan_csv(f, separator="\t", has_header=False).select([
+                pl.col("column_4").alias("chrom"),
+                pl.col("column_5").cast(pl.Int32).alias("start"),
+                pl.col("column_6").cast(pl.Int32).alias("end"),
+                pl.col("column_7").alias("strand"),
+            ])
+            for f in all_files
+            if f.stat().st_size > 0
+        ]
+        # Use streaming engine to avoid loading all rows into memory at once.
+        # unique() before collect() is pushed down by the streaming planner.
+        sites = (
+            pl.concat(lazy_frames)
+            .unique(subset=["chrom", "start", "end", "strand"])
+            .collect(engine="streaming")
+        )
+        logger.info(f"Found {sites.height:,} unique binding sites across {sites['chrom'].n_unique()} chromosomes")
+
+        # --- 2. Batch lookup per (chrom, strand) ---
+        results: list[pl.DataFrame] = []
+
+        for (chrom, strand), group in sites.partition_by(
+            ["chrom", "strand"], as_dict=True
+        ).items():
+            path = self._find_profile(chrom, strand)
+            if path is None:
+                logger.warning(f"No profile found for {chrom} {strand}, using default penalty 10.0")
+                results.append(
+                    group.with_columns(pl.lit(10.0).cast(pl.Float32).alias("opening_energy"))
+                )
+                continue
+
+            # Load profile (memmap for .bin, mmap for .npy)
+            is_legacy_bin = False
+            if path.suffix == ".npy":
+                profile = np.load(path, mmap_mode="r")
+            elif path.suffix == ".bin":
+                raw = np.memmap(path, dtype=np.uint8, mode="r")
+                profile = raw.reshape(-1, 30) if len(raw) % 30 == 0 else raw
+                is_legacy_bin = True
+            else:
+                profile = self._parse_openen_text(path)
+
+            seq_len = len(profile)
+
+            # Vectorized index computation (mirrors query_single logic)
+            starts = group["start"].to_numpy().astype(np.int64)
+            ends = group["end"].to_numpy().astype(np.int64)
+
+            start0 = starts - 1          # 0-based
+            end0 = ends                  # half-open
+            interaction_len = end0 - start0
+
+            if profile.ndim == 2:
+                matrix_width = profile.shape[1]
+                col_idx = np.minimum(interaction_len, matrix_width) - 1
+                col_idx = np.maximum(col_idx, 0)
+                row_idx = np.where(strand == "+", end0 - 1, start0)
+                row_idx = np.clip(row_idx, 0, seq_len - 1)
+                raw_vals = profile[row_idx, col_idx].astype(np.float32)
+            else:
+                row_idx = np.where(strand == "+", end0 - 1, start0)
+                row_idx = np.clip(row_idx, 0, seq_len - 1)
+                raw_vals = profile[row_idx].astype(np.float32)
+
+            if is_legacy_bin:
+                raw_vals = raw_vals / 10.0
+
+            # Quantize to 0.1 resolution (legacy compatibility)
+            raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
+
+            results.append(
+                group.with_columns(pl.Series("opening_energy", raw_vals, dtype=pl.Float32))
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        out_df = pl.concat(results, how="diagonal")
+        out_df.write_parquet(output_path)
+        logger.info(f"Wrote {out_df.height:,} rows to {output_path}")
+        return output_path
