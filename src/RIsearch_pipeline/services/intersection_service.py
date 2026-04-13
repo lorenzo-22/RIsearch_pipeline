@@ -15,6 +15,11 @@ except Exception:  # pragma: no cover - optional dependency
 class IntersectionService:
     """Service to intersect off-target predictions with genomic features."""
 
+    def __init__(self) -> None:
+        # Cache NCLS index per (chrom, strand) so repeated calls with the same
+        # transcriptome (i.e. every siRNA in a worker) skip the O(N log N) build.
+        self._trans_index_cache: dict[tuple, dict] = {}
+
     def intersect(
         self,
         risearch_df: pl.DataFrame,
@@ -101,9 +106,13 @@ class IntersectionService:
             if preds is None or preds.height == 0 or trans is None or trans.height == 0:
                 return []
 
-            trans_sorted = trans.sort("start")
-            trans_index = self._build_transcript_index(trans_sorted)
-            logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
+            cache_key = (chrom, strand)
+            trans_index = self._trans_index_cache.get(cache_key)
+            if trans_index is None:
+                trans_sorted = trans.sort("start")
+                trans_index = self._build_transcript_index(trans_sorted)
+                self._trans_index_cache[cache_key] = trans_index
+            logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {len(trans_index['starts'])} transcripts")
 
             results = []
             for batch_start in range(0, preds.height, BATCH_SIZE):

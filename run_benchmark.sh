@@ -12,8 +12,8 @@ NEW_PIPELINE_DIR="/dev/shm/src/RIsearch_pipeline"
 # Input Source
 INPUT_FASTA="${RAMDISK}/huesken_on.fa"
 
-# CLI Argument for subset size (default to 10 if not provided)
-SUBSET_SIZE=${1:-10}
+# Subset sizes to benchmark
+SUBSET_SIZES=(500 1000 2000)
 
 module load RIsearch2
 module load bedtools
@@ -37,75 +37,63 @@ if ! command -v hyperfine &> /dev/null; then
     exit 1
 fi
 
-# --- 2. Random Subsetting ---
-echo "--- Creating random subset of $SUBSET_SIZE siRNAs ---"
+# --- Main loop over subset sizes ---
+for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
+    echo ""
+    echo "===== BENCHMARK SIZE: ${SUBSET_SIZE} siRNAs ====="
 
-# Files to be generated
-SUBSET_FA="${SUBSET_DIR}/subset_${SUBSET_SIZE}.fa"
-SUBSET_IDS="${SUBSET_DIR}/subset_${SUBSET_SIZE}.ids"
-SUBSET_RESULTS="${SUBSET_DIR}/subset_${SUBSET_SIZE}_results"
+    # --- 2. Random Subsetting ---
+    echo "--- Creating random subset of $SUBSET_SIZE siRNAs ---"
 
-# Step A: Subset the FASTA file
-# 1. 'paste - -' pairs Header+Sequence onto one line
-# 2. 'shuf' selects random lines
-# 3. 'tr' restores the newline for FASTA format
-paste - - < "$INPUT_FASTA" | shuf -n "$SUBSET_SIZE" | tr '\t' '\n' > "$SUBSET_FA"
+    # Files to be generated
+    SUBSET_FA="${SUBSET_DIR}/subset_${SUBSET_SIZE}.fa"
+    SUBSET_IDS="${SUBSET_DIR}/subset_${SUBSET_SIZE}.ids"
+    SUBSET_RESULTS="${SUBSET_DIR}/subset_${SUBSET_SIZE}_results"
 
-# Step B: Generate the matching IDs file from the subset FASTA
-# We extract the headers (removing '>') to create the ID list
-grep "^>" "$SUBSET_FA" | sed 's/^>//' > "$SUBSET_IDS"
+    # Step A: Subset the FASTA file
+    # 1. 'paste - -' pairs Header+Sequence onto one line
+    # 2. 'shuf' selects random lines
+    # 3. 'tr' restores the newline for FASTA format
+    paste - - < "$INPUT_FASTA" | shuf -n "$SUBSET_SIZE" | tr '\t' '\n' > "$SUBSET_FA"
 
-# Step C: Copy matching RIsearch result files to a subset directory
-# The new pipeline takes a directory; this ensures both pipelines see the same inputs
-rm -rf "$SUBSET_RESULTS" && mkdir -p "$SUBSET_RESULTS"
-while IFS= read -r sid; do
-    src="${RESULTS_DIR}/risearch_${sid}.out.gz"
-    if [ -f "$src" ]; then
-        cp "$src" "$SUBSET_RESULTS/"
-    else
-        echo "Warning: $src not found, skipping"
-    fi
-done < "$SUBSET_IDS"
+    # Step B: Generate the matching IDs file from the subset FASTA
+    # We extract the headers (removing '>') to create the ID list
+    grep "^>" "$SUBSET_FA" | sed 's/^>//' > "$SUBSET_IDS"
 
-# Step D: Build siRNA → on-target gene ID mapping (gene ID = first field of siRNA ID)
-SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
-while IFS= read -r sid; do
-    gene_id=$(echo "$sid" | cut -d'-' -f1)
-    printf '%s\t%s\n' "$sid" "$gene_id"
-done < "$SUBSET_IDS" > "$SUBSET_ON_TARGET_MAP"
+    # Step C: Copy matching RIsearch result files to a subset directory
+    # The new pipeline takes a directory; this ensures both pipelines see the same inputs
+    rm -rf "$SUBSET_RESULTS" && mkdir -p "$SUBSET_RESULTS"
+    while IFS= read -r sid; do
+        src="${RESULTS_DIR}/risearch_${sid}.out.gz"
+        if [ -f "$src" ]; then
+            cp "$src" "$SUBSET_RESULTS/"
+        else
+            echo "Warning: $src not found, skipping"
+        fi
+    done < "$SUBSET_IDS"
 
-echo "Subset created:"
-echo "  FASTA:   $SUBSET_FA"
-echo "  IDs:     $SUBSET_IDS"
-echo "  Results: $SUBSET_RESULTS ($(ls "$SUBSET_RESULTS" | wc -l) files)"
-echo "  OT map:  $SUBSET_ON_TARGET_MAP"
+    # Step D: Build siRNA → on-target gene ID mapping (gene ID = first field of siRNA ID)
+    SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
+    while IFS= read -r sid; do
+        gene_id=$(echo "$sid" | cut -d'-' -f1)
+        printf '%s\t%s\n' "$sid" "$gene_id"
+    done < "$SUBSET_IDS" > "$SUBSET_ON_TARGET_MAP"
 
-ACC_PARQUET="${RAMDISK}/subset_input/subset_${SUBSET_SIZE}_accessibility.parquet"
+    echo "Subset created:"
+    echo "  FASTA:   $SUBSET_FA"
+    echo "  IDs:     $SUBSET_IDS"
+    echo "  Results: $SUBSET_RESULTS ($(ls "$SUBSET_RESULTS" | wc -l) files)"
+    echo "  OT map:  $SUBSET_ON_TARGET_MAP"
 
-# --- 3. Pre-compute accessibility Parquet (one-time, not benchmarked) ---
-echo "--- Pre-computing accessibility Parquet from binary profiles ---"
-if [ ! -f "$ACC_PARQUET" ]; then
-    cd "${NEW_PIPELINE_DIR}" && \
-    uv run src/RIsearch_pipeline/cli.py accessibility \
-        --profiles-dir "${TMP_ACC}" \
-        --risearch-dir "${SUBSET_RESULTS}" \
-        --output "${ACC_PARQUET}"
-    echo "  Parquet written to: ${ACC_PARQUET}"
-else
-    echo "  Using cached: ${ACC_PARQUET}"
-fi
+    # --- 4. Hyperfine Benchmark ---
+    echo "--- Starting Hyperfine Benchmark for ${SUBSET_SIZE} siRNAs ---"
 
-TIME_LOG="${RAMDISK}/benchmark_metrics_${SUBSET_SIZE}.log"
+    # --- COMMAND DEFINITIONS ---
 
-# --- 4. Hyperfine Benchmark ---
-echo "--- Starting Hyperfine Benchmark ---"
+    # 1. OLD VERSION (Conda + Parallel + Python 2.7)
+    CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
 
-# --- COMMAND DEFINITIONS ---
-
-# 1. OLD VERSION (Conda + Parallel + Python 2.7)
-CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
-
-CMD_OLD="${CONDA_SETUP} && \
+    CMD_OLD="${CONDA_SETUP} && \
 mkdir -p ${SCRATCH}/old && \
 cd ${SCRATCH} && \
 parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
@@ -120,13 +108,14 @@ parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
 -q '{1}-{2}-{3}' \
 -os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
 
-# 2. NEW VERSION (uv + Python 3, directory mode)
-CMD_NEW="cd ${NEW_PIPELINE_DIR} && \
+    # 2. NEW VERSION (uv + Python 3, directory mode, 32 workers)
+    CMD_NEW="cd ${NEW_PIPELINE_DIR} && \
 mkdir -p ${SCRATCH}/new && \
 uv run src/RIsearch_pipeline/cli.py off-targets \
+-j 32 \
 -r ${SUBSET_RESULTS} \
 -t ${RAMDISK}/E-MTAB-2770_fixed.bed \
---accessibility-file ${ACC_PARQUET} \
+--accessibility-dir ${TMP_ACC} \
 --alpha '0.5;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 --gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 --theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \
@@ -134,17 +123,27 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 -o ${SCRATCH}/new/output_${SUBSET_SIZE}.tsv \
 --summary-only"
 
-# --- EXECUTION ---
-hyperfine \
-    --shell bash \
-    --warmup 1 \
-    --runs 3 \
-    --show-output \
-    --export-markdown benchmark_results_${SUBSET_SIZE}.md \
-    -n "Old Version (Parallel+Python2.7)" \
-    "$CMD_OLD" \
-    -n "New Version (uv+Python3)" \
-    "$CMD_NEW"
+    # --- EXECUTION ---
+    hyperfine \
+        --shell bash \
+        --warmup 2 \
+        --runs 5 \
+        --prepare "rm -rf ${SCRATCH}/old ${SCRATCH}/new" \
+        --show-output \
+        --export-markdown benchmark_results_${SUBSET_SIZE}.md \
+        -n "Old Version (Parallel+Python2.7)" \
+        "$CMD_OLD" \
+        -n "New Version (uv+Python3)" \
+        "$CMD_NEW"
 
-echo "--- Benchmark Complete ---"
-echo "Results saved to: benchmark_results_${SUBSET_SIZE}.md"
+    echo "Results for ${SUBSET_SIZE} saved to: benchmark_results_${SUBSET_SIZE}.md"
+
+    # --- 5. Cleanup output files for this size ---
+    rm -rf "${SCRATCH}/old" "${SCRATCH}/new"
+    echo "--- Cleaned pipeline outputs for size ${SUBSET_SIZE} ---"
+
+done
+
+echo ""
+echo "--- All benchmarks complete ---"
+echo "Markdown results: benchmark_results_{500,1000,2000}.md"

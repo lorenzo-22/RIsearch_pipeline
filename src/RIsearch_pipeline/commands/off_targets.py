@@ -31,6 +31,8 @@ console = Console()
 _WORKER_DF_TRANS: Optional[pl.DataFrame] = None
 _WORKER_INTERSECTOR: Optional[object] = None
 _WORKER_PROB_SERVICE: Optional[object] = None
+_WORKER_ON_TARGET_MAP: dict = {}
+_WORKER_SELF_HYB_EMIN: dict = {}
 
 
 def _init_worker(
@@ -42,24 +44,32 @@ def _init_worker(
     accessibility_file: str,
     use_rnaplfold_cli: bool,
     polars_max_threads: int,
+    on_target_map: dict,
+    self_hyb_emin: dict,
 ) -> None:
     """Initialise per-worker state.  Called once per spawned worker process."""
     import os
     os.environ["POLARS_MAX_THREADS"] = str(polars_max_threads)
 
     global _WORKER_DF_TRANS, _WORKER_INTERSECTOR, _WORKER_PROB_SERVICE
+    global _WORKER_ON_TARGET_MAP, _WORKER_SELF_HYB_EMIN
 
     from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
     from RIsearch_pipeline.services.intersection_service import IntersectionService
     from RIsearch_pipeline.services.probability import ProbabilityService
 
     if gtf_path:
-        _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
-            Path(gtf_path),
-            feature=feature,
-            score_col=score_col,
-            format=transcriptome_format,
-        )
+        # Fast path: transcriptome pre-serialized to Arrow IPC by the main
+        # process — load with mmap so all workers share the same physical pages.
+        if gtf_path.endswith(".arrow"):
+            _WORKER_DF_TRANS = pl.read_ipc(gtf_path, memory_map=True)
+        else:
+            _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
+                Path(gtf_path),
+                feature=feature,
+                score_col=score_col,
+                format=transcriptome_format,
+            )
         _WORKER_INTERSECTOR = IntersectionService()
 
     acc_service = None
@@ -76,11 +86,13 @@ def _init_worker(
         precomputed_accessibility=precomputed_acc,
     )
 
+    # Store per-run constants so they don't need to be pickled per task.
+    _WORKER_ON_TARGET_MAP = on_target_map
+    _WORKER_SELF_HYB_EMIN = self_hyb_emin
+
 
 def _process_one_sirna(
     file_path_str: str,
-    on_target_map: dict,
-    self_hyb_emin: dict,
     alpha_gamma_pairs: list,
     theta_vals: list,
     on_target_expression: float,
@@ -101,6 +113,8 @@ def _process_one_sirna(
     df_trans = _m._WORKER_DF_TRANS
     intersector = _m._WORKER_INTERSECTOR
     prob_service = _m._WORKER_PROB_SERVICE
+    on_target_map = _m._WORKER_ON_TARGET_MAP
+    self_hyb_emin = _m._WORKER_SELF_HYB_EMIN
 
     from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
@@ -120,15 +134,12 @@ def _process_one_sirna(
                 pl.lit(self_hyb_emin[sirna_id]).cast(pl.Float32).alias("raw_e_min")
             )
 
-    # Intersect with transcriptome (sequential — each worker owns its CPU)
+    # Intersect with transcriptome (sequential — each worker owns its CPU).
+    # intersect() already deduplicates per (chrom, strand) pair internally.
     if df_trans is not None and intersector is not None:
         df = intersector.intersect(df, df_trans, mode=predictions_type, workers=1)
         if df.height == 0:
             return None, {}
-        df = df.unique(
-            subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-            keep="first",
-        )
 
     # Probabilities
     df, meta = prob_service.calculate_probabilities_per_sirna(
@@ -633,10 +644,25 @@ def run(
                 # forkserver for this workload (13.8s vs 17.6s at 32 workers).
                 _ctx = _mp.get_context("spawn")
 
-                # Build initializer args so each worker process loads the
-                # transcriptome independently.
+                # Pre-serialize transcriptome to Arrow IPC once so workers
+                # can mmap it instead of each re-parsing the GTF/BED.
+                _trans_arrow_path = ""
+                if gtf_file:
+                    from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
+                    _df_trans_main = TranscriptomeParser().load_gtf(
+                        gtf_file,
+                        feature=feature_type,
+                        score_col=expression_metric,
+                        format=transcriptome_format,
+                    )
+                    _tmp_fd, _trans_arrow_path = tempfile.mkstemp(suffix=".arrow")
+                    import os as _os
+                    _os.close(_tmp_fd)
+                    _df_trans_main.write_ipc(_trans_arrow_path)
+                    del _df_trans_main
+
                 _init_args = (
-                    str(gtf_file) if gtf_file else "",
+                    _trans_arrow_path,
                     feature_type,
                     expression_metric,
                     transcriptome_format,
@@ -644,6 +670,8 @@ def run(
                     str(accessibility_file) if accessibility_file else "",
                     use_rnaplfold_cli,
                     polars_threads_per_worker,
+                    on_target_map,
+                    self_hyb_emin,
                 )
 
                 with Progress(
@@ -668,8 +696,6 @@ def run(
                             pool.submit(
                                 _process_one_sirna,
                                 str(f),
-                                on_target_map,
-                                self_hyb_emin,
                                 alpha_gamma_pairs,
                                 theta_vals,
                                 on_target_expression,
@@ -761,6 +787,13 @@ def run(
                 # Ensure Parquet writer is always closed (flushes footer)
                 if _pq_writer is not None:
                     _pq_writer.close()
+                # Clean up Arrow IPC temp file written for workers to mmap
+                if _trans_arrow_path:
+                    import os as _os
+                    try:
+                        _os.unlink(_trans_arrow_path)
+                    except OSError:
+                        pass
 
             profiler.print_summary(console)
             return  # Exit after directory mode processing
