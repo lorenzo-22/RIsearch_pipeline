@@ -59,17 +59,12 @@ def _init_worker(
     from RIsearch_pipeline.services.probability import ProbabilityService
 
     if gtf_path:
-        # Fast path: transcriptome pre-serialized to Arrow IPC by the main
-        # process — load with mmap so all workers share the same physical pages.
-        if gtf_path.endswith(".arrow"):
-            _WORKER_DF_TRANS = pl.read_ipc(gtf_path, memory_map=True)
-        else:
-            _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
-                Path(gtf_path),
-                feature=feature,
-                score_col=score_col,
-                format=transcriptome_format,
-            )
+        _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
+            Path(gtf_path),
+            feature=feature,
+            score_col=score_col,
+            format=transcriptome_format,
+        )
         _WORKER_INTERSECTOR = IntersectionService()
 
     acc_service = None
@@ -644,25 +639,8 @@ def run(
                 # forkserver for this workload (13.8s vs 17.6s at 32 workers).
                 _ctx = _mp.get_context("spawn")
 
-                # Pre-serialize transcriptome to Arrow IPC once so workers
-                # can mmap it instead of each re-parsing the GTF/BED.
-                _trans_arrow_path = ""
-                if gtf_file:
-                    from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
-                    _df_trans_main = TranscriptomeParser().load_gtf(
-                        gtf_file,
-                        feature=feature_type,
-                        score_col=expression_metric,
-                        format=transcriptome_format,
-                    )
-                    _tmp_fd, _trans_arrow_path = tempfile.mkstemp(suffix=".arrow")
-                    import os as _os
-                    _os.close(_tmp_fd)
-                    _df_trans_main.write_ipc(_trans_arrow_path)
-                    del _df_trans_main
-
                 _init_args = (
-                    _trans_arrow_path,
+                    str(gtf_file) if gtf_file else "",
                     feature_type,
                     expression_metric,
                     transcriptome_format,
@@ -787,13 +765,6 @@ def run(
                 # Ensure Parquet writer is always closed (flushes footer)
                 if _pq_writer is not None:
                     _pq_writer.close()
-                # Clean up Arrow IPC temp file written for workers to mmap
-                if _trans_arrow_path:
-                    import os as _os
-                    try:
-                        _os.unlink(_trans_arrow_path)
-                    except OSError:
-                        pass
 
             profiler.print_summary(console)
             return  # Exit after directory mode processing
