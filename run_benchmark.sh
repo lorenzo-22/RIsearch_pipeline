@@ -97,7 +97,6 @@ for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
 
     SUBSET_FA="${SUBSET_DIR}/subset_${SUBSET_SIZE}.fa"
     SUBSET_IDS="${SUBSET_DIR}/subset_${SUBSET_SIZE}.ids"
-    SUBSET_RESULTS="${SUBSET_DIR}/subset_${SUBSET_SIZE}_results"
     SUBSET_PARQUET="${SUBSET_DIR}/subset_${SUBSET_SIZE}_parquet"
     SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
 
@@ -106,22 +105,12 @@ for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
     paste - - < "$INPUT_FASTA" | shuf -n "$SUBSET_SIZE" | tr '\t' '\n' > "$SUBSET_FA"
     grep "^>" "$SUBSET_FA" | sed 's/^>//' > "$SUBSET_IDS"
 
-    rm -rf "$SUBSET_RESULTS" && mkdir -p "$SUBSET_RESULTS"
-    while IFS= read -r sid; do
-        src="${RESULTS_DIR}/risearch_${sid}.out.gz"
-        if [ -f "$src" ]; then
-            cp "$src" "$SUBSET_RESULTS/"
-        else
-            echo "  Warning: $src not found, skipping"
-        fi
-    done < "$SUBSET_IDS"
-
     while IFS= read -r sid; do
         gene_id=$(echo "$sid" | cut -d'-' -f1)
         printf '%s\t%s\n' "$sid" "$gene_id"
     done < "$SUBSET_IDS" > "$SUBSET_ON_TARGET_MAP"
 
-    echo "  Files: $(ls "$SUBSET_RESULTS" | wc -l) .out.gz files"
+    echo "  IDs: $(wc -l < "$SUBSET_IDS") siRNAs"
 
     # --- Old pipeline (3 runs) ---
     echo "--- Old pipeline ---"
@@ -156,7 +145,8 @@ parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
     echo "--- Conversion (.out.gz → .parquet) ---"
     mkdir -p "$SUBSET_PARQUET"
     CMD_CONVERT="cd ${NEW_PIPELINE_DIR} && \
-uv run python3 convert_risearch_to_parquet.py ${SUBSET_RESULTS} \
+uv run python3 convert_risearch_to_parquet.py ${RESULTS_DIR} \
+    --ids-file ${SUBSET_IDS} \
     --out-dir ${SUBSET_PARQUET} \
     --workers 32"
 
@@ -193,7 +183,6 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 
     # --- Cleanup: delete all per-size intermediates, preserve source data ---
     echo "--- Cleanup for size ${SUBSET_SIZE} ---"
-    rm -rf "$SUBSET_RESULTS"
     rm -rf "$SUBSET_PARQUET"
     rm -f "$SUBSET_FA" "$SUBSET_IDS" "$SUBSET_ON_TARGET_MAP"
     echo "  Done."
