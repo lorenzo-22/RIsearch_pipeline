@@ -273,12 +273,22 @@ class RIsearchParser:
         predictions, once for raw_e_min), this reads the file once and
         derives raw_e_min from the already-loaded data.
 
+        Parquet files produced by convert_risearch_to_parquet.py already
+        contain named columns and pre-computed raw_e_min, so they are
+        returned directly without any re-parsing or re-computation.
+
         Args:
-            file_path: Path to a single RIsearch output file (.tsv or .gz).
+            file_path: Path to a single RIsearch output file (.tsv, .gz, or .parquet).
 
         Returns:
             Polars DataFrame with predictions and raw_e_min column.
         """
+        if not isinstance(file_path, Path):
+            file_path = Path(file_path)
+
+        if file_path.suffix == ".parquet":
+            return pl.read_parquet(file_path)
+
         df = (
             pl.scan_csv(file_path, separator="\t", has_header=False)
             .select([
@@ -303,7 +313,7 @@ class RIsearchParser:
             directory: Directory to scan.
 
         Returns:
-            List of file paths (*.gz, *.tsv, *.out).
+            List of file paths (*.gz, *.tsv, *.out, *.parquet).
         """
         if not isinstance(directory, Path):
             directory = Path(directory)
@@ -312,7 +322,7 @@ class RIsearchParser:
             raise FileNotFoundError(f"Directory not found: {directory}")
 
         files = []
-        for ext in ["*.gz", "*.tsv", "*.out"]:
+        for ext in ["*.gz", "*.tsv", "*.out", "*.parquet"]:
             files.extend(directory.glob(ext))
 
         return sorted(files)

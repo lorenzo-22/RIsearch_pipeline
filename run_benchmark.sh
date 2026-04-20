@@ -1,5 +1,5 @@
 #!/bin/bash -l
-set -e  # Exit immediately if a command exits with a non-zero status
+set -e
 
 # --- Configuration ---
 TMP_ACC="/tmp/acc_files"
@@ -9,90 +9,121 @@ SCRATCH="/var/tmp/tmp.ak9sAoblPN"
 RESULTS_DIR="${SCRATCH}/RIsearch2_results"
 NEW_PIPELINE_DIR="/dev/shm/src/RIsearch_pipeline"
 
-# Input Source
 INPUT_FASTA="${RAMDISK}/huesken_on.fa"
 
-# Subset sizes to benchmark
 SUBSET_SIZES=(500 1000 2000)
+N_RUNS=3
+
+RESULTS_TSV="${NEW_PIPELINE_DIR}/benchmark_results.tsv"
+TIMEFILE=$(mktemp)
 
 module load RIsearch2
 module load bedtools
 
-# --- 1. Preparation ---
-echo "--- Checking Pre-requisites ---"
+# --- Helper: convert /usr/bin/time -v wall-clock string to seconds ---
+# Accepts h:mm:ss or m:ss.ss (output format depends on GNU time version)
+parse_wall_clock() {
+    local raw="$1"
+    if [[ "$raw" =~ ^([0-9]+):([0-9]+):([0-9.]+)$ ]]; then
+        echo "$((${BASH_REMATCH[1]} * 3600 + ${BASH_REMATCH[2]} * 60))$(echo "+${BASH_REMATCH[3]}" | bc)" | bc
+    elif [[ "$raw" =~ ^([0-9]+):([0-9.]+)$ ]]; then
+        echo "${BASH_REMATCH[1]} * 60 + ${BASH_REMATCH[2]}" | bc
+    else
+        echo "0"
+    fi
+}
+
+# --- Helper: run command under /usr/bin/time -v, record results to TSV ---
+# Usage: run_and_record <subset_size> <pipeline_label> <run_number> <command_string>
+run_and_record() {
+    local subset_size="$1"
+    local pipeline="$2"
+    local run_num="$3"
+    local cmd="$4"
+
+    echo "    [run ${run_num}] ${pipeline} n=${subset_size}..."
+    set +e
+    /usr/bin/time -v -o "${TIMEFILE}" bash -c "$cmd" 2>&1
+    local exit_code=$?
+    set -e
+
+    local wall_raw
+    wall_raw=$(grep "Elapsed (wall clock)" "${TIMEFILE}" | sed 's/.*): //' | tr -d ' ')
+    local wall_sec
+    wall_sec=$(parse_wall_clock "$wall_raw")
+    local peak_rss
+    peak_rss=$(grep "Maximum resident set size" "${TIMEFILE}" | awk '{print $NF}')
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$subset_size" "$pipeline" "$run_num" "$wall_sec" "$peak_rss" "$exit_code" \
+        >> "$RESULTS_TSV"
+
+    if [ "$exit_code" -ne 0 ]; then
+        echo "    WARNING: ${pipeline} run ${run_num} exited with code ${exit_code}"
+    fi
+}
+
+# --- Prerequisites ---
+echo "--- Checking prerequisites ---"
 mkdir -p "$TMP_ACC" "$RAMDISK" "$SUBSET_DIR"
 
 if [ ! -f "$INPUT_FASTA" ]; then
-    echo "Error: Source file $INPUT_FASTA not found."
+    echo "Error: $INPUT_FASTA not found."
     exit 1
 fi
 
 if ! command -v uv &> /dev/null; then
-    echo "Error: 'uv' is not installed or not in PATH."
+    echo "Error: 'uv' not in PATH."
     exit 1
 fi
 
-if ! command -v hyperfine &> /dev/null; then
-    echo "Error: hyperfine is not installed."
+if ! /usr/bin/time --version &> /dev/null 2>&1; then
+    echo "Error: /usr/bin/time not available (need GNU time for -v flag)."
     exit 1
 fi
 
-# --- Main loop over subset sizes ---
+# --- Write TSV header ---
+printf 'subset_size\tpipeline\trun\twall_clock_s\tpeak_rss_kb\texit_code\n' > "$RESULTS_TSV"
+echo "Results will be written to: $RESULTS_TSV"
+
+# --- Conda setup string (reused in old pipeline command) ---
+CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
+
+# --- Main loop ---
 for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
     echo ""
     echo "===== BENCHMARK SIZE: ${SUBSET_SIZE} siRNAs ====="
 
-    # --- 2. Random Subsetting ---
-    echo "--- Creating random subset of $SUBSET_SIZE siRNAs ---"
-
-    # Files to be generated
     SUBSET_FA="${SUBSET_DIR}/subset_${SUBSET_SIZE}.fa"
     SUBSET_IDS="${SUBSET_DIR}/subset_${SUBSET_SIZE}.ids"
     SUBSET_RESULTS="${SUBSET_DIR}/subset_${SUBSET_SIZE}_results"
+    SUBSET_PARQUET="${SUBSET_DIR}/subset_${SUBSET_SIZE}_parquet"
+    SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
 
-    # Step A: Subset the FASTA file
-    # 1. 'paste - -' pairs Header+Sequence onto one line
-    # 2. 'shuf' selects random lines
-    # 3. 'tr' restores the newline for FASTA format
+    # --- Setup: create random subset ---
+    echo "--- Creating random subset of $SUBSET_SIZE siRNAs ---"
     paste - - < "$INPUT_FASTA" | shuf -n "$SUBSET_SIZE" | tr '\t' '\n' > "$SUBSET_FA"
-
-    # Step B: Generate the matching IDs file from the subset FASTA
-    # We extract the headers (removing '>') to create the ID list
     grep "^>" "$SUBSET_FA" | sed 's/^>//' > "$SUBSET_IDS"
 
-    # Step C: Copy matching RIsearch result files to a subset directory
-    # The new pipeline takes a directory; this ensures both pipelines see the same inputs
     rm -rf "$SUBSET_RESULTS" && mkdir -p "$SUBSET_RESULTS"
     while IFS= read -r sid; do
         src="${RESULTS_DIR}/risearch_${sid}.out.gz"
         if [ -f "$src" ]; then
             cp "$src" "$SUBSET_RESULTS/"
         else
-            echo "Warning: $src not found, skipping"
+            echo "  Warning: $src not found, skipping"
         fi
     done < "$SUBSET_IDS"
 
-    # Step D: Build siRNA → on-target gene ID mapping (gene ID = first field of siRNA ID)
-    SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
     while IFS= read -r sid; do
         gene_id=$(echo "$sid" | cut -d'-' -f1)
         printf '%s\t%s\n' "$sid" "$gene_id"
     done < "$SUBSET_IDS" > "$SUBSET_ON_TARGET_MAP"
 
-    echo "Subset created:"
-    echo "  FASTA:   $SUBSET_FA"
-    echo "  IDs:     $SUBSET_IDS"
-    echo "  Results: $SUBSET_RESULTS ($(ls "$SUBSET_RESULTS" | wc -l) files)"
-    echo "  OT map:  $SUBSET_ON_TARGET_MAP"
+    echo "  Files: $(ls "$SUBSET_RESULTS" | wc -l) .out.gz files"
 
-    # --- 4. Hyperfine Benchmark ---
-    echo "--- Starting Hyperfine Benchmark for ${SUBSET_SIZE} siRNAs ---"
-
-    # --- COMMAND DEFINITIONS ---
-
-    # 1. OLD VERSION (Conda + Parallel + Python 2.7)
-    CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
-
+    # --- Old pipeline (3 runs) ---
+    echo "--- Old pipeline ---"
     CMD_OLD="${CONDA_SETUP} && \
 mkdir -p ${SCRATCH}/old && \
 cd ${SCRATCH} && \
@@ -108,12 +139,30 @@ parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
 -q '{1}-{2}-{3}' \
 -os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
 
-    # 2. NEW VERSION (uv + Python 3, directory mode, 32 workers)
+    for run in $(seq 1 $N_RUNS); do
+        rm -rf "${SCRATCH}/old"
+        run_and_record "$SUBSET_SIZE" "old" "$run" "$CMD_OLD"
+    done
+    rm -rf "${SCRATCH}/old"
+
+    # --- Conversion: .out.gz → .parquet (1 run, reported separately) ---
+    echo "--- Conversion (.out.gz → .parquet) ---"
+    mkdir -p "$SUBSET_PARQUET"
+    CMD_CONVERT="cd ${NEW_PIPELINE_DIR} && \
+uv run python3 convert_risearch_to_parquet.py ${SUBSET_RESULTS} \
+    --out-dir ${SUBSET_PARQUET} \
+    --workers 32"
+
+    run_and_record "$SUBSET_SIZE" "convert" "1" "$CMD_CONVERT"
+    echo "  Parquet files: $(ls "$SUBSET_PARQUET" | wc -l)"
+
+    # --- New pipeline on parquet (3 runs) ---
+    echo "--- New pipeline (parquet input) ---"
     CMD_NEW="cd ${NEW_PIPELINE_DIR} && \
 mkdir -p ${SCRATCH}/new && \
 uv run src/RIsearch_pipeline/cli.py off-targets \
 -j 32 \
--r ${SUBSET_RESULTS} \
+-r ${SUBSET_PARQUET} \
 -t ${RAMDISK}/E-MTAB-2770_fixed.bed \
 --accessibility-dir ${TMP_ACC} \
 --alpha '0.5;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
@@ -123,27 +172,29 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 -o ${SCRATCH}/new/output_${SUBSET_SIZE}.tsv \
 --summary-only"
 
-    # --- EXECUTION ---
-    hyperfine \
-        --shell bash \
-        --warmup 2 \
-        --runs 5 \
-        --prepare "rm -rf ${SCRATCH}/old ${SCRATCH}/new" \
-        --show-output \
-        --export-markdown benchmark_results_${SUBSET_SIZE}.md \
-        -n "Old Version (Parallel+Python2.7)" \
-        "$CMD_OLD" \
-        -n "New Version (uv+Python3)" \
-        "$CMD_NEW"
+    for run in $(seq 1 $N_RUNS); do
+        rm -rf "${SCRATCH}/new"
+        run_and_record "$SUBSET_SIZE" "new" "$run" "$CMD_NEW"
+    done
+    rm -rf "${SCRATCH}/new"
 
-    echo "Results for ${SUBSET_SIZE} saved to: benchmark_results_${SUBSET_SIZE}.md"
-
-    # --- 5. Cleanup output files for this size ---
-    rm -rf "${SCRATCH}/old" "${SCRATCH}/new"
-    echo "--- Cleaned pipeline outputs for size ${SUBSET_SIZE} ---"
-
+    # --- Cleanup: delete all per-size intermediates, preserve source data ---
+    echo "--- Cleanup for size ${SUBSET_SIZE} ---"
+    rm -rf "$SUBSET_RESULTS"
+    rm -rf "$SUBSET_PARQUET"
+    rm -f "$SUBSET_FA" "$SUBSET_IDS" "$SUBSET_ON_TARGET_MAP"
+    echo "  Done."
 done
 
+rm -f "$TIMEFILE"
+
 echo ""
-echo "--- All benchmarks complete ---"
-echo "Markdown results: benchmark_results_{500,1000,2000}.md"
+echo "===== ALL BENCHMARKS COMPLETE ====="
+echo ""
+echo "NOTE: peak_rss_kb is the peak RSS of the parent process only."
+echo "For multi-process workloads (GNU parallel / ProcessPoolExecutor),"
+echo "this reflects the parent shell, not the aggregate of all workers."
+echo ""
+echo "Results: $RESULTS_TSV"
+echo ""
+column -t -s $'\t' "$RESULTS_TSV"
