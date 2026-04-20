@@ -13,6 +13,7 @@ INPUT_FASTA="${RAMDISK}/huesken_on.fa"
 
 SUBSET_SIZES=(500 1000 2000)
 N_RUNS=3
+N_WARMUP=2
 
 RESULTS_TSV="${NEW_PIPELINE_DIR}/benchmark_results.tsv"
 TIMEFILE=$(mktemp)
@@ -139,6 +140,12 @@ parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
 -q '{1}-{2}-{3}' \
 -os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
 
+    echo "  Warming up (${N_WARMUP} runs)..."
+    for run in $(seq 1 $N_WARMUP); do
+        rm -rf "${SCRATCH}/old"
+        bash -c "$CMD_OLD" > /dev/null 2>&1 || true
+    done
+
     for run in $(seq 1 $N_RUNS); do
         rm -rf "${SCRATCH}/old"
         run_and_record "$SUBSET_SIZE" "old" "$run" "$CMD_OLD"
@@ -171,6 +178,12 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 -oi ${SUBSET_ON_TARGET_MAP} \
 -o ${SCRATCH}/new/output_${SUBSET_SIZE}.tsv \
 --summary-only"
+
+    echo "  Warming up (${N_WARMUP} runs)..."
+    for run in $(seq 1 $N_WARMUP); do
+        rm -rf "${SCRATCH}/new"
+        bash -c "$CMD_NEW" > /dev/null 2>&1 || true
+    done
 
     for run in $(seq 1 $N_RUNS); do
         rm -rf "${SCRATCH}/new"
