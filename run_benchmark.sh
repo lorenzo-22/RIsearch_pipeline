@@ -11,7 +11,11 @@ NEW_PIPELINE_DIR="/dev/shm/src/RIsearch_pipeline"
 
 INPUT_FASTA="${RAMDISK}/huesken_on.fa"
 
-SUBSET_SIZES=(500 1000 2000)
+if [ $# -gt 0 ]; then
+    SUBSET_SIZES=("$@")
+else
+    SUBSET_SIZES=(500 1000 2000)
+fi
 N_RUNS=3
 N_WARMUP=2
 
@@ -83,9 +87,11 @@ if ! /usr/bin/time --version &> /dev/null 2>&1; then
     exit 1
 fi
 
-# --- Write TSV header ---
-printf 'subset_size\tpipeline\trun\twall_clock_s\tpeak_rss_kb\texit_code\n' > "$RESULTS_TSV"
-echo "Results will be written to: $RESULTS_TSV"
+# --- Write TSV header only if file is empty/missing (append-friendly) ---
+if [ ! -s "$RESULTS_TSV" ]; then
+    printf 'subset_size\tpipeline\trun\twall_clock_s\tpeak_rss_kb\texit_code\n' > "$RESULTS_TSV"
+fi
+echo "Results will be appended to: $RESULTS_TSV"
 
 # --- Conda setup string (reused in old pipeline command) ---
 CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
@@ -151,7 +157,12 @@ uv run python3 convert_risearch_to_parquet.py ${RESULTS_DIR} \
     --workers 32"
 
     run_and_record "$SUBSET_SIZE" "convert" "1" "$CMD_CONVERT"
-    echo "  Parquet files: $(ls "$SUBSET_PARQUET" | wc -l)"
+    EXPECTED=$(wc -l < "$SUBSET_IDS")
+    ACTUAL=$(ls "$SUBSET_PARQUET" 2>/dev/null | wc -l)
+    echo "  Parquet files: ${ACTUAL}/${EXPECTED}"
+    if [ "$ACTUAL" -lt "$EXPECTED" ]; then
+        echo "  WARNING: only ${ACTUAL}/${EXPECTED} parquet files produced — possible disk pressure"
+    fi
 
     # --- New pipeline on parquet (3 runs) ---
     echo "--- New pipeline (parquet input) ---"
@@ -181,11 +192,13 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
     done
     rm -rf "${SCRATCH}/new"
 
-    # --- Cleanup: delete all per-size intermediates, preserve source data ---
+    # --- Cleanup: delete intermediates and kill orphaned workers ---
     echo "--- Cleanup for size ${SUBSET_SIZE} ---"
     rm -rf "$SUBSET_PARQUET"
     rm -f "$SUBSET_FA" "$SUBSET_IDS" "$SUBSET_ON_TARGET_MAP"
-    echo "  Done."
+    pkill -f "spawn_main|forkserver" 2>/dev/null || true
+    sleep 2
+    echo "  Done. $(free -h | awk '/^Mem:/{print "Available: " $7}')"
 done
 
 rm -f "$TIMEFILE"
