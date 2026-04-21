@@ -182,11 +182,13 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
 
     echo "  Warming up (${N_WARMUP} runs)..."
     for run in $(seq 1 $N_WARMUP); do
+        pkill -f "spawn_main|forkserver" 2>/dev/null || true
         rm -rf "${SCRATCH}/new"
         bash -c "$CMD_NEW" > /dev/null 2>&1 || true
     done
 
     for run in $(seq 1 $N_RUNS); do
+        pkill -f "spawn_main|forkserver" 2>/dev/null || true
         rm -rf "${SCRATCH}/new"
         run_and_record "$SUBSET_SIZE" "new" "$run" "$CMD_NEW"
     done
