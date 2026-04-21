@@ -36,10 +36,7 @@ _WORKER_SELF_HYB_EMIN: dict = {}
 
 
 def _init_worker(
-    gtf_path: str,
-    feature: str,
-    score_col: str,
-    transcriptome_format: str,
+    ipc_path: str,
     accessibility_dir: str,
     accessibility_file: str,
     use_rnaplfold_cli: bool,
@@ -47,24 +44,23 @@ def _init_worker(
     on_target_map: dict,
     self_hyb_emin: dict,
 ) -> None:
-    """Initialise per-worker state.  Called once per spawned worker process."""
+    """Initialise per-worker state.  Called once per spawned worker process.
+
+    The transcriptome is loaded from a pre-written Arrow IPC file (memory-mapped)
+    rather than being re-parsed from the original BED/GTF.  All workers share the
+    same physical memory pages via the OS page cache.
+    """
     import os
     os.environ["POLARS_MAX_THREADS"] = str(polars_max_threads)
 
     global _WORKER_DF_TRANS, _WORKER_INTERSECTOR, _WORKER_PROB_SERVICE
     global _WORKER_ON_TARGET_MAP, _WORKER_SELF_HYB_EMIN
 
-    from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
     from RIsearch_pipeline.services.intersection_service import IntersectionService
     from RIsearch_pipeline.services.probability import ProbabilityService
 
-    if gtf_path:
-        _WORKER_DF_TRANS = TranscriptomeParser().load_gtf(
-            Path(gtf_path),
-            feature=feature,
-            score_col=score_col,
-            format=transcriptome_format,
-        )
+    if ipc_path:
+        _WORKER_DF_TRANS = pl.read_ipc(Path(ipc_path), memory_map=True)
         _WORKER_INTERSECTOR = IntersectionService()
 
     acc_service = None
@@ -559,6 +555,13 @@ def run(
                     f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
                 )
 
+                # Serialize transcriptome to a temp Arrow IPC file so workers can
+                # memory-map it instead of re-parsing the BED/GTF from scratch.
+                # All workers share the same physical pages via the OS page cache.
+                _ipc_tmp = tempfile.mkdtemp(prefix="risearch_ipc_")
+                _ipc_path = Path(_ipc_tmp) / "transcriptome.arrow"
+                df_trans.write_ipc(_ipc_path)
+
             # Parse on-target map
             on_target_map = {}
             if on_target_ids_file is not None:
@@ -640,10 +643,7 @@ def run(
                 _ctx = _mp.get_context("spawn")
 
                 _init_args = (
-                    str(gtf_file) if gtf_file else "",
-                    feature_type,
-                    expression_metric,
-                    transcriptome_format,
+                    str(_ipc_path) if gtf_file else "",
                     str(accessibility_dir) if accessibility_dir else "",
                     str(accessibility_file) if accessibility_file else "",
                     use_rnaplfold_cli,
@@ -765,6 +765,10 @@ def run(
                 # Ensure Parquet writer is always closed (flushes footer)
                 if _pq_writer is not None:
                     _pq_writer.close()
+                # Clean up the temp Arrow IPC file used to share the transcriptome
+                import shutil
+                if "_ipc_tmp" in dir() and _ipc_tmp:
+                    shutil.rmtree(_ipc_tmp, ignore_errors=True)
 
             profiler.print_summary(console)
             return  # Exit after directory mode processing
