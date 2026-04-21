@@ -17,7 +17,7 @@ else
     SUBSET_SIZES=(500 1000 2000)
 fi
 N_RUNS=3
-N_WARMUP=2
+N_WARMUP=1
 
 RESULTS_TSV="${NEW_PIPELINE_DIR}/benchmark_results.tsv"
 TIMEFILE=$(mktemp)
