@@ -4,7 +4,7 @@ set -e
 # --- Configuration ---
 TMP_ACC="/tmp/acc_files"
 RAMDISK="/dev/shm/input"
-SUBSET_DIR="${RAMDISK}/subset_input"
+SUBSET_DIR="/var/tmp/subset_input"
 SCRATCH="/var/tmp/tmp.ak9sAoblPN"
 RESULTS_DIR="${SCRATCH}/RIsearch2_results"
 NEW_PIPELINE_DIR="/dev/shm/src/RIsearch_pipeline"
