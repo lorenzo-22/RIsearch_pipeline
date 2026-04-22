@@ -695,10 +695,15 @@ def run(
                                 description=f"Batch {completed}/{len(all_files)}",
                             )
 
+                            # Pop the future from the dict immediately so Future._result
+                            # (which holds the full arrow_table + metadata) can be GC'd
+                            # as soon as the loop variable is overwritten next iteration.
+                            # Without this, all N completed futures accumulate their
+                            # results in memory for the entire loop — O(N) growth.
+                            f = futures.pop(future)
                             try:
                                 arrow_table, batch_metadata = future.result()
                             except Exception as exc:
-                                f = futures[future]
                                 logger.error(f"Worker failed for {f.name}: {exc}")
                                 continue
 
@@ -706,6 +711,7 @@ def run(
                                 continue
 
                             df_chunk = pl.from_arrow(arrow_table)
+                            del arrow_table  # Arrow copy no longer needed; Polars owns the data
                             total_rows += df_chunk.height
 
                             # Stream .summary files as each siRNA completes
