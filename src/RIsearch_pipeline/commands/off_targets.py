@@ -626,9 +626,12 @@ def run(
                     out_path = output_file.with_suffix(".csv")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Storage for global metadata
-            global_z_stats = {}
-            global_on_w_stats = {}
+            # Resolve summary output dir up-front for streaming writes
+            summary_out_dir = None
+            if output_file is not None:
+                summary_out_dir = output_file.parent
+                summary_out_dir.mkdir(parents=True, exist_ok=True)
+            summary_count = 0
 
             try:
                 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -705,11 +708,20 @@ def run(
                             df_chunk = pl.from_arrow(arrow_table)
                             total_rows += df_chunk.height
 
-                            # Accumulate Z metadata
-                            for sid, z_dict in batch_metadata.get("z_per_sirna", {}).items():
-                                global_z_stats[sid] = z_dict
-                            for sid, w_dict in batch_metadata.get("on_target_weights", {}).items():
-                                global_on_w_stats[sid] = w_dict
+                            # Stream .summary files as each siRNA completes
+                            if summary_out_dir is not None:
+                                z_per_sirna = batch_metadata.get("z_per_sirna", {})
+                                w_per_sirna = batch_metadata.get("on_target_weights", {})
+                                for sid, z_dict in z_per_sirna.items():
+                                    text = prob_service.format_legacy_summary(
+                                        sid,
+                                        z_dict,
+                                        w_per_sirna.get(sid, {}),
+                                        alpha_gamma_pairs,
+                                        theta_vals,
+                                    )
+                                    (summary_out_dir / f"{sid}.summary").write_text(text)
+                                    summary_count += 1
 
                             if out_path is not None:
                                 if output_format == "parquet":
@@ -738,27 +750,9 @@ def run(
                 elif total_rows == 0:
                     console.print("[yellow]Warning:[/yellow] No predictions to process")
 
-                # Write .summary files whenever an output location is known.
-                # This always runs with --summary-only; also runs with -o even
-                # without --summary-only (generate all text first, then one
-                # write_text call per siRNA to minimise syscalls).
-                if global_z_stats and output_file:
-                    out_dir = output_file.parent
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    summary_texts = {
-                        sid: prob_service.format_legacy_summary(
-                            sid,
-                            global_z_stats[sid],
-                            global_on_w_stats.get(sid, {}),
-                            alpha_gamma_pairs,
-                            theta_vals,
-                        )
-                        for sid in global_z_stats
-                    }
-                    for sid, text in summary_texts.items():
-                        (out_dir / f"{sid}.summary").write_text(text)
+                if summary_count > 0:
                     console.print(
-                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
+                        f"[green]✓[/green] Wrote {summary_count} .summary files to [bold]{summary_out_dir}[/bold]"
                     )
 
             finally:
