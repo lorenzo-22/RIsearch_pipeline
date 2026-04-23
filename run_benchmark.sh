@@ -20,6 +20,7 @@ N_RUNS=3
 N_WARMUP=1
 
 RESULTS_TSV="${NEW_PIPELINE_DIR}/benchmark_results.tsv"
+LOG_DIR="${NEW_PIPELINE_DIR}/benchmark_logs"
 TIMEFILE=$(mktemp)
 
 module load RIsearch2
@@ -39,16 +40,18 @@ parse_wall_clock() {
 }
 
 # --- Helper: run command under /usr/bin/time -v, record results to TSV ---
+# Captures stdout/stderr to a log file; keeps it only on failure.
 # Usage: run_and_record <subset_size> <pipeline_label> <run_number> <command_string>
 run_and_record() {
     local subset_size="$1"
     local pipeline="$2"
     local run_num="$3"
     local cmd="$4"
+    local log_file="${LOG_DIR}/${pipeline}_n${subset_size}_run${run_num}.log"
 
     echo "    [run ${run_num}] ${pipeline} n=${subset_size}..."
     set +e
-    /usr/bin/time -v -o "${TIMEFILE}" bash -c "$cmd" 2>&1
+    /usr/bin/time -v -o "${TIMEFILE}" bash -c "$cmd" > "$log_file" 2>&1
     local exit_code=$?
     set -e
 
@@ -63,14 +66,17 @@ run_and_record() {
         "$subset_size" "$pipeline" "$run_num" "$wall_sec" "$peak_rss" "$exit_code" \
         >> "$RESULTS_TSV"
 
-    if [ "$exit_code" -ne 0 ]; then
+    if [ "$exit_code" -eq 0 ]; then
+        rm -f "$log_file"
+    else
         echo "    WARNING: ${pipeline} run ${run_num} exited with code ${exit_code}"
+        echo "    Log kept: $log_file"
     fi
 }
 
 # --- Prerequisites ---
 echo "--- Checking prerequisites ---"
-mkdir -p "$TMP_ACC" "$RAMDISK" "$SUBSET_DIR"
+mkdir -p "$TMP_ACC" "$RAMDISK" "$SUBSET_DIR" "$LOG_DIR"
 
 if [ ! -f "$INPUT_FASTA" ]; then
     echo "Error: $INPUT_FASTA not found."
@@ -96,6 +102,14 @@ echo "Results will be appended to: $RESULTS_TSV"
 # --- Conda setup string (reused in old pipeline command) ---
 CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
 
+# --- Generate master FASTA at max size; derive smaller subsets as prefixes ---
+# Nested subsets (500 ⊂ 1000 ⊂ 2000) ensure per-siRNA workload is identical
+# across sizes, so cross-size comparisons reflect only siRNA count.
+MAX_SIZE=$(printf '%s\n' "${SUBSET_SIZES[@]}" | sort -n | tail -1)
+MASTER_FA="${SUBSET_DIR}/master_${MAX_SIZE}.fa"
+echo "--- Generating master subset of ${MAX_SIZE} siRNAs (nested) ---"
+paste - - < "$INPUT_FASTA" | shuf -n "$MAX_SIZE" | tr '\t' '\n' > "$MASTER_FA"
+
 # --- Main loop ---
 for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
     echo ""
@@ -106,9 +120,9 @@ for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
     SUBSET_PARQUET="${SUBSET_DIR}/subset_${SUBSET_SIZE}_parquet"
     SUBSET_ON_TARGET_MAP="${SUBSET_DIR}/subset_${SUBSET_SIZE}.on_target_map.tsv"
 
-    # --- Setup: create random subset ---
-    echo "--- Creating random subset of $SUBSET_SIZE siRNAs ---"
-    paste - - < "$INPUT_FASTA" | shuf -n "$SUBSET_SIZE" | tr '\t' '\n' > "$SUBSET_FA"
+    # Derive nested subset as prefix of master (each siRNA = 2 FASTA lines)
+    echo "--- Deriving subset of $SUBSET_SIZE siRNAs (prefix of master) ---"
+    head -n $((SUBSET_SIZE * 2)) "$MASTER_FA" > "$SUBSET_FA"
     grep "^>" "$SUBSET_FA" | sed 's/^>//' > "$SUBSET_IDS"
 
     while IFS= read -r sid; do
@@ -203,7 +217,7 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
     echo "  Done. $(free -h | awk '/^Mem:/{print "Available: " $7}')"
 done
 
-rm -f "$TIMEFILE"
+rm -f "$MASTER_FA" "$TIMEFILE"
 
 echo ""
 echo "===== ALL BENCHMARKS COMPLETE ====="
