@@ -15,6 +15,30 @@ except Exception:  # pragma: no cover - optional dependency
 class IntersectionService:
     """Service to intersect off-target predictions with genomic features."""
 
+    def __init__(self) -> None:
+        # Populated by preload_transcriptome() when called from a worker init.
+        # Avoids re-partitioning + re-building NCLS on every intersect() call.
+        self._trans_partition: dict[tuple, pl.DataFrame] | None = None
+        self._trans_ncls_index: dict[tuple, dict] | None = None
+
+    def preload_transcriptome(self, transcriptome_df: pl.DataFrame) -> None:
+        """Pre-partition transcriptome and build NCLS indices for all (chrom,strand) pairs.
+
+        Call once from _init_worker after loading the transcriptome IPC.
+        Subsequent intersect() calls reuse the cached partition and indices
+        instead of rebuilding per siRNA (~89ms/siRNA saved).
+        """
+        self._trans_partition = {
+            (k, v): sub_df
+            for (k, v), sub_df in transcriptome_df.partition_by(
+                ["chrom", "strand"], as_dict=True
+            ).items()
+        }
+        self._trans_ncls_index = {}
+        for key, sub_df in self._trans_partition.items():
+            if sub_df.height > 0:
+                self._trans_ncls_index[key] = self._build_transcript_index(sub_df.sort("start"))
+
     def intersect(
         self,
         risearch_df: pl.DataFrame,
@@ -89,13 +113,17 @@ class IntersectionService:
             ).items()
         }
         _t_part_trans = time.perf_counter()
-        # Pre-partition transcriptome the same way
-        trans_by_pair: dict[tuple, pl.DataFrame] = {
-            (key, val): sub_df
-            for (key, val), sub_df in transcriptome_df.partition_by(
-                ["chrom", "strand"], as_dict=True
-            ).items()
-        }
+        # Use pre-built transcriptome partition if available (worker-init cache),
+        # otherwise build it now. The cache avoids ~24ms + 65ms per siRNA.
+        if self._trans_partition is not None:
+            trans_by_pair = self._trans_partition
+        else:
+            trans_by_pair = {
+                (key, val): sub_df
+                for (key, val), sub_df in transcriptome_df.partition_by(
+                    ["chrom", "strand"], as_dict=True
+                ).items()
+            }
         _t_after_partition = time.perf_counter()
 
         _ncls_time = [0.0]
@@ -111,9 +139,15 @@ class IntersectionService:
             if preds is None or preds.height == 0 or trans is None or trans.height == 0:
                 return []
 
-            trans_sorted = trans.sort("start")
             _tb = time.perf_counter()
-            trans_index = self._build_transcript_index(trans_sorted)
+            # Use pre-built NCLS index when available (worker-init cache).
+            if self._trans_ncls_index is not None:
+                trans_index = self._trans_ncls_index.get((chrom, strand))
+                if trans_index is None:
+                    return []
+            else:
+                trans_sorted = trans.sort("start")
+                trans_index = self._build_transcript_index(trans_sorted)
             _ncls_time[0] += time.perf_counter() - _tb
             logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
 

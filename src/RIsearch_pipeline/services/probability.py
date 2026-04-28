@@ -909,51 +909,11 @@ class ProbabilityService:
             )
             return result
 
-        # --- Path 2: Profile-based lookup ---
+        # --- Path 2: Profile-based lookup (vectorized numpy gather per chrom/strand) ---
         if not self.accessibility_service:
             return df
 
-        n_rows = df.height
-        opening_energies = np.full(n_rows, 10.0, dtype=np.float64)
-
-        chroms = df["chrom"].to_numpy()
-        starts = df["start"].to_numpy()
-        ends = df["end"].to_numpy()
-        strands = df["strand"].to_numpy()
-
-        from collections import defaultdict
-
-        groups: dict[tuple[str, str], list[int]] = defaultdict(list)
-        for i in range(n_rows):
-            c = str(chroms[i])
-            if c == "onTarget":
-                continue
-            s = str(strands[i])
-            groups[(c, s)].append(i)
-
-        error_logged: set[str] = set()
-
-        for (chrom, strand), indices in groups.items():
-            try:
-                for idx in indices:
-                    opening_energies[idx] = self.accessibility_service.query_single(
-                        chrom,
-                        int(starts[idx]),
-                        int(ends[idx]),
-                        strand,
-                    )
-            except AccessibilityError as e:
-                err_key = f"acc_error_{chrom}_{strand}"
-                if err_key not in error_logged:
-                    logger.warning(
-                        f"Accessibility lookup failed for {chrom} ({strand}): {e}. "
-                        "Defaulting to 10.0 for all positions on this chromosome/strand."
-                    )
-                    error_logged.add(err_key)
-
-        return df.with_columns(
-            pl.Series("opening_energy", opening_energies, dtype=pl.Float64)
-        )
+        return self.accessibility_service.annotate_opening_energy_vectorized(df)
 
     def _calculate_on_target_dg(
         self,

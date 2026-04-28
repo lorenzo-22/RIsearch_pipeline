@@ -1047,6 +1047,81 @@ class GenomeAccessibilityService:
         # Quantize to 0.1 resolution (legacy compatibility)
         return int(round(raw_val * 10.0)) / 10.0
 
+    def annotate_opening_energy_vectorized(self, df: "pl.DataFrame") -> "pl.DataFrame":
+        """Vectorized batch equivalent of calling query_single() per row.
+
+        Groups rows by (chrom, strand), loads profile once per group, then
+        does numpy gather over all rows in that group. Out-of-bounds positions
+        and missing profiles get the default penalty (10.0). Returns df with
+        an added `opening_energy` column (Float32).
+        """
+        import polars as pl
+
+        n_rows = df.height
+        opening_energies = np.full(n_rows, 10.0, dtype=np.float32)
+
+        # Extract coordinate arrays once
+        chroms = df["chrom"].to_numpy()
+        starts = df["start"].to_numpy().astype(np.int64)
+        ends = df["end"].to_numpy().astype(np.int64)
+        strands = df["strand"].to_numpy()
+
+        # Build row-index groups per (chrom, strand) with a single pass
+        from collections import defaultdict
+        groups: dict[tuple, list] = defaultdict(list)
+        for i in range(n_rows):
+            c = str(chroms[i])
+            if c == "onTarget":
+                continue
+            groups[(c, str(strands[i]))].append(i)
+
+        for (chrom, strand), row_indices in groups.items():
+            try:
+                profile_key = self._ensure_profile(chrom, strand)
+            except Exception:
+                continue  # missing profile → default 10.0
+
+            profile = self._profiles[profile_key]
+            is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
+            seq_len = len(profile)
+
+            idx = np.array(row_indices, dtype=np.int64)
+            s = starts[idx]
+            e = ends[idx]
+
+            # 1-based RIsearch coords → 0-based half-open
+            start0 = s - 1
+            end0 = e
+            interaction_len = end0 - start0
+
+            # Mask out-of-bounds rows; they keep the default 10.0
+            in_bounds = (start0 >= 0) & (end0 <= seq_len)
+
+            if profile.ndim == 2:
+                matrix_width = profile.shape[1]
+                col_idx = np.minimum(interaction_len, matrix_width) - 1
+                col_idx = np.maximum(col_idx, 0)
+                row_idx = np.where(strand == "+", end0 - 1, start0)
+                row_idx = np.clip(row_idx, 0, seq_len - 1)
+                raw_vals = profile[row_idx, col_idx].astype(np.float32)
+            else:
+                row_idx = np.where(strand == "+", end0 - 1, start0)
+                row_idx = np.clip(row_idx, 0, seq_len - 1)
+                raw_vals = profile[row_idx].astype(np.float32)
+
+            if is_legacy_bin:
+                raw_vals = raw_vals / 10.0
+
+            # Quantize to 0.1 resolution (match legacy query_single behaviour)
+            raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
+
+            # Apply only in-bounds results; rest stay at default 10.0
+            opening_energies[idx[in_bounds]] = raw_vals[in_bounds]
+
+        return df.with_columns(
+            pl.Series("opening_energy", opening_energies, dtype=pl.Float32)
+        )
+
     def _parse_openen_text(self, path: Path) -> np.ndarray:
         """
         Parse RNAplfold -O text output.

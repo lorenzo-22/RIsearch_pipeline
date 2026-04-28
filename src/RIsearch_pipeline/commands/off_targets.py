@@ -62,6 +62,7 @@ def _init_worker(
     if ipc_path:
         _WORKER_DF_TRANS = pl.read_ipc(Path(ipc_path), memory_map=True)
         _WORKER_INTERSECTOR = IntersectionService()
+        _WORKER_INTERSECTOR.preload_transcriptome(_WORKER_DF_TRANS)
 
     acc_service = None
     precomputed_acc = None
