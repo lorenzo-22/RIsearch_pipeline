@@ -102,16 +102,25 @@ class IntersectionService:
         # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
 
-        # Pre-partition predictions by (chrom, strand) once so each pair's
-        # processing function gets an O(1) lookup instead of an O(N) filter
-        # scan over the full DataFrame per pair.
+        # Partition predictions by sorting then slicing contiguous groups.
+        # Avoids partition_by's scatter-allocation of ~25 copies (203ms).
+        # sort() + slice() on a contiguous sorted column is ~5-10× faster
+        # because Arrow slices are zero-copy views, not copies.
         _t_part_preds = time.perf_counter()
-        preds_by_pair: dict[tuple, pl.DataFrame] = {
-            (key, val): sub_df
-            for (key, val), sub_df in risearch_df.partition_by(
-                ["chrom", "strand"], as_dict=True
-            ).items()
-        }
+        risearch_sorted = risearch_df.sort(["chrom", "strand"])
+        preds_by_pair: dict[tuple, pl.DataFrame] = {}
+        if risearch_sorted.height > 0:
+            _cs_chrom = risearch_sorted["chrom"].to_numpy()
+            _cs_strand = risearch_sorted["strand"].to_numpy()
+            _prev_key = (_cs_chrom[0], _cs_strand[0])
+            _group_start = 0
+            for _i in range(1, len(_cs_chrom)):
+                _key = (_cs_chrom[_i], _cs_strand[_i])
+                if _key != _prev_key:
+                    preds_by_pair[_prev_key] = risearch_sorted.slice(_group_start, _i - _group_start)
+                    _group_start = _i
+                    _prev_key = _key
+            preds_by_pair[_prev_key] = risearch_sorted.slice(_group_start, len(_cs_chrom) - _group_start)
         _t_part_trans = time.perf_counter()
         # Use pre-built transcriptome partition if available (worker-init cache),
         # otherwise build it now. The cache avoids ~24ms + 65ms per siRNA.
