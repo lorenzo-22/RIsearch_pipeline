@@ -21,6 +21,7 @@ class IntersectionService:
         transcriptome_df: pl.DataFrame,
         mode: str = "gw",
         workers: int = 1,
+        _timings: Optional[dict] = None,
     ) -> pl.DataFrame:
         """Filter predictions to those overlapping transcriptome features.
 
@@ -29,6 +30,7 @@ class IntersectionService:
             transcriptome_df: DataFrame from TranscriptomeParser.
             mode: "gw" (genome-wide) or "tw" (transcriptome-wide).
             workers: Number of threads for parallel chromosome processing.
+            _timings: Optional dict filled with per-sub-stage wall-clock seconds.
 
         Returns:
             DataFrame containing intersected results.
@@ -36,7 +38,7 @@ class IntersectionService:
         if mode == "tw":
             return self._transcriptome_wide_join(risearch_df, transcriptome_df)
         else:
-            return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers)
+            return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers, _timings=_timings)
 
     def _transcriptome_wide_join(
         self,
@@ -62,6 +64,7 @@ class IntersectionService:
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
         workers: int = 1,
+        _timings: Optional[dict] = None,
     ) -> pl.DataFrame:
         """Genome-wide intersection with streaming to limit memory.
 
@@ -69,6 +72,7 @@ class IntersectionService:
         When workers > 1, pairs are processed in parallel via ThreadPoolExecutor
         (NCLS and Polars/Rust operations release the GIL).
         """
+        import time
         BATCH_SIZE = 50000  # Process 50K predictions at a time
 
         # Get unique (chrom, strand) pairs
@@ -77,12 +81,14 @@ class IntersectionService:
         # Pre-partition predictions by (chrom, strand) once so each pair's
         # processing function gets an O(1) lookup instead of an O(N) filter
         # scan over the full DataFrame per pair.
+        _t_part_preds = time.perf_counter()
         preds_by_pair: dict[tuple, pl.DataFrame] = {
             (key, val): sub_df
             for (key, val), sub_df in risearch_df.partition_by(
                 ["chrom", "strand"], as_dict=True
             ).items()
         }
+        _t_part_trans = time.perf_counter()
         # Pre-partition transcriptome the same way
         trans_by_pair: dict[tuple, pl.DataFrame] = {
             (key, val): sub_df
@@ -90,6 +96,10 @@ class IntersectionService:
                 ["chrom", "strand"], as_dict=True
             ).items()
         }
+        _t_after_partition = time.perf_counter()
+
+        _ncls_time = [0.0]
+        _match_time = [0.0]
 
         def _process_pair(pair: dict) -> list[pl.DataFrame]:
             chrom = pair["chrom"]
@@ -102,15 +112,19 @@ class IntersectionService:
                 return []
 
             trans_sorted = trans.sort("start")
+            _tb = time.perf_counter()
             trans_index = self._build_transcript_index(trans_sorted)
+            _ncls_time[0] += time.perf_counter() - _tb
             logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
 
             results = []
+            _tm = time.perf_counter()
             for batch_start in range(0, preds.height, BATCH_SIZE):
                 batch = preds.slice(batch_start, BATCH_SIZE)
                 batch_result = self._process_batch(batch, trans_index)
                 if batch_result is not None and batch_result.height > 0:
                     results.append(batch_result)
+            _match_time[0] += time.perf_counter() - _tm
 
             # Deduplicate once per (chrom, strand) pair rather than per batch.
             if results:
@@ -137,6 +151,12 @@ class IntersectionService:
         else:
             for pair in chrom_strand_pairs:
                 all_results.extend(_process_pair(pair))
+
+        if _timings is not None:
+            _timings["intersect_partition_preds_s"] = _t_part_trans - _t_part_preds
+            _timings["intersect_partition_trans_s"] = _t_after_partition - _t_part_trans
+            _timings["intersect_ncls_build_s"] = _ncls_time[0]
+            _timings["intersect_match_s"] = _match_time[0]
 
         if not all_results:
             return self._empty_result_schema(risearch_df)

@@ -99,6 +99,7 @@ def _process_one_sirna(
         (PyArrow Table, metadata dict) or (None, {}) if no predictions remain.
     """
     import sys
+    import time
     _m = sys.modules[__name__]
 
     df_trans = _m._WORKER_DF_TRANS
@@ -109,8 +110,11 @@ def _process_one_sirna(
 
     from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
+    _t_start = time.perf_counter()
+
     parser = RIsearchParser()
     df = parser.load_single_file(Path(file_path_str))
+    _t_load = time.perf_counter()
 
     if sense_only:
         df = df.filter(pl.col("strand") == "+")
@@ -127,10 +131,12 @@ def _process_one_sirna(
 
     # Intersect with transcriptome (sequential — each worker owns its CPU).
     # intersect() already deduplicates per (chrom, strand) pair internally.
+    _intersect_subtimings: dict = {}
     if df_trans is not None and intersector is not None:
-        df = intersector.intersect(df, df_trans, mode=predictions_type, workers=1)
+        df = intersector.intersect(df, df_trans, mode=predictions_type, workers=1, _timings=_intersect_subtimings)
         if df.height == 0:
             return None, {}
+    _t_intersect = time.perf_counter()
 
     # Probabilities
     df, meta = prob_service.calculate_probabilities_per_sirna(
@@ -140,6 +146,7 @@ def _process_one_sirna(
         on_target_map=on_target_map,
         on_target_expression=on_target_expression,
     )
+    _t_prob = time.perf_counter()
 
     # Drop heavy intermediate columns before returning
     drop_cols = [
@@ -149,7 +156,30 @@ def _process_one_sirna(
     if drop_cols:
         df = df.drop(drop_cols)
 
-    return df.to_arrow(), meta
+    arrow = df.to_arrow()
+    _t_end = time.perf_counter()
+
+    # Return freed pages to OS to prevent RSS growth across sequential siRNAs
+    # in the same worker. Python's allocator retains pages by default; gc +
+    # malloc_trim release them, keeping per-siRNA memory cost constant.
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+    meta["_timings"] = {
+        "load_s": _t_load - _t_start,
+        "intersect_s": _t_intersect - _t_load,
+        "prob_s": _t_prob - _t_intersect,
+        "serialize_s": _t_end - _t_prob,
+        "total_s": _t_end - _t_start,
+        **_intersect_subtimings,
+    }
+
+    return arrow, meta
 
 
 def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
@@ -686,8 +716,14 @@ def run(
                             for f in all_files
                         }
 
+                        import time as _time
+                        _drain_stage_totals: dict[str, float] = {}
+                        _drain_n = 0
+                        _drain_wait_total = 0.0
+
                         completed = 0
                         for future in as_completed(futures):
+                            _t_drain_start = _time.perf_counter()
                             completed += 1
                             progress.update(
                                 task,
@@ -702,7 +738,9 @@ def run(
                             # results in memory for the entire loop — O(N) growth.
                             f = futures.pop(future)
                             try:
+                                _t_wait = _time.perf_counter()
                                 arrow_table, batch_metadata = future.result()
+                                _drain_wait_total += _time.perf_counter() - _t_wait
                             except Exception as exc:
                                 logger.error(f"Worker failed for {f.name}: {exc}")
                                 continue
@@ -710,11 +748,14 @@ def run(
                             if arrow_table is None:
                                 continue
 
+                            _t_deserialize = _time.perf_counter()
                             df_chunk = pl.from_arrow(arrow_table)
                             del arrow_table  # Arrow copy no longer needed; Polars owns the data
                             total_rows += df_chunk.height
+                            _dt_deserialize = _time.perf_counter() - _t_deserialize
 
                             # Stream .summary files as each siRNA completes
+                            _t_summary = _time.perf_counter()
                             if summary_out_dir is not None:
                                 z_per_sirna = batch_metadata.get("z_per_sirna", {})
                                 w_per_sirna = batch_metadata.get("on_target_weights", {})
@@ -728,7 +769,9 @@ def run(
                                     )
                                     (summary_out_dir / f"{sid}.summary").write_text(text)
                                     summary_count += 1
+                            _dt_summary = _time.perf_counter() - _t_summary
 
+                            _t_write = _time.perf_counter()
                             if out_path is not None:
                                 if output_format == "parquet":
                                     arrow_tbl = _downcast_schema(df_chunk).to_arrow()
@@ -741,8 +784,29 @@ def run(
                                     with open(out_path, "w" if _csv_first_batch else "a") as _f:
                                         df_chunk.write_csv(_f, separator=sep, include_header=_csv_first_batch)
                                     _csv_first_batch = False
+                            _dt_write = _time.perf_counter() - _t_write
 
                             del df_chunk
+
+                            # Accumulate worker-reported per-stage timings
+                            worker_timings = batch_metadata.get("_timings", {})
+                            for k, v in worker_timings.items():
+                                _drain_stage_totals[k] = _drain_stage_totals.get(k, 0.0) + v
+                            # Accumulate drain-side timings
+                            _drain_stage_totals["drain_deserialize_s"] = _drain_stage_totals.get("drain_deserialize_s", 0.0) + _dt_deserialize
+                            _drain_stage_totals["drain_summary_s"] = _drain_stage_totals.get("drain_summary_s", 0.0) + _dt_summary
+                            _drain_stage_totals["drain_write_s"] = _drain_stage_totals.get("drain_write_s", 0.0) + _dt_write
+                            _drain_n += 1
+
+                        _perf_lines: list[str] = []
+                        if _drain_n > 0:
+                            _perf_lines = [f"[perf] per-siRNA stage breakdown (N={_drain_n}, times are sums over all siRNAs):"]
+                            for k, v in sorted(_drain_stage_totals.items()):
+                                _perf_lines.append(f"  {k}: {v:.3f}s  (avg {v/_drain_n*1000:.1f}ms/siRNA)")
+                            _perf_lines.append(f"  drain_wait_for_future_s: {_drain_wait_total:.3f}s  (avg {_drain_wait_total/_drain_n*1000:.1f}ms/siRNA)")
+
+                if _perf_lines:
+                    console.print("\n".join(_perf_lines))
 
                 # Report results
                 if total_rows > 0 and out_path is not None:

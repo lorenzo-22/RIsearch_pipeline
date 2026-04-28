@@ -5,7 +5,7 @@ set -e
 TMP_ACC="/tmp/acc_files"
 RAMDISK="/dev/shm/input"
 SUBSET_DIR="/var/tmp/subset_input"
-SCRATCH="/var/tmp/tmp.ak9sAoblPN"
+SCRATCH="/var/tmp/results"
 RESULTS_DIR="${SCRATCH}/RIsearch2_results"
 NEW_PIPELINE_DIR="/dev/shm/src/RIsearch_pipeline"
 
@@ -20,6 +20,7 @@ N_RUNS=3
 N_WARMUP=1
 
 RESULTS_TSV="${NEW_PIPELINE_DIR}/benchmark_results.tsv"
+PERF_LOG="${NEW_PIPELINE_DIR}/benchmark_perf.log"
 LOG_DIR="${NEW_PIPELINE_DIR}/benchmark_logs"
 TIMEFILE=$(mktemp)
 
@@ -66,6 +67,16 @@ run_and_record() {
         "$subset_size" "$pipeline" "$run_num" "$wall_sec" "$peak_rss" "$exit_code" \
         >> "$RESULTS_TSV"
 
+    # Extract [perf] block (new pipeline emits it at end of run)
+    if grep -q '^\[perf\]' "$log_file" 2>/dev/null; then
+        echo "    --- [perf] ${pipeline} n=${subset_size} run${run_num} ---"
+        grep -A 999 '^\[perf\]' "$log_file" | head -30
+        {
+            printf '\n=== %s n=%s run%s ===\n' "$pipeline" "$subset_size" "$run_num"
+            grep -A 999 '^\[perf\]' "$log_file" | head -30
+        } >> "$PERF_LOG"
+    fi
+
     if [ "$exit_code" -eq 0 ]; then
         rm -f "$log_file"
     else
@@ -97,6 +108,7 @@ fi
 if [ ! -s "$RESULTS_TSV" ]; then
     printf 'subset_size\tpipeline\trun\twall_clock_s\tpeak_rss_kb\texit_code\n' > "$RESULTS_TSV"
 fi
+printf '# benchmark run: %s  sizes: %s\n' "$(date -Iseconds)" "${SUBSET_SIZES[*]}" >> "$PERF_LOG"
 echo "Results will be appended to: $RESULTS_TSV"
 
 # --- Conda setup string (reused in old pipeline command) ---
@@ -134,6 +146,9 @@ for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
 
     # --- Old pipeline (3 runs) ---
     echo "--- Old pipeline ---"
+    # Clean up any stale intersection files to ensure a fair benchmark and avoid corruption
+    rm -f "${SCRATCH}"/*.targets "${SCRATCH}"/*.targets.* "${SCRATCH}"/*.temp.bed
+
     CMD_OLD="${CONDA_SETUP} && \
 mkdir -p ${SCRATCH}/old && \
 cd ${SCRATCH} && \
