@@ -657,10 +657,15 @@ def run(
                     out_path = output_file.with_suffix(".csv")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Resolve summary output dir up-front for streaming writes
+            # Resolve summary output dir up-front for streaming writes.
+            # If --output is a directory path (no extension or trailing slash),
+            # write .summary files there; otherwise write alongside the output file.
             summary_out_dir = None
             if output_file is not None:
-                summary_out_dir = output_file.parent
+                if output_file.suffix == "" or str(output_file).endswith("/") or output_file.is_dir():
+                    summary_out_dir = output_file
+                else:
+                    summary_out_dir = output_file.parent
                 summary_out_dir.mkdir(parents=True, exist_ok=True)
             summary_count = 0
 
