@@ -833,7 +833,6 @@ dependencies = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "rich" },
-    { name = "risearch" },
     { name = "seaborn" },
     { name = "typer" },
     { name = "viennarna" },
@@ -863,11 +862,13 @@ requires-dist = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "rich", specifier = ">=14.3.0" },
-    { name = "risearch", directory = "risearch/risearch-python" },
     { name = "seaborn", specifier = ">=0.12.0" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },
 ]
+
+[package.metadata.optional-dependencies]
+risearch = [{ name = "risearch", directory = "risearch/risearch-python" }]
 
 [package.metadata.requires-dev]
 dev = [

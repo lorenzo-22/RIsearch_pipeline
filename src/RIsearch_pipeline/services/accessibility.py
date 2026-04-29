@@ -19,89 +19,127 @@ class AccessibilityError(Exception):
     pass
 
 
+_COMPLEMENT_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
+
+
+def _reverse_complement(seq: str) -> str:
+    return seq.translate(_COMPLEMENT_TABLE)[::-1]
+
+
 def _fold_full_chromosome(
     sequence: str,
     chrom: str,
-    strand: str,
     window_size: int,
     max_span: int,
     unpaired_prob: int,
-) -> list[dict]:
+    output_path: str,
+    chunk_size: int = 1_000_000,
+) -> str:
     """
-    Worker function: fold an entire chromosome strand and return opening energies.
+    Worker: fold both strands of a chromosome in chunks, stream to Parquet.
 
     Must be a top-level function (not a method) for ProcessPoolExecutor
-    pickling. Receives only small, pickle-friendly arguments.
+    pickling.  Only the output path string (a few bytes) is pickled back to
+    the parent — avoiding the O(N × u) Python-side OOM that killed the old
+    implementation on large chromosomes.
 
-    The output is a list of dicts, each with keys:
-        position (1-based), strand, u1, u2, ..., u{unpaired_prob}
-
-    Opening energies are quantized to 0.1 kcal/mol resolution to match
-    legacy binary format precision.
+    Chunked folding matches long_RNAplfold_openen.py: each chunk of
+    chunk_size bp is folded with window_size bp of context on each side.
+    Only the interior positions (without the boundary overlap) are written,
+    so every emitted position has a full folding window available.
 
     Args:
-        sequence: Full chromosome sequence (already correct strand orientation).
-        chrom: Chromosome name.
-        strand: '+' or '-'.
+        sequence: Full chromosome sequence (+ strand, 5'→3').
+        chrom: Chromosome name (used only for logging).
         window_size: -W parameter.
         max_span: -L parameter.
         unpaired_prob: -u parameter (typically 30).
+        output_path: Destination Parquet file path (string, for pickling).
+        chunk_size: Bases to process per pfl_fold_up call (default 1 M).
 
     Returns:
-        List of row dicts for Parquet serialization.
-
-    Complexity: O(N × W) time for pfl_fold_up where N = len(sequence).
-                O(N × u) space for the returned row data.
+        output_path (the same string passed in).
     """
     import RNA as _RNA
     import math
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     RT = 0.616  # kcal/mol at 37°C
     seq_len = len(sequence)
 
-    # Convert T→U for RNA folding
-    rna_seq = sequence.upper().replace("T", "U")
+    schema = pa.schema(
+        [("position", pa.int32()), ("strand", pa.utf8())]
+        + [(f"u{i}", pa.float32()) for i in range(1, unpaired_prob + 1)]
+    )
 
-    w = min(window_size, seq_len)
-    l_adj = min(max_span, seq_len)
+    def _fold_strand(writer: pq.ParquetWriter, seq: str, strand_char: str) -> None:
+        """Fold one strand in chunks; write one RecordBatch per chunk."""
+        rna_seq = seq.upper().replace("T", "U")
+        pos = 0  # 0-based start of the current data window
 
-    try:
-        probs_matrix = _RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
-    except Exception:
-        # Return default penalty values for all positions
-        rows = []
-        for pos_1based in range(1, seq_len + 1):
-            row = {"position": pos_1based, "strand": strand}
-            for u in range(1, unpaired_prob + 1):
-                row[f"u{u}"] = 10.0
-            rows.append(row)
-        return rows
+        while pos < seq_len:
+            # Extended context window: W bases on each side for full folding.
+            ext_start = max(0, pos - window_size)
+            ext_end = min(seq_len, pos + chunk_size + window_size)
+            chunk_seq = rna_seq[ext_start:ext_end]
+            chunk_len = len(chunk_seq)
 
-    rows = []
-    for pos_1based in range(1, seq_len + 1):
-        row = {"position": pos_1based, "strand": strand}
-        for u in range(1, unpaired_prob + 1):
-            energy_val = 25.5  # Default max (no data)
-            if pos_1based < len(probs_matrix) and u < len(probs_matrix[pos_1based]):
-                p = probs_matrix[pos_1based][u]
-                if p is not None and p > 0:
-                    energy_val = -RT * math.log(p)
-                    # Quantize to 0.1 kcal/mol (legacy compatibility)
-                    energy_val = int(round(energy_val * 10.0)) / 10.0
-            row[f"u{u}"] = energy_val
-        rows.append(row)
+            # Offsets within chunk_seq for the data we actually emit.
+            data_start_in_chunk = pos - ext_start          # ≥ 0
+            data_end_in_chunk = min(seq_len, pos + chunk_size) - ext_start
 
-    # For minus strand, reverse the row order (positions stay 1-based but
-    # correspond to the reverse-complemented sequence viewed 5'→3')
-    if strand == "-":
-        for i, row in enumerate(reversed(rows)):
-            row["position"] = i + 1
-        rows = list(reversed(rows))
-        # Re-assign after reversal so position 1 = first base on - strand
-        for i, row in enumerate(rows):
-            row["position"] = i + 1
+            w = min(window_size, chunk_len)
+            l_adj = min(max_span, chunk_len)
 
-    return rows
+            try:
+                probs_matrix = _RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
+                probs_ok = True
+            except Exception:
+                probs_ok = False
+                probs_matrix = None
+
+            n_pos = data_end_in_chunk - data_start_in_chunk
+            # 1-based positions in the full sequence
+            positions = np.arange(pos + 1, pos + n_pos + 1, dtype=np.int32)
+
+            # u_matrix[i, u-1] = opening energy at position i, u-length u
+            u_matrix = np.full((n_pos, unpaired_prob), 25.5, dtype=np.float32)
+
+            if probs_ok:
+                for i in range(n_pos):
+                    chunk_pos_1based = data_start_in_chunk + i + 1
+                    if chunk_pos_1based >= len(probs_matrix):
+                        continue
+                    row_probs = probs_matrix[chunk_pos_1based]
+                    for u in range(1, unpaired_prob + 1):
+                        if u >= len(row_probs):
+                            break
+                        p = row_probs[u]
+                        if p is not None and p > 0:
+                            ev = -RT * math.log(p)
+                            # Quantize to 0.1 kcal/mol (legacy compatibility)
+                            u_matrix[i, u - 1] = round(ev * 10.0) / 10.0
+            else:
+                u_matrix[:] = 10.0  # folding error sentinel
+
+            arrays = [
+                pa.array(positions),
+                pa.array([strand_char] * n_pos, type=pa.utf8()),
+            ] + [
+                pa.array(u_matrix[:, u - 1])
+                for u in range(1, unpaired_prob + 1)
+            ]
+            writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
+
+            pos += chunk_size
+
+    with pq.ParquetWriter(output_path, schema) as writer:
+        _fold_strand(writer, sequence, "+")
+        _fold_strand(writer, _reverse_complement(sequence), "-")
+
+    return output_path
 
 
 def _fold_island(
@@ -260,7 +298,6 @@ class GenomeAccessibilityService:
         Complexity: O(sum(N_chrom) × W) time across all chromosomes,
                     parallelized up to `workers` concurrent folds.
         """
-        import polars as pl
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         if not HAS_VIENNA_BINDINGS:
@@ -269,85 +306,67 @@ class GenomeAccessibilityService:
                 "Please install ViennaRNA or use the CLI fallback."
             )
 
-        from RIsearch_pipeline.services.helpers import read_fasta, reverse_complement
+        from RIsearch_pipeline.services.helpers import read_fasta
 
         # --- Step 1: Read all chromosomes into memory ---
         chromosomes = []
         for chrom, sequence in read_fasta(genome_path):
             chromosomes.append((chrom, sequence))
 
+        # Longest-job-first scheduling: sort by descending sequence length so
+        # the largest chromosomes start first, minimising tail latency.
+        chromosomes.sort(key=lambda cs: len(cs[1]), reverse=True)
+
         logger.info(
             f"Computing full-genome accessibility for {len(chromosomes)} "
             f"chromosome(s) using {workers} worker(s)"
         )
 
-        # Set up progress tracking
-        total_tasks = len(chromosomes) * 2  # + and - strand per chromosome
+        # Progress bar counts chromosomes (each covers both strands).
+        total_tasks = len(chromosomes)
         prog_task = None
         if progress is not None:
             prog_task = progress.add_task("Folding chromosomes...", total=total_tasks)
 
-        # --- Step 2: Dispatch (chrom, strand) pairs to workers ---
+        # --- Step 2: Dispatch one task per chromosome to workers ---
+        # Each worker writes its own Parquet file and returns only the path
+        # string — nothing large is pickled back to the parent.
         results: Dict[str, Path] = {}
-        # Accumulate per-chromosome DataFrames: chrom -> [df_plus, df_minus]
-        chrom_dfs: Dict[str, list] = {chrom: [] for chrom, _ in chromosomes}
-
         futures = {}
+
         with ProcessPoolExecutor(max_workers=workers) as pool:
             for chrom, sequence in chromosomes:
-                for strand in ["+", "-"]:
-                    seq_to_fold = (
-                        sequence if strand == "+" else reverse_complement(sequence)
-                    )
-                    fut = pool.submit(
-                        _fold_full_chromosome,
-                        seq_to_fold,
-                        chrom,
-                        strand,
-                        window_size,
-                        max_span,
-                        unpaired_prob,
-                    )
-                    futures[fut] = (chrom, strand)
+                out_path = str(self.data_dir / f"{chrom}.accessibility.parquet")
+                fut = pool.submit(
+                    _fold_full_chromosome,
+                    sequence,
+                    chrom,
+                    window_size,
+                    max_span,
+                    unpaired_prob,
+                    out_path,
+                )
+                futures[fut] = chrom
 
             for fut in as_completed(futures):
-                chrom, strand = futures[fut]
+                chrom = futures[fut]
                 try:
-                    rows = fut.result()
+                    path = fut.result()
                 except Exception as e:
-                    logger.error(f"Error folding {chrom} {strand}: {e}")
+                    logger.error(f"Error folding {chrom}: {e}")
                     raise
 
-                df_strand = pl.DataFrame(rows)
-                chrom_dfs[chrom].append(df_strand)
-
-                logger.info(f"Folded {chrom} ({strand}) — {len(rows)} positions")
+                results[chrom] = Path(path)
+                logger.info(f"Completed {chrom} → {path}")
 
                 if progress is not None and prog_task is not None:
                     progress.update(
                         prog_task,
                         advance=1,
-                        description=f"Folded {chrom} ({strand})",
+                        description=f"Folded {chrom}",
                     )
                 elif progress_callback:
-                    progress_callback(
-                        advance=1, description=f"Folded {chrom} ({strand})"
-                    )
-
-        # --- Step 3: Concatenate strands and write one Parquet per chrom ---
-        for chrom, dfs in chrom_dfs.items():
-            if not dfs:
-                continue
-            df_chrom = pl.concat(dfs).sort(["strand", "position"])
-
-            out_path = self.data_dir / f"{chrom}.accessibility.parquet"
-            df_chrom.write_parquet(out_path, use_pyarrow=True)
-            results[chrom] = out_path
-
-            logger.info(
-                f"Saved {chrom} accessibility ({df_chrom.height} rows) → {out_path}"
-            )
-            del df_chrom
+                    progress_callback(advance=1, description=f"Folded {chrom}")
 
         return results
 
