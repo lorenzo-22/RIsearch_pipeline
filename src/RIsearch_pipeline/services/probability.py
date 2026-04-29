@@ -279,8 +279,15 @@ class ProbabilityService:
             # --- Mode A: Tag on-target rows in place ---
             # Build a condition that matches on-target rows by gene_id or transcript_id
             # The old pipeline checks: gid == on_id OR tid == on_id
+            #
+            # Filter map to siRNAs present in this DataFrame before building
+            # expressions — avoids an O(N_corpus)-deep OR chain when called
+            # per-siRNA from a worker (each df has exactly one unique siRNA_id).
+            sirna_set = set(unique_sirnas.to_list())
+            local_map = {k: v for k, v in on_target_map.items() if k in sirna_set}
+
             tag_conditions = []
-            for sirna_id, target_id in on_target_map.items():
+            for sirna_id, target_id in local_map.items():
                 cond = pl.col("sirna_id") == sirna_id
                 id_match = pl.col("transcript_id") == target_id
                 if "gene_id" in df.columns:
@@ -298,7 +305,7 @@ class ProbabilityService:
             n_on = df.filter(pl.col("is_on_target")).height
             logger.info(
                 f"In-predictions on-target mode: tagged {n_on} rows as on-target "
-                f"(from {len(on_target_map)} mappings)"
+                f"(from {len(local_map)} mappings)"
             )
 
         elif use_fasta_mode and on_target_map and "transcript_id" in df.columns:
