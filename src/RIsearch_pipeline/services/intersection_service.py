@@ -2,7 +2,7 @@
 
 import polars as pl
 import numpy as np
-from typing import Iterator, Optional
+from typing import Optional
 
 from loguru import logger
 
@@ -16,17 +16,14 @@ class IntersectionService:
     """Service to intersect off-target predictions with genomic features."""
 
     def __init__(self) -> None:
-        # Populated by preload_transcriptome() when called from a worker init.
-        # Avoids re-partitioning + re-building NCLS on every intersect() call.
         self._trans_partition: dict[tuple, pl.DataFrame] | None = None
         self._trans_ncls_index: dict[tuple, dict] | None = None
 
     def preload_transcriptome(self, transcriptome_df: pl.DataFrame) -> None:
         """Pre-partition transcriptome and build NCLS indices for all (chrom,strand) pairs.
 
-        Call once from _init_worker after loading the transcriptome IPC.
-        Subsequent intersect() calls reuse the cached partition and indices
-        instead of rebuilding per siRNA (~89ms/siRNA saved).
+        Call once from _init_worker. Subsequent intersect() calls reuse the
+        cached data instead of rebuilding per siRNA (~89ms/siRNA saved).
         """
         self._trans_partition = {
             (k, v): sub_df
@@ -34,10 +31,11 @@ class IntersectionService:
                 ["chrom", "strand"], as_dict=True
             ).items()
         }
-        self._trans_ncls_index = {}
-        for key, sub_df in self._trans_partition.items():
-            if sub_df.height > 0:
-                self._trans_ncls_index[key] = self._build_transcript_index(sub_df.sort("start"))
+        self._trans_ncls_index = {
+            key: self._build_transcript_index(sub_df.sort("start"))
+            for key, sub_df in self._trans_partition.items()
+            if sub_df.height > 0
+        }
 
     def intersect(
         self,
@@ -50,26 +48,19 @@ class IntersectionService:
         """Filter predictions to those overlapping transcriptome features.
 
         Args:
-            risearch_df: DataFrame from RIsearchParser.
-            transcriptome_df: DataFrame from TranscriptomeParser.
             mode: "gw" (genome-wide) or "tw" (transcriptome-wide).
             workers: Number of threads for parallel chromosome processing.
             _timings: Optional dict filled with per-sub-stage wall-clock seconds.
-
-        Returns:
-            DataFrame containing intersected results.
         """
         if mode == "tw":
             return self._transcriptome_wide_join(risearch_df, transcriptome_df)
-        else:
-            return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers, _timings=_timings)
+        return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers, _timings=_timings)
 
     def _transcriptome_wide_join(
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
     ) -> pl.DataFrame:
-        """Transcriptome-Wide Mode - direct ID join."""
         joined = risearch_df.join(
             transcriptome_df,
             left_on="chrom",
@@ -77,10 +68,8 @@ class IntersectionService:
             how="inner",
             suffix="_trans",
         )
-
         if "transcript_id" not in joined.columns:
             joined = joined.with_columns(pl.col("chrom").alias("transcript_id"))
-
         return joined
 
     def _genome_wide_streaming(
@@ -90,49 +79,33 @@ class IntersectionService:
         workers: int = 1,
         _timings: Optional[dict] = None,
     ) -> pl.DataFrame:
-        """Genome-wide intersection with streaming to limit memory.
-
-        Processes predictions in small batches per (chrom, strand) pair.
-        When workers > 1, pairs are processed in parallel via ThreadPoolExecutor
-        (NCLS and Polars/Rust operations release the GIL).
-        """
         import time
-        BATCH_SIZE = 50000  # Process 50K predictions at a time
+        BATCH_SIZE = 50000
 
-        # Get unique (chrom, strand) pairs
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
 
-        # Pre-partition predictions by (chrom, strand) once so each pair's
-        # processing function gets an O(1) lookup instead of an O(N) filter
-        # scan over the full DataFrame per pair.
         _t_part_preds = time.perf_counter()
         preds_by_pair: dict[tuple, pl.DataFrame] = {
-            (key, val): sub_df
-            for (key, val), sub_df in risearch_df.partition_by(
+            (k, v): sub_df
+            for (k, v), sub_df in risearch_df.partition_by(
                 ["chrom", "strand"], as_dict=True
             ).items()
         }
         _t_part_trans = time.perf_counter()
-        # Use pre-built transcriptome partition if available (worker-init cache),
-        # otherwise build it now. The cache avoids ~24ms + 65ms per siRNA.
-        if self._trans_partition is not None:
-            trans_by_pair = self._trans_partition
-        else:
-            trans_by_pair = {
-                (key, val): sub_df
-                for (key, val), sub_df in transcriptome_df.partition_by(
-                    ["chrom", "strand"], as_dict=True
-                ).items()
-            }
+
+        trans_by_pair = self._trans_partition if self._trans_partition is not None else {
+            (k, v): sub_df
+            for (k, v), sub_df in transcriptome_df.partition_by(
+                ["chrom", "strand"], as_dict=True
+            ).items()
+        }
         _t_after_partition = time.perf_counter()
 
         _ncls_time = [0.0]
         _match_time = [0.0]
 
         def _process_pair(pair: dict) -> list[pl.DataFrame]:
-            chrom = pair["chrom"]
-            strand = pair["strand"]
-
+            chrom, strand = pair["chrom"], pair["strand"]
             preds = preds_by_pair.get((chrom, strand))
             trans = trans_by_pair.get((chrom, strand))
 
@@ -140,43 +113,36 @@ class IntersectionService:
                 return []
 
             _tb = time.perf_counter()
-            # Use pre-built NCLS index when available (worker-init cache).
             if self._trans_ncls_index is not None:
                 trans_index = self._trans_ncls_index.get((chrom, strand))
                 if trans_index is None:
                     return []
             else:
-                trans_sorted = trans.sort("start")
-                trans_index = self._build_transcript_index(trans_sorted)
+                trans_index = self._build_transcript_index(trans.sort("start"))
             _ncls_time[0] += time.perf_counter() - _tb
+
             logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
 
             results = []
             _tm = time.perf_counter()
             for batch_start in range(0, preds.height, BATCH_SIZE):
-                batch = preds.slice(batch_start, BATCH_SIZE)
-                batch_result = self._process_batch(batch, trans_index)
+                batch_result = self._process_batch(preds.slice(batch_start, BATCH_SIZE), trans_index)
                 if batch_result is not None and batch_result.height > 0:
                     results.append(batch_result)
             _match_time[0] += time.perf_counter() - _tm
 
-            # Deduplicate once per (chrom, strand) pair rather than per batch.
-            if results:
-                combined = pl.concat(results, how="diagonal")
-                return [combined.unique(
-                    subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-                    keep="first",
-                )]
-            return []
+            if not results:
+                return []
+            combined = pl.concat(results, how="diagonal")
+            return [combined.unique(
+                subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
+                keep="first",
+            )]
 
         all_results: list[pl.DataFrame] = []
 
         if workers > 1 and len(chrom_strand_pairs) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            # Cap concurrent threads to avoid peak-memory explosion from
-            # simultaneously materialising many chromosome-sized DataFrames.
-            # Empirically, 8 threads balances throughput and memory well.
             safe_workers = min(workers, 8)
             with ThreadPoolExecutor(max_workers=safe_workers) as pool:
                 futures = {pool.submit(_process_pair, pair): pair for pair in chrom_strand_pairs}
@@ -200,7 +166,6 @@ class IntersectionService:
         return result
 
     def _build_transcript_index(self, trans_sorted: pl.DataFrame) -> dict:
-        """Pre-build numpy arrays and optional interval index for fast lookup."""
         starts = trans_sorted["start"].to_numpy().astype(np.int64, copy=False)
         ends = trans_sorted["end"].to_numpy().astype(np.int64, copy=False)
 
@@ -214,77 +179,43 @@ class IntersectionService:
         }
 
         if NCLS is not None and len(starts) > 0:
-            # BED ends are already exclusive (half-open); pass them directly to NCLS.
-            interval_ids = np.arange(len(starts), dtype=np.int64)
-            index["ncls"] = NCLS(starts, ends, interval_ids)
+            index["ncls"] = NCLS(starts, ends, np.arange(len(starts), dtype=np.int64))
 
         return index
 
-    def _process_batch(
-        self,
-        preds: pl.DataFrame,
-        trans_index: dict,
-    ) -> Optional[pl.DataFrame]:
-        """Process a batch of predictions using the fastest available method."""
+    def _process_batch(self, preds: pl.DataFrame, trans_index: dict) -> Optional[pl.DataFrame]:
         if trans_index.get("ncls") is not None:
             return self._process_batch_ncls(preds, trans_index)
-
         return self._process_batch_numpy(preds, trans_index)
 
-    def _process_batch_ncls(
-        self,
-        preds: pl.DataFrame,
-        trans_index: dict,
-    ) -> Optional[pl.DataFrame]:
-        """Process a batch using NCLS interval indexing (fast path)."""
+    def _process_batch_ncls(self, preds: pl.DataFrame, trans_index: dict) -> Optional[pl.DataFrame]:
         if preds.height == 0:
             return None
 
-        trans_df = trans_index["trans_df"]
-        trans_starts = trans_index["starts"]
-        trans_ends = trans_index["ends"]
-        ncls = trans_index["ncls"]
-
         pred_starts = preds["start"].to_numpy().astype(np.int64, copy=False)
         pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
-        pred_ids = np.arange(preds.height, dtype=np.int64)
-
-        # Query with BED half-open intervals — pred_ends is already the exclusive end.
-        # all_overlaps_both returns all pairs where intervals overlap (any overlap),
-        # matching bedtools intersect default behaviour.
-        query_starts = pred_starts
-        query_ends = pred_ends
-        pred_idx, trans_idx = ncls.all_overlaps_both(query_starts, query_ends, pred_ids)
+        pred_idx, trans_idx = trans_index["ncls"].all_overlaps_both(
+            pred_starts, pred_ends, np.arange(preds.height, dtype=np.int64)
+        )
 
         if len(pred_idx) == 0:
             return None
 
-        preds_sel = preds[pred_idx]
-        trans_sel = trans_df[trans_idx].select(
-            [
-                pl.col("start").alias("trans_start"),
-                pl.col("end").alias("trans_end"),
-                pl.col("gene_id"),
-                pl.col("transcript_id"),
-                pl.col("exp_value"),
-            ]
-        )
+        trans_sel = trans_index["trans_df"][trans_idx].select([
+            pl.col("start").alias("trans_start"),
+            pl.col("end").alias("trans_end"),
+            pl.col("gene_id"),
+            pl.col("transcript_id"),
+            pl.col("exp_value"),
+        ])
+        return preds[pred_idx].hstack(trans_sel)
 
-        return preds_sel.hstack(trans_sel)
-
-    def _process_batch_numpy(
-        self,
-        preds: pl.DataFrame,
-        trans_index: dict,
-    ) -> Optional[pl.DataFrame]:
-        """Process a batch using vectorized numpy searches (fallback path)."""
+    def _process_batch_numpy(self, preds: pl.DataFrame, trans_index: dict) -> Optional[pl.DataFrame]:
         if preds.height == 0:
             return None
 
-        trans_df = trans_index["trans_df"]
         trans_starts = trans_index["starts"]
         trans_ends = trans_index["ends"]
-
         pred_starts = preds["start"].to_numpy().astype(np.int64, copy=False)
         pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
 
@@ -296,27 +227,15 @@ class IntersectionService:
         trans_match_idx_list = []
 
         for t_idx in range(len(trans_starts)):
-            t_start = trans_starts[t_idx]
-            t_end = trans_ends[t_idx]
-
-            # Any-overlap: pred_start < t_end AND pred_end > t_start.
-            # All predictions starting before t_end may overlap; then filter
-            # to those whose end is past t_start.
-            right = np.searchsorted(pred_starts_sorted, t_end, side="left")
-
+            right = np.searchsorted(pred_starts_sorted, trans_ends[t_idx], side="left")
             if right == 0:
                 continue
-
-            ends_slice = pred_ends_sorted[:right]
-            mask = ends_slice > t_start
+            mask = pred_ends_sorted[:right] > trans_starts[t_idx]
             if not np.any(mask):
                 continue
-
             pred_match_idx = order[:right][mask]
             pred_match_idx_list.append(pred_match_idx)
-            trans_match_idx_list.append(
-                np.full(pred_match_idx.shape[0], t_idx, dtype=np.int64)
-            )
+            trans_match_idx_list.append(np.full(pred_match_idx.shape[0], t_idx, dtype=np.int64))
 
         if not pred_match_idx_list:
             return None
@@ -324,80 +243,20 @@ class IntersectionService:
         pred_idx = np.concatenate(pred_match_idx_list)
         trans_idx = np.concatenate(trans_match_idx_list)
 
-        preds_sel = preds[pred_idx]
-        trans_sel = trans_df[trans_idx].select(
-            [
-                pl.col("start").alias("trans_start"),
-                pl.col("end").alias("trans_end"),
-                pl.col("gene_id"),
-                pl.col("transcript_id"),
-                pl.col("exp_value"),
-            ]
-        )
-
-        return preds_sel.hstack(trans_sel)
-
-    def intersect_streaming(
-        self,
-        risearch_df: pl.DataFrame,
-        transcriptome_df: pl.DataFrame,
-        mode: str = "gw",
-        workers: int = 1,
-    ) -> Iterator[pl.DataFrame]:
-        """Streaming intersection that yields batches instead of accumulating.
-
-        Use this for large datasets to avoid OOM.
-        When workers > 1, delegates to _genome_wide_streaming for parallel
-        chromosome processing, then yields results in chunks.
-        """
-        if mode == "tw":
-            yield self._transcriptome_wide_join(risearch_df, transcriptome_df)
-            return
-
-        if workers > 1:
-            # Parallel path: collect all results, then yield in BATCH_SIZE chunks
-            result = self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers)
-            BATCH_SIZE = 50000
-            for offset in range(0, result.height, BATCH_SIZE):
-                yield result.slice(offset, BATCH_SIZE)
-            return
-
-        BATCH_SIZE = 50000
-
-        chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
-
-        for pair in chrom_strand_pairs:
-            chrom = pair["chrom"]
-            strand = pair["strand"]
-
-            preds = risearch_df.filter(
-                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
-            )
-            trans = transcriptome_df.filter(
-                (pl.col("chrom") == chrom) & (pl.col("strand") == strand)
-            )
-
-            if preds.height == 0 or trans.height == 0:
-                continue
-
-            trans_sorted = trans.sort("start")
-            trans_index = self._build_transcript_index(trans_sorted)
-
-            for batch_start in range(0, preds.height, BATCH_SIZE):
-                batch = preds.slice(batch_start, BATCH_SIZE)
-                batch_result = self._process_batch(batch, trans_index)
-
-                if batch_result is not None and batch_result.height > 0:
-                    yield batch_result
+        trans_sel = trans_index["trans_df"][trans_idx].select([
+            pl.col("start").alias("trans_start"),
+            pl.col("end").alias("trans_end"),
+            pl.col("gene_id"),
+            pl.col("transcript_id"),
+            pl.col("exp_value"),
+        ])
+        return preds[pred_idx].hstack(trans_sel)
 
     def _empty_result_schema(self, risearch_df: pl.DataFrame) -> pl.DataFrame:
-        """Return empty DataFrame with expected output schema."""
-        return risearch_df.head(0).with_columns(
-            [
-                pl.lit(None).cast(pl.Int64).alias("trans_start"),
-                pl.lit(None).cast(pl.Int64).alias("trans_end"),
-                pl.lit(None).cast(pl.Utf8).alias("gene_id"),
-                pl.lit(None).cast(pl.Utf8).alias("transcript_id"),
-                pl.lit(None).cast(pl.Float32).alias("exp_value"),
-            ]
-        )
+        return risearch_df.head(0).with_columns([
+            pl.lit(None).cast(pl.Int64).alias("trans_start"),
+            pl.lit(None).cast(pl.Int64).alias("trans_end"),
+            pl.lit(None).cast(pl.Utf8).alias("gene_id"),
+            pl.lit(None).cast(pl.Utf8).alias("transcript_id"),
+            pl.lit(None).cast(pl.Float32).alias("exp_value"),
+        ])
