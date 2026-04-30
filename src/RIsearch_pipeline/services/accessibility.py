@@ -1,3 +1,4 @@
+import math
 from collections import OrderedDict
 from pathlib import Path
 
@@ -18,10 +19,48 @@ class AccessibilityError(Exception):
 
 
 _COMPLEMENT_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
+_TU_TABLE = str.maketrans("Tt", "Uu")
 
 
 def _reverse_complement(seq: str) -> str:
     return seq.translate(_COMPLEMENT_TABLE)[::-1]
+
+
+def _probs_to_energies(
+    probs_matrix,
+    data_start: int,
+    n_pos: int,
+    unpaired_prob: int,
+    RT: float,
+    out: np.ndarray,
+) -> None:
+    """Convert pfl_fold_up probability matrix to quantized opening energies in-place.
+
+    ViennaRNA 2.4+ returns pfl_fold_up rows as tuples, so we extract the entire
+    relevant slice in one np.array() call instead of a double Python loop.
+    Falls back to row-by-row extraction if the matrix has unexpected shape.
+    """
+    raw_p = np.zeros((n_pos, unpaired_prob), dtype=np.float64)
+    pm_len = len(probs_matrix)
+    actual = min(n_pos, max(0, pm_len - data_start - 1))
+    if actual > 0:
+        try:
+            # Single bulk extraction: O(actual) C-level copy vs O(actual × u) Python loop
+            raw = np.array(probs_matrix[data_start + 1 : data_start + actual + 1], dtype=np.float64)
+            n_u = min(unpaired_prob, raw.shape[1] - 1)
+            raw_p[:actual, :n_u] = raw[:, 1 : n_u + 1]
+        except (ValueError, TypeError):
+            for i in range(actual):
+                row = probs_matrix[data_start + i + 1]
+                lim = min(unpaired_prob, len(row) - 1)
+                if lim > 0:
+                    raw_p[i, :lim] = [r if r is not None else 0.0 for r in row[1 : lim + 1]]
+    # Batch log + quantize: replaces n_pos*u math.log + round calls
+    mask = raw_p > 0.0
+    raw_p[~mask] = 1.0  # log(1)=0; value discarded by np.where below
+    np.log(raw_p, out=raw_p)
+    raw_p *= -RT
+    out[:] = np.where(mask, np.round(raw_p * 10.0) / 10.0, 25.5).astype(np.float32)
 
 
 def _fold_full_chromosome(
@@ -41,8 +80,6 @@ def _fold_full_chromosome(
     a full folding window available.
     """
     import RNA as _RNA
-    import math
-    import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -55,7 +92,7 @@ def _fold_full_chromosome(
     )
 
     def _fold_strand(writer: pq.ParquetWriter, seq: str, strand_char: str) -> None:
-        rna_seq = seq.upper().replace("T", "U")
+        rna_seq = seq.upper().translate(_TU_TABLE)
         pos = 0  # 0-based start of the current data window
 
         while pos < seq_len:
@@ -83,18 +120,7 @@ def _fold_full_chromosome(
             u_matrix = np.full((n_pos, unpaired_prob), 25.5, dtype=np.float32)
 
             if probs_ok:
-                for i in range(n_pos):
-                    chunk_pos_1based = data_start_in_chunk + i + 1
-                    if chunk_pos_1based >= len(probs_matrix):
-                        continue
-                    row_probs = probs_matrix[chunk_pos_1based]
-                    for u in range(1, unpaired_prob + 1):
-                        if u >= len(row_probs):
-                            break
-                        p = row_probs[u]
-                        if p is not None and p > 0:
-                            ev = -RT * math.log(p)
-                            u_matrix[i, u - 1] = round(ev * 10.0) / 10.0
+                _probs_to_energies(probs_matrix, data_start_in_chunk, n_pos, unpaired_prob, RT, u_matrix)
             else:
                 u_matrix[:] = 10.0  # folding error sentinel
 
@@ -165,8 +191,6 @@ def _fold_island(
         if 0 < idx_1based < len(probs_matrix) and u_col < len(probs_matrix[idx_1based]):
             p = probs_matrix[idx_1based][u_col]
             if p is not None and p > 0:
-                import math
-
                 energy_val = -RT * math.log(p)
                 energy_val = int(round(energy_val * 10.0)) / 10.0
 
@@ -472,7 +496,7 @@ class GenomeAccessibilityService:
                         rev_start = 0
                         island_subseq = strand_seq[ctx_start:ctx_end]
 
-                    rna_seq = island_subseq.replace("T", "U").replace("t", "u")
+                    rna_seq = island_subseq.translate(_TU_TABLE)
 
                     sites_in_island = [
                         (s, e)
@@ -572,30 +596,27 @@ class GenomeAccessibilityService:
                 pos_energy = pos_energy_by_strand[strand]
                 starts = strand_sites["start"].to_numpy()
                 ends = strand_sites["end"].to_numpy()
+                n_sites = strand_sites.height
 
-                chrom_results = []
-                for row_idx in range(strand_sites.height):
-                    s_1based = int(starts[row_idx])
-                    e_1based = int(ends[row_idx])
-                    s0 = s_1based - 1
-                    e0 = e_1based
-                    oe = pos_energy.get((s0, e0), 10.0)
-                    chrom_results.append(
-                        {
-                            "chrom": chrom,
-                            "start": s_1based,
-                            "end": e_1based,
-                            "strand": strand,
-                            "opening_energy": oe,
-                        }
+                oe_arr = np.empty(n_sites, dtype=np.float64)
+                for row_idx in range(n_sites):
+                    oe_arr[row_idx] = pos_energy.get((int(starts[row_idx]) - 1, int(ends[row_idx])), 10.0)
+
+                if n_sites > 0:
+                    batch = pa.record_batch(
+                        [
+                            pa.array([chrom] * n_sites, type=pa.string()),
+                            pa.array(starts.astype(np.int32)),
+                            pa.array(ends.astype(np.int32)),
+                            pa.array([strand] * n_sites, type=pa.string()),
+                            pa.array(oe_arr),
+                        ],
+                        schema=arrow_schema,
                     )
-
-                if chrom_results:
-                    batch_df = pl.DataFrame(chrom_results)
-                    writer.write_table(batch_df.to_arrow().cast(arrow_schema))
-                    total_written += len(chrom_results)
+                    writer.write_batch(batch)
+                    total_written += n_sites
                     logger.info(
-                        f"  Wrote {len(chrom_results)} results for "
+                        f"  Wrote {n_sites} results for "
                         f"{chrom} {strand} (total: {total_written})"
                     )
 
@@ -648,17 +669,7 @@ class GenomeAccessibilityService:
         try:
             # pfl_fold_up: 1-based, result[i][u] = P(u-length segment at i unpaired)
             probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, max_span_adj)
-
-            for i in range(1, seq_len + 1):
-                if i < len(probs_matrix):
-                    for u in range(1, unpaired_prob + 1):
-                        if u < len(probs_matrix[i]):
-                            p = probs_matrix[i][u]
-                            if p is not None and p > 0:
-                                profile[i - 1, u - 1] = -RT * np.log(p)
-                            else:
-                                profile[i - 1, u - 1] = 25.5
-
+            _probs_to_energies(probs_matrix, 0, seq_len, unpaired_prob, RT, profile)
             logger.debug(f"Computed accessibility for sequence of length {seq_len}")
 
         except Exception as e:
