@@ -2,7 +2,6 @@ from pathlib import Path
 import tempfile
 import typer
 import polars as pl
-from typing import Optional
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -24,9 +23,9 @@ console = Console()
 # Per-worker state for directory-mode parallel processing.
 # Populated by _init_worker() once per spawned process. spawn (not fork)
 # avoids Rayon/Polars thread-pool deadlocks in the parent process.
-_WORKER_DF_TRANS: Optional[pl.DataFrame] = None
-_WORKER_INTERSECTOR: Optional[object] = None
-_WORKER_PROB_SERVICE: Optional[object] = None
+_WORKER_DF_TRANS: pl.DataFrame | None = None
+_WORKER_INTERSECTOR: object | None = None
+_WORKER_PROB_SERVICE: object | None = None
 _WORKER_ON_TARGET_MAP: dict = {}
 _WORKER_SELF_HYB_EMIN: dict = {}
 
@@ -222,32 +221,32 @@ def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def run(
-    risearch_file: Optional[Path] = typer.Option(
+    risearch_file: Path | None = typer.Option(
         None, "-r", "--risearch-file",
         help="Path to pre-computed RIsearch output file or directory of files.",
         exists=True, readable=True, dir_okay=True,
     ),
-    input_dir: Optional[Path] = typer.Option(
+    input_dir: Path | None = typer.Option(
         None, "-d", "--input-dir",
         help="Directory containing per-siRNA RIsearch output files (*.gz or *.tsv).",
         exists=True, file_okay=False,
     ),
-    sirna_fasta: Optional[Path] = typer.Option(
+    sirna_fasta: Path | None = typer.Option(
         None, "-s", "--sirna-fasta",
         help="Path to siRNA FASTA file. Runs RIsearch internally when used alone; also used in directory mode to compute self-hybridisation E_min.",
         exists=True, readable=True,
     ),
-    target_fasta: Optional[Path] = typer.Option(
+    target_fasta: Path | None = typer.Option(
         None, "--target-fasta", "--genome",
         help="Path to target FASTA (genome or transcriptome) for RIsearch.",
         exists=True, readable=True,
     ),
-    target_index: Optional[Path] = typer.Option(
+    target_index: Path | None = typer.Option(
         None, "-idx", "--target-index",
         help="Pre-built RIsearch index (optional, speeds up repeated runs).",
         exists=True, readable=True,
     ),
-    workers: Optional[int] = typer.Option(
+    workers: int | None = typer.Option(
         None, "-j", "--workers",
         help="Number of parallel threads for intersection (default: CPU count).",
     ),
@@ -287,7 +286,7 @@ def run(
         help="Path to On-Target sequence FASTA (for Partition Function).",
         exists=True, readable=True,
     ),
-    on_target_risearch_file: Optional[Path] = typer.Option(
+    on_target_risearch_file: Path | None = typer.Option(
         None, "--on-target-risearch-file", "-on-ris",
         help="Path to pre-computed RIsearch output file for On-Target.",
         exists=True, readable=True,
@@ -300,10 +299,10 @@ def run(
     on_target_expression: float = typer.Option(
         1000.0, "--on-target-expression", "-oexp",
         help="Expression level for On-Target (default: 1000.0)."),
-    on_target_accessibility: Optional[Path] = typer.Option(
+    on_target_accessibility: Path | None = typer.Option(
         None, "--on-target-accessibility",
         help="Path to accessibility file for On-Target (text or binary)."),
-    on_target_ids_file: Optional[Path] = typer.Option(
+    on_target_ids_file: Path | None = typer.Option(
         None, "-oi", "--on-target-ids",
         help="TSV file mapping siRNA IDs to on-target transcript IDs (sirna_id \\t transcript_id).",
         exists=True, readable=True,
@@ -332,7 +331,7 @@ def run(
         help="Process siRNAs in batches for large files (reduces memory usage)."),
     batch_size: int = typer.Option(50, "--batch-size", "-b",
         help="Number of siRNAs to process per batch in chunk mode (default: 50)."),
-    scratch_dir: Optional[Path] = typer.Option(None, "--scratch-dir",
+    scratch_dir: Path | None = typer.Option(None, "--scratch-dir",
         help="Directory for intermediate Arrow IPC files. Defaults to system temp."),
     output_format: str = typer.Option("tsv", "--output-format",
         help="Final output format: 'tsv', 'csv', or 'parquet'."),
@@ -364,7 +363,6 @@ def run(
             console.print("[bold red]Error:[/bold red] --sirna-fasta requires --target-fasta when running RIsearch dynamically")
             raise typer.Exit(code=1)
 
-        # --- Mode 1: Integrated RIsearch execution ---
         if is_running_risearch:
             from RIsearch_pipeline.services.risearch_service import RIsearchService
             risearch_service = RIsearchService()
@@ -389,7 +387,6 @@ def run(
                     query_path=sirna_fasta, index_path=index_path, target_fasta=target_fasta,
                 )
 
-        # --- Mode 2: Directory of per-siRNA files ---
         elif input_dir is not None:
             console.print(f"[bold cyan]Directory mode[/bold cyan] - loading files from {input_dir}")
 
@@ -603,7 +600,6 @@ def run(
             profiler.print_summary(console)
             return
 
-        # --- Mode 3: Pre-computed single RIsearch file ---
         elif risearch_file is not None:
             if chunk_mode:
                 console.print("[bold cyan]Chunk mode enabled[/bold cyan] - processing siRNAs individually")
