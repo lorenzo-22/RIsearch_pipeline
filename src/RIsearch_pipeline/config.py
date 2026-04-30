@@ -48,23 +48,11 @@ class AccessibilityConfig:
 
 
 @dataclass
-class OrthologsConfig:
-    target_gene: str = MISSING
-    species_list: str = MISSING
-    output: str = MISSING
-    email: str = MISSING
-    insecta_level: int = 50557
-    plot_lengths: bool = False
-    run_msa: bool = False
-
-
-@dataclass
 class PipelineConfig:
-    command: str = MISSING  # "off-targets", "accessibility", or "orthologs"
+    command: str = MISSING  # "off-targets" or "accessibility"
     verbose: bool = False
     off_targets: Optional[OffTargetsConfig] = None
     accessibility: Optional[AccessibilityConfig] = None
-    orthologs: Optional[OrthologsConfig] = None
 
 
 def load_config(config_path: Path) -> DictConfig:
@@ -75,9 +63,9 @@ def load_config(config_path: Path) -> DictConfig:
     schema = OmegaConf.structured(PipelineConfig)
     cfg = OmegaConf.merge(schema, OmegaConf.load(config_path))
 
-    if cfg.command not in ("off-targets", "accessibility", "orthologs"):
+    if cfg.command not in ("off-targets", "accessibility"):
         raise ValueError(
-            f"Unknown command: {cfg.command}. Must be 'off-targets', 'accessibility', or 'orthologs'."
+            f"Unknown command: {cfg.command}. Must be 'off-targets' or 'accessibility'."
         )
 
     return _resolve_paths(cfg, config_path.parent.resolve())
@@ -91,7 +79,6 @@ def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
             "query", "on_target_accessibility",
         ],
         "accessibility": ["fasta", "output"],
-        "orthologs": ["target_gene", "species_list", "output"],
     }
 
     for section, fields in path_fields.items():
@@ -115,8 +102,7 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
 
     path_fields = [
         "risearch_file", "transcriptome", "accessibility_dir", "output",
-        "fasta", "on_target", "on_target_risearch_file", "query",
-        "on_target_accessibility", "target_gene", "species_list",
+        "fasta", "on_target", "on_target_risearch_file", "query", "on_target_accessibility",
     ]
     for key in path_fields:
         if key in kwargs and kwargs[key] is not None:
@@ -145,12 +131,6 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
                 kwargs[arg] = None
     elif command == "accessibility":
         key_mapping.update({"fasta": "genome", "output": "output_dir"})
-    elif command == "orthologs":
-        key_mapping.update({
-            "target_gene": "target_gene_file",
-            "species_list": "species_list_file",
-            "output": "output_dir",
-        })
 
     for old_key, new_key in key_mapping.items():
         if old_key in kwargs:
