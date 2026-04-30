@@ -1,10 +1,10 @@
-from loguru import logger
-from pathlib import Path
 from collections import OrderedDict
-from typing import Dict
-import numpy as np
+from pathlib import Path
 
-# Try to import ViennaRNA
+import numpy as np
+import polars as pl
+from loguru import logger
+
 try:
     import RNA
 
@@ -14,8 +14,6 @@ except ImportError:
 
 
 class AccessibilityError(Exception):
-    """Base exception for accessibility service."""
-
     pass
 
 
@@ -35,30 +33,12 @@ def _fold_full_chromosome(
     output_path: str,
     chunk_size: int = 1_000_000,
 ) -> str:
-    """
-    Worker: fold both strands of a chromosome in chunks, stream to Parquet.
+    """Top-level worker: fold both strands of a chromosome in chunks, stream to Parquet.
 
-    Must be a top-level function (not a method) for ProcessPoolExecutor
-    pickling.  Only the output path string (a few bytes) is pickled back to
-    the parent — avoiding the O(N × u) Python-side OOM that killed the old
-    implementation on large chromosomes.
-
-    Chunked folding matches long_RNAplfold_openen.py: each chunk of
-    chunk_size bp is folded with window_size bp of context on each side.
-    Only the interior positions (without the boundary overlap) are written,
-    so every emitted position has a full folding window available.
-
-    Args:
-        sequence: Full chromosome sequence (+ strand, 5'→3').
-        chrom: Chromosome name (used only for logging).
-        window_size: -W parameter.
-        max_span: -L parameter.
-        unpaired_prob: -u parameter (typically 30).
-        output_path: Destination Parquet file path (string, for pickling).
-        chunk_size: Bases to process per pfl_fold_up call (default 1 M).
-
-    Returns:
-        output_path (the same string passed in).
+    Top-level (not a method) for ProcessPoolExecutor pickling. Returns only the
+    path string to avoid O(N×u) OOM when pickling results back to the parent.
+    Each chunk is folded with W-bp context overlap so every emitted position has
+    a full folding window available.
     """
     import RNA as _RNA
     import math
@@ -75,18 +55,16 @@ def _fold_full_chromosome(
     )
 
     def _fold_strand(writer: pq.ParquetWriter, seq: str, strand_char: str) -> None:
-        """Fold one strand in chunks; write one RecordBatch per chunk."""
         rna_seq = seq.upper().replace("T", "U")
         pos = 0  # 0-based start of the current data window
 
         while pos < seq_len:
-            # Extended context window: W bases on each side for full folding.
+            # W-bp context on each side ensures full folding window for all emitted positions
             ext_start = max(0, pos - window_size)
             ext_end = min(seq_len, pos + chunk_size + window_size)
             chunk_seq = rna_seq[ext_start:ext_end]
             chunk_len = len(chunk_seq)
 
-            # Offsets within chunk_seq for the data we actually emit.
             data_start_in_chunk = pos - ext_start          # ≥ 0
             data_end_in_chunk = min(seq_len, pos + chunk_size) - ext_start
 
@@ -101,10 +79,7 @@ def _fold_full_chromosome(
                 probs_matrix = None
 
             n_pos = data_end_in_chunk - data_start_in_chunk
-            # 1-based positions in the full sequence
             positions = np.arange(pos + 1, pos + n_pos + 1, dtype=np.int32)
-
-            # u_matrix[i, u-1] = opening energy at position i, u-length u
             u_matrix = np.full((n_pos, unpaired_prob), 25.5, dtype=np.float32)
 
             if probs_ok:
@@ -119,7 +94,6 @@ def _fold_full_chromosome(
                         p = row_probs[u]
                         if p is not None and p > 0:
                             ev = -RT * math.log(p)
-                            # Quantize to 0.1 kcal/mol (legacy compatibility)
                             u_matrix[i, u - 1] = round(ev * 10.0) / 10.0
             else:
                 u_matrix[:] = 10.0  # folding error sentinel
@@ -153,27 +127,9 @@ def _fold_island(
     max_span: int,
     unpaired_prob: int,
 ) -> dict[tuple[int, int], float]:
-    """
-    Worker function: fold a single island and extract opening energies.
+    """Top-level worker: fold one island and return {(start, end): energy}.
 
-    Must be a top-level function (not a method) for ProcessPoolExecutor
-    pickling. Receives only small, pickle-friendly arguments.
-
-    Args:
-        rna_seq: Island subsequence (already T→U converted).
-        binding_sites: List of (orig_s_0based, orig_e_0based) sites in this island.
-        ctx_start: 0-based start of the context window (for + strand positioning).
-        seq_len: Full chromosome length (for - strand positioning).
-        strand: '+' or '-'.
-        rev_start: Reversed start position (only used for - strand).
-        window_size: -W parameter.
-        max_span: -L parameter.
-        unpaired_prob: -u parameter.
-
-    Returns:
-        Dict mapping (orig_s, orig_e) → opening_energy (float).
-
-    Complexity: O(L × W) for pfl_fold_up where L = len(rna_seq).
+    Top-level (not a method) for ProcessPoolExecutor pickling.
     """
     import RNA as _RNA
 
@@ -187,7 +143,6 @@ def _fold_island(
     try:
         probs_matrix = _RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
     except Exception:
-        # Default penalty for all sites in this island
         for orig_s, orig_e in binding_sites:
             result[(orig_s, orig_e)] = 10.0
         return result
@@ -223,19 +178,7 @@ def _fold_island(
 def _fold_island_batch(
     tasks: list[tuple],
 ) -> dict[str, dict[tuple[int, int], float]]:
-    """
-    Worker function: fold a batch of islands and merge their results.
-
-    Groups multiple _fold_island calls into one task to reduce
-    ProcessPoolExecutor per-task overhead and IPC round-trips.
-
-    Args:
-        tasks: List of (strand, fold_args) tuples, where fold_args are the
-               arguments accepted by _fold_island().
-
-    Returns:
-        Dict mapping strand → {(orig_s, orig_e): opening_energy}.
-    """
+    """Top-level worker: fold a batch of islands; amortises IPC round-trip overhead."""
     merged: dict[str, dict[tuple[int, int], float]] = {}
     for strand, fold_args in tasks:
         result = _fold_island(*fold_args)
@@ -246,23 +189,16 @@ def _fold_island_batch(
 
 
 class GenomeAccessibilityService:
-    """
-    Service to pre-compute and query genomic accessibility profiles.
-
-    Stores profiles as memory-mapped numpy arrays (float16) for efficient random access.
-    """
+    """Pre-compute and query genomic accessibility profiles via ViennaRNA."""
 
     def __init__(self, data_dir: Path, max_cached: int = 4):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._max_cached = max_cached
-        # OrderedDict for LRU eviction: profile_key -> numpy array
-        self._profiles: OrderedDict[str, np.ndarray] = OrderedDict()
-        # Metadata flags stored separately (not counted toward LRU slots)
-        self._profile_flags: Dict[str, bool] = {}
+        self._profiles: OrderedDict[str, np.ndarray] = OrderedDict()  # LRU cache
+        self._profile_flags: dict[str, bool] = {}  # per-profile metadata, not counted in LRU
 
     def get_profile_path(self, chrom: str, strand: str = "+") -> Path:
-        """Get path for accessibility profile. Strand can be '+' or '-'."""
         suffix = "plus" if strand == "+" else "minus"
         return self.data_dir / f"{chrom}_{suffix}.access.npy"
 
@@ -275,29 +211,8 @@ class GenomeAccessibilityService:
         workers: int = 1,
         progress=None,
         progress_callback=None,
-    ) -> Dict[str, Path]:
-        """
-        Compute accessibility for all sequences in the genome FASTA.
-
-        Dispatches (chromosome, strand) pairs to a ProcessPoolExecutor for
-        parallel folding. Saves one Parquet file per chromosome containing
-        columns [position, strand, u1, u2, ..., u{unpaired_prob}].
-
-        Args:
-            genome_path: Path to genome FASTA file.
-            window_size: -W parameter (default 80).
-            max_span: -L parameter (default 40).
-            unpaired_prob: -u parameter (default 30).
-            workers: Number of parallel folding workers.
-            progress: Rich Progress instance (optional).
-            progress_callback: Simple callback(advance, description) (optional).
-
-        Returns:
-            Dictionary mapping 'chrom' to the output Parquet path.
-
-        Complexity: O(sum(N_chrom) × W) time across all chromosomes,
-                    parallelized up to `workers` concurrent folds.
-        """
+    ) -> dict[str, Path]:
+        """Fold all chromosomes in genome_path; return {chrom: parquet_path}."""
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         if not HAS_VIENNA_BINDINGS:
@@ -308,13 +223,11 @@ class GenomeAccessibilityService:
 
         from RIsearch_pipeline.services.helpers import read_fasta
 
-        # --- Step 1: Read all chromosomes into memory ---
         chromosomes = []
         for chrom, sequence in read_fasta(genome_path):
             chromosomes.append((chrom, sequence))
 
-        # Longest-job-first scheduling: sort by descending sequence length so
-        # the largest chromosomes start first, minimising tail latency.
+        # Longest-first: largest chromosomes start first to minimise tail latency.
         chromosomes.sort(key=lambda cs: len(cs[1]), reverse=True)
 
         logger.info(
@@ -322,16 +235,12 @@ class GenomeAccessibilityService:
             f"chromosome(s) using {workers} worker(s)"
         )
 
-        # Progress bar counts chromosomes (each covers both strands).
         total_tasks = len(chromosomes)
         prog_task = None
         if progress is not None:
             prog_task = progress.add_task("Folding chromosomes...", total=total_tasks)
 
-        # --- Step 2: Dispatch one task per chromosome to workers ---
-        # Each worker writes its own Parquet file and returns only the path
-        # string — nothing large is pickled back to the parent.
-        results: Dict[str, Path] = {}
+        results: dict[str, Path] = {}
         futures = {}
 
         with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -383,34 +292,7 @@ class GenomeAccessibilityService:
         progress=None,
         verbose: bool = False,
     ) -> Path:
-        """
-        Compute accessibility only for regions with predicted binding sites.
-
-        Scans all per-siRNA RIsearch files in risearch_dir to extract unique
-        binding site coordinates, groups by chromosome, merges nearby sites
-        into islands (with W-bp flanking), folds only those islands using
-        ViennaRNA, and saves per-site opening energies to Parquet.
-
-        Args:
-            genome_path: Path to genome FASTA file.
-            output_path: Path for the output .parquet file.
-            risearch_dir: Directory of per-siRNA RIsearch output files.
-            risearch_file: Single merged RIsearch TSV file (alternative to risearch_dir).
-            window_size: -W parameter (default 80).
-            max_span: -L parameter (default 40).
-            unpaired_prob: -u parameter (default 30).
-            workers: Number of parallel workers (default 1 = serial).
-            progress: Optional Rich Progress object for live progress bars.
-            verbose: Log per-island folding details.
-
-        Returns:
-            Path to the output Parquet file.
-
-        Complexity:
-            O(S) lazy scan where S = total predictions across all files.
-            O(I × W) folding time where I = number of merged islands.
-            O(C) memory where C = results for one chromosome (streamed to disk).
-        """
+        """Fold only binding-site islands; save per-site opening energies to Parquet."""
         if not HAS_VIENNA_BINDINGS:
             raise AccessibilityError(
                 "ViennaRNA Python bindings ('import RNA') not found. "
@@ -420,7 +302,6 @@ class GenomeAccessibilityService:
         if not risearch_dir and not risearch_file:
             raise AccessibilityError("Provide either risearch_dir or risearch_file")
 
-        import polars as pl
         import pyarrow as pa
         import pyarrow.parquet as pq
         from RIsearch_pipeline.services.helpers import (
@@ -429,12 +310,10 @@ class GenomeAccessibilityService:
             merge_intervals,
         )
 
-        # --- Step 1: Build a LazyFrame and extract chromosome names ---
         if progress:
             scan_task = progress.add_task("Scanning RIsearch files...", total=None)
 
         if risearch_file:
-            # Single file — auto-detect column layout
             import gzip
 
             opener = gzip.open if str(risearch_file).endswith(".gz") else open
@@ -471,7 +350,6 @@ class GenomeAccessibilityService:
             )
             source_desc = risearch_file.name
         else:
-            # Directory of per-siRNA files
             from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
             parser = RIsearchParser()
@@ -508,7 +386,6 @@ class GenomeAccessibilityService:
             base_lf = pl.concat(lazy_frames)
             source_desc = f"{len(all_files)} files"
 
-        # Extract only the unique chromosome names (tiny: ~24 strings)
         chroms_in_predictions = set(
             base_lf.select("chrom").unique().collect()["chrom"].to_list()
         )
@@ -523,7 +400,6 @@ class GenomeAccessibilityService:
             )
             progress.remove_task(scan_task)
 
-        # --- Step 2: Stream genome FASTA — process one chromosome at a time ---
         arrow_schema = pa.schema(
             [
                 ("chrom", pa.string()),
@@ -549,7 +425,6 @@ class GenomeAccessibilityService:
             if chrom not in chroms_in_predictions:
                 continue
 
-            # Lazy scan + filter for this chromosome only — collect just this chrom's sites
             chrom_sites = base_lf.filter(pl.col("chrom") == chrom).unique().collect()
             seq_len = len(chrom_seq)
 
@@ -570,25 +445,21 @@ class GenomeAccessibilityService:
                 if strand_sites.height == 0:
                     continue
 
-                # Convert 1-based RIsearch coords to 0-based intervals
                 starts = strand_sites["start"].to_numpy()
                 ends = strand_sites["end"].to_numpy()
                 intervals = [(int(s) - 1, int(e)) for s, e in zip(starts, ends)]
 
-                # Merge nearby intervals with W-bp padding
                 islands = merge_intervals(intervals, padding=window_size)
                 logger.info(
                     f"  {strand} strand: {len(intervals)} sites → "
                     f"{len(islands)} islands"
                 )
 
-                # Prepare sequence for this strand
                 if strand == "-":
                     strand_seq = reverse_complement(chrom_seq)
                 else:
                     strand_seq = chrom_seq
 
-                # Prepare island folding tasks
                 for island_start, island_end in islands:
                     ctx_start = max(0, island_start - window_size)
                     ctx_end = min(seq_len, island_end + window_size)
@@ -629,7 +500,6 @@ class GenomeAccessibilityService:
                         )
                     )
 
-            # Log total island count for this chromosome
             n_tasks = len(all_island_tasks)
             logger.info(f"  {chrom}: {n_tasks} total islands across both strands")
             total_islands += n_tasks
@@ -644,34 +514,27 @@ class GenomeAccessibilityService:
                     )
                 continue
 
-            # --- Fold all islands (both strands, parallel or serial) ---
             if progress:
                 island_task = progress.add_task(
                     f"  {chrom}: folding {n_tasks} islands",
                     total=n_tasks,
                 )
 
-            # Collect pos_energy per strand
             pos_energy_by_strand: dict[str, dict[tuple[int, int], float]] = {
                 "+": {},
                 "-": {},
             }
 
             if workers > 1 and n_tasks > 1:
-                from concurrent.futures import (
-                    ProcessPoolExecutor,
-                    as_completed,
-                )
+                from concurrent.futures import ProcessPoolExecutor, as_completed
                 from itertools import islice as _islice
 
-                # Pack each task as (strand, fold_args) for the batch worker.
                 packed = [
                     (strand, fold_args)
                     for strand, _, _, _, fold_args in all_island_tasks
                 ]
 
-                # Chunk into at most workers×4 batches to amortise IPC overhead
-                # while keeping load balanced across cores.
+                # workers×4 chunks: amortise IPC overhead while keeping load balanced
                 chunk_size = max(1, (n_tasks + workers * 4 - 1) // (workers * 4))
                 chunks = []
                 it = iter(packed)
@@ -702,7 +565,6 @@ class GenomeAccessibilityService:
                 progress.remove_task(island_task)
                 island_task = None
 
-            # --- Write results per strand ---
             for strand in ["+", "-"]:
                 strand_sites = chrom_sites.filter(pl.col("strand") == strand)
                 if strand_sites.height == 0:
@@ -728,7 +590,6 @@ class GenomeAccessibilityService:
                         }
                     )
 
-                # Write this chrom/strand batch as a row group immediately
                 if chrom_results:
                     batch_df = pl.DataFrame(chrom_results)
                     writer.write_table(batch_df.to_arrow().cast(arrow_schema))
@@ -738,7 +599,6 @@ class GenomeAccessibilityService:
                         f"{chrom} {strand} (total: {total_written})"
                     )
 
-            # chrom_seq goes out of scope here — GC can reclaim
             chroms_done += 1
             if progress:
                 progress.update(
@@ -747,7 +607,6 @@ class GenomeAccessibilityService:
                     description=f"Processing chromosomes ({chroms_done}/{n_chroms})",
                 )
 
-        # --- Step 3: Finalize Parquet ---
         logger.info(f"Processed {total_islands} total islands across all chromosomes")
         writer.close()
         logger.info(
@@ -764,29 +623,11 @@ class GenomeAccessibilityService:
         unpaired_prob: int = 30,
         use_cli: bool = False,
     ) -> np.ndarray:
-        """
-        Compute accessibility for a single sequence (e.g., on-target).
-
-        Uses ViennaRNA's RNA.pfl_fold_up to compute unpaired probabilities,
-        then converts to opening energies. Falls back to RNAplfold CLI if
-        Python bindings are unavailable or use_cli=True.
-
-        Args:
-            sequence: RNA/DNA sequence string.
-            window_size: -W parameter (default 80).
-            max_span: -L parameter (default 40).
-            unpaired_prob: -u parameter (default 30).
-            use_cli: Force using RNAplfold binary instead of Python bindings.
-
-        Returns:
-            2D numpy array [seq_len, unpaired_prob] of opening energies.
-            Use result[pos, u-1] to get opening energy for length u at position pos.
-        """
+        """Compute 2D opening-energy profile [seq_len, u] for a single sequence."""
         seq_len = len(sequence)
         if seq_len == 0:
             return np.array([], dtype=np.float32)
 
-        # Decide whether to use CLI or Python bindings
         if use_cli or not HAS_VIENNA_BINDINGS:
             if use_cli:
                 logger.info("Using RNAplfold CLI (--use-rnaplfold-cli flag)")
@@ -798,19 +639,14 @@ class GenomeAccessibilityService:
                 sequence, window_size, max_span, unpaired_prob
             )
 
-        # Use ViennaRNA Python bindings
-        # Adjust window/span if sequence is shorter
         w = min(window_size, seq_len)
         max_span_adj = min(max_span, seq_len)
 
         RT = 0.616  # kcal/mol at 37°C
-
-        # Create 2D profile array [seq_len, unpaired_prob]
         profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
 
         try:
-            # RNA.pfl_fold_up returns 2D: result[i][u] = P(segment of size u at position i is unpaired)
-            # 1-based indexing
+            # pfl_fold_up: 1-based, result[i][u] = P(u-length segment at i unpaired)
             probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, max_span_adj)
 
             for i in range(1, seq_len + 1):
@@ -819,12 +655,9 @@ class GenomeAccessibilityService:
                         if u < len(probs_matrix[i]):
                             p = probs_matrix[i][u]
                             if p is not None and p > 0:
-                                # Convert probability to opening energy: E = -RT * ln(P)
                                 profile[i - 1, u - 1] = -RT * np.log(p)
                             else:
-                                profile[i - 1, u - 1] = (
-                                    25.5  # High penalty for inaccessible
-                                )
+                                profile[i - 1, u - 1] = 25.5
 
             logger.debug(f"Computed accessibility for sequence of length {seq_len}")
 
@@ -841,33 +674,16 @@ class GenomeAccessibilityService:
         max_span: int = 40,
         unpaired_prob: int = 30,
     ) -> np.ndarray:
-        """
-        Run RNAplfold binary to compute accessibility.
-
-        Command: RNAplfold -W {w} -L {l} -u {u} -O < input.fa
-        Produces: {seq_id}_openen file with opening energies.
-
-        Args:
-            sequence: RNA/DNA sequence string.
-            window_size: -W parameter.
-            max_span: -L parameter.
-            unpaired_prob: -u parameter.
-
-        Returns:
-            2D numpy array [seq_len, unpaired_prob] of opening energies.
-        """
+        """Run ``RNAplfold -W -L -u -O``; parse ``*_openen`` output to 2D array."""
         import subprocess
         import tempfile
         import shutil
 
         seq_len = len(sequence)
         seq_id = "rnaplfold_seq"
-
-        # Adjust parameters for short sequences
         w = min(window_size, seq_len)
         max_span_adj = min(max_span, seq_len)
 
-        # Check if RNAplfold is available
         if not shutil.which("RNAplfold"):
             raise AccessibilityError(
                 "RNAplfold binary not found in PATH. "
@@ -875,12 +691,10 @@ class GenomeAccessibilityService:
             )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Write sequence to temp FASTA
             fasta_path = Path(tmpdir) / "input.fa"
             with open(fasta_path, "w") as f:
                 f.write(f">{seq_id}\n{sequence}\n")
 
-            # Run RNAplfold
             cmd = f"RNAplfold -W {w} -L {max_span_adj} -u {unpaired_prob} -O"
             logger.debug(f"Running: {cmd}")
 
@@ -892,7 +706,7 @@ class GenomeAccessibilityService:
                     stdin=open(fasta_path),
                     capture_output=True,
                     text=True,
-                    timeout=300,  # 5 minute timeout
+                    timeout=300,
                 )
 
                 if result.returncode != 0:
@@ -906,10 +720,8 @@ class GenomeAccessibilityService:
             except FileNotFoundError:
                 raise AccessibilityError("RNAplfold binary not found")
 
-            # Parse output file
             openen_path = Path(tmpdir) / f"{seq_id}_openen"
             if not openen_path.exists():
-                # Try alternate naming
                 candidates = list(Path(tmpdir).glob("*_openen"))
                 if candidates:
                     openen_path = candidates[0]
@@ -918,10 +730,9 @@ class GenomeAccessibilityService:
                         f"RNAplfold output file not found. Files in tmpdir: {list(Path(tmpdir).iterdir())}"
                     )
 
-            logger.debug(f"Parsing RNAplfold output: {openen_path}")
             profile = self._parse_openen_text(openen_path)
 
-            # Clean up dp.ps file (RNAplfold generates this)
+            # RNAplfold always generates a dp.ps file; discard it
             dp_ps = Path(tmpdir) / f"{seq_id}_dp.ps"
             if dp_ps.exists():
                 dp_ps.unlink()
@@ -930,23 +741,13 @@ class GenomeAccessibilityService:
         return profile
 
     def _ensure_profile(self, chrom: str, strand: str) -> str:
-        """
-        Ensure the profile for (chrom, strand) is loaded, applying LRU eviction.
-
-        Returns the profile_key string.
-
-        Complexity: O(1) amortized.  Eviction frees the oldest cached
-        profile when the cache exceeds max_cached slots, bounding
-        resident memory to max_cached chromosome-sized arrays.
-        """
+        """Load profile for (chrom, strand) into the LRU cache; return profile_key."""
         profile_key = f"{chrom}_{strand}"
 
         if profile_key in self._profiles:
-            # Move to end (most-recently-used)
             self._profiles.move_to_end(profile_key)
             return profile_key
 
-        # --- Load from disk ---
         path = self._find_profile(chrom, strand)
         if not path:
             raise AccessibilityError(
@@ -972,7 +773,6 @@ class GenomeAccessibilityService:
 
         logger.info(f"Loaded accessibility profile for {chrom} {strand} from {path}")
 
-        # --- LRU eviction ---
         while len(self._profiles) > self._max_cached:
             evicted_key, _ = self._profiles.popitem(last=False)
             # Clean up associated flags
@@ -982,18 +782,7 @@ class GenomeAccessibilityService:
         return profile_key
 
     def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:
-        """
-        Query accessibility for a region (0-based, half-open [start, end)).
-
-        Args:
-            chrom: Chromosome name
-            start: Start position (0-based)
-            end: End position (0-based, exclusive)
-            strand: Strand ('+' or '-')
-
-        Returns:
-            Numpy array of opening energies for the region.
-        """
+        """Return opening energies for region [start, end) (0-based, half-open)."""
         profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
         is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
@@ -1009,37 +798,15 @@ class GenomeAccessibilityService:
             return data.astype(np.float32) / 10.0
         return data
 
-    def query_single(
-        self, chrom: str, start: int, end: int, strand: str = "+"
-    ) -> float:
-        """
-        Fast-path: return a single opening energy value for a prediction.
-
-        Mirrors the old pipeline's get_opening_energy() logic:
-        - For 2D profiles (matrix [pos, u]): picks the value at the 3'-end
-          position using the interaction length as the u-column index.
-        - For 1D profiles: picks the 3'-end value directly.
-        - Quantizes to 0.1 resolution (match legacy behavior).
-
-        Args:
-            chrom: Chromosome name.
-            start: 1-based start position (RIsearch convention).
-            end:   1-based end position (inclusive, RIsearch convention).
-            strand: '+' or '-'.
-
-        Returns:
-            Opening energy as float, quantized to 0.1 kcal/mol.
-
-        Complexity: O(1) time, O(1) space per call (profile already mmap'd).
-        """
+    def query_single(self, chrom: str, start: int, end: int, strand: str = "+") -> float:
+        """Single opening energy for a prediction (1-based RIsearch coords)."""
         profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
         is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
         seq_len = len(profile)
 
-        # Convert 1-based RIsearch coords to 0-based
-        start0 = start - 1
-        end0 = end  # half-open
+        start0 = start - 1  # 1-based → 0-based
+        end0 = end
 
         if start0 < 0 or end0 > seq_len:
             return 10.0  # Default penalty for out-of-bounds
@@ -1051,22 +818,19 @@ class GenomeAccessibilityService:
             col_idx = min(interaction_len, matrix_width) - 1
             if col_idx < 0:
                 col_idx = 0
-            # 3' end for +, 5' end for -
-            row_idx = end0 - 1 if strand == "+" else start0
+            row_idx = end0 - 1 if strand == "+" else start0  # 3' end for +, 5' for -
             raw_val = float(profile[row_idx, col_idx])
             if is_legacy_bin:
                 raw_val /= 10.0
         else:
-            # 1D profile
             row_idx = end0 - 1 if strand == "+" else start0
             raw_val = float(profile[row_idx])
             if is_legacy_bin:
                 raw_val /= 10.0
 
-        # Quantize to 0.1 resolution (legacy compatibility)
         return int(round(raw_val * 10.0)) / 10.0
 
-    def annotate_opening_energy_vectorized(self, df: "pl.DataFrame") -> "pl.DataFrame":
+    def annotate_opening_energy_vectorized(self, df: pl.DataFrame) -> pl.DataFrame:
         """Vectorized batch equivalent of calling query_single() per row.
 
         Groups rows by (chrom, strand), loads profile once per group, then
@@ -1074,18 +838,14 @@ class GenomeAccessibilityService:
         and missing profiles get the default penalty (10.0). Returns df with
         an added `opening_energy` column (Float32).
         """
-        import polars as pl
-
         n_rows = df.height
         opening_energies = np.full(n_rows, 10.0, dtype=np.float32)
 
-        # Extract coordinate arrays once
         chroms = df["chrom"].to_numpy()
         starts = df["start"].to_numpy().astype(np.int64)
         ends = df["end"].to_numpy().astype(np.int64)
         strands = df["strand"].to_numpy()
 
-        # Build row-index groups per (chrom, strand) with a single pass
         from collections import defaultdict
         groups: dict[tuple, list] = defaultdict(list)
         for i in range(n_rows):
@@ -1108,12 +868,9 @@ class GenomeAccessibilityService:
             s = starts[idx]
             e = ends[idx]
 
-            # 1-based RIsearch coords → 0-based half-open
-            start0 = s - 1
+            start0 = s - 1  # 1-based → 0-based
             end0 = e
             interaction_len = end0 - start0
-
-            # Mask out-of-bounds rows; they keep the default 10.0
             in_bounds = (start0 >= 0) & (end0 <= seq_len)
 
             if profile.ndim == 2:
@@ -1131,10 +888,7 @@ class GenomeAccessibilityService:
             if is_legacy_bin:
                 raw_vals = raw_vals / 10.0
 
-            # Quantize to 0.1 resolution (match legacy query_single behaviour)
             raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
-
-            # Apply only in-bounds results; rest stay at default 10.0
             opening_energies[idx[in_bounds]] = raw_vals[in_bounds]
 
         return df.with_columns(
@@ -1165,7 +919,6 @@ class GenomeAccessibilityService:
                     pos = int(parts[0])
                     max_idx = max(max_idx, pos)
 
-                    # Values are parts[1:]
                     row_vals = []
                     for s in parts[1:]:
                         if s == "NA" or s == "nan":
@@ -1183,98 +936,54 @@ class GenomeAccessibilityService:
         if max_idx == 0:
             return np.array([], dtype=np.float32)
 
-        # Create 2D array
         arr = np.full((max_idx, stride), 25.5, dtype=np.float32)
         for pos, r_vals in vals:
             if 0 <= pos - 1 < max_idx:
-                # Truncate or pad if length mismatch (though unlikely if stride constant)
-                # Just take min len
                 n = min(len(r_vals), stride)
                 arr[pos - 1, :n] = r_vals[:n]
 
         return arr
 
     def _find_profile(self, chrom: str, strand: str) -> Path | None:
-        """Find profile file, prioritizing .npy, .bin, then text."""
+        """Probe disk for a profile: .npy → .bin → legacy bin → text openen."""
         suffix = "plus" if strand == "+" else "minus"
 
-        # 1. Standard NPY
-        p1 = self.data_dir / f"{chrom}_{suffix}.access.npy"
-        if p1.exists():
-            return p1
+        p = self.data_dir / f"{chrom}_{suffix}.access.npy"
+        if p.exists():
+            return p
 
-        # 2. Standard BIN
-        p2 = self.data_dir / f"{chrom}_{suffix}.access.bin"
-        if p2.exists():
-            return p2
+        p = self.data_dir / f"{chrom}_{suffix}.access.bin"
+        if p.exists():
+            return p
 
-        # 3. Legacy BIN (glob)
-        # e.g. chr1_plus.bin, chr1.open.acc.bin, chr1_rev.open.acc.bin
         candidates = list(self.data_dir.glob(f"{chrom}*{suffix}*.bin"))
         if candidates:
             return candidates[0]
 
-        # 3b. Legacy open/rev naming (open.acc.bin / rev.open.acc.bin)
         if strand == "+":
-            cand1 = self.data_dir / f"{chrom}.open.acc.bin"
-            if cand1.exists():
-                return cand1
-            cand2 = self.data_dir / f"{chrom}_open.acc.bin"
-            if cand2.exists():
-                return cand2
+            for name in (f"{chrom}.open.acc.bin", f"{chrom}_open.acc.bin"):
+                p = self.data_dir / name
+                if p.exists():
+                    return p
         else:
-            cand1 = self.data_dir / f"{chrom}.rev.open.acc.bin"
-            if cand1.exists():
-                return cand1
-            cand2 = self.data_dir / f"{chrom}_rev.open.acc.bin"
-            if cand2.exists():
-                return cand2
+            for name in (f"{chrom}.rev.open.acc.bin", f"{chrom}_rev.open.acc.bin"):
+                p = self.data_dir / name
+                if p.exists():
+                    return p
 
-        # 4. Legacy Text (openen)
-        # e.g. chr1_0_75631_openen
-        # Use _ or . as separator to avoid prefix matching (e.g. transcript_3 vs transcript_35)
-        candidates_txt = list(self.data_dir.glob(f"{chrom}_*openen"))
-        if not candidates_txt:
-            candidates_txt = list(self.data_dir.glob(f"{chrom}.*openen"))
-
+        # _ or . separator avoids prefix collisions (transcript_3 vs transcript_35)
+        candidates_txt = list(self.data_dir.glob(f"{chrom}_*openen")) or list(
+            self.data_dir.glob(f"{chrom}.*openen")
+        )
         if candidates_txt:
-            # Pick the shortest or first?
             return candidates_txt[0]
 
         return None
 
-    def precompute_parquet_from_profiles(
-        self,
-        risearch_dir: Path,
-        output_path: Path,
-    ) -> Path:
-        """Convert existing binary/npy profiles to a per-site accessibility Parquet.
-
-        Scans all RIsearch files in risearch_dir to collect unique
-        (chrom, start, end, strand) binding sites, then batch-looks up the
-        opening energy for each site using vectorized numpy indexing against
-        the already-computed profiles in self.data_dir.  No ViennaRNA folding
-        is performed — profiles must exist on disk.
-
-        The output Parquet has columns:
-            chrom (Utf8), start (Int32), end (Int32), strand (Utf8),
-            opening_energy (Float32)
-
-        This Parquet can then be passed to ``off-targets --accessibility-file``
-        to replace the per-row query_single() loop with a single Polars join.
-
-        Args:
-            risearch_dir: Directory of per-siRNA RIsearch output files.
-            output_path:  Destination .parquet file path.
-
-        Returns:
-            output_path after writing.
-        """
-        import polars as pl
-
+    def precompute_parquet_from_profiles(self, risearch_dir: Path, output_path: Path) -> Path:
+        """Convert existing profiles to per-site accessibility Parquet (no ViennaRNA)."""
         from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
-        # --- 1. Collect unique binding sites ---
         parser = RIsearchParser()
         all_files = parser.list_directory_files(risearch_dir)
         if not all_files:
@@ -1291,8 +1000,7 @@ class GenomeAccessibilityService:
             for f in all_files
             if f.stat().st_size > 0
         ]
-        # Use streaming engine to avoid loading all rows into memory at once.
-        # unique() before collect() is pushed down by the streaming planner.
+        # streaming engine: unique() pushed down so we never materialise all rows
         sites = (
             pl.concat(lazy_frames)
             .unique(subset=["chrom", "start", "end", "strand"])
@@ -1300,7 +1008,6 @@ class GenomeAccessibilityService:
         )
         logger.info(f"Found {sites.height:,} unique binding sites across {sites['chrom'].n_unique()} chromosomes")
 
-        # --- 2. Batch lookup per (chrom, strand) ---
         results: list[pl.DataFrame] = []
 
         for (chrom, strand), group in sites.partition_by(
@@ -1314,7 +1021,6 @@ class GenomeAccessibilityService:
                 )
                 continue
 
-            # Load profile (memmap for .bin, mmap for .npy)
             is_legacy_bin = False
             if path.suffix == ".npy":
                 profile = np.load(path, mmap_mode="r")
@@ -1327,12 +1033,11 @@ class GenomeAccessibilityService:
 
             seq_len = len(profile)
 
-            # Vectorized index computation (mirrors query_single logic)
             starts = group["start"].to_numpy().astype(np.int64)
             ends = group["end"].to_numpy().astype(np.int64)
 
-            start0 = starts - 1          # 0-based
-            end0 = ends                  # half-open
+            start0 = starts - 1  # 1-based → 0-based
+            end0 = ends
             interaction_len = end0 - start0
 
             if profile.ndim == 2:
@@ -1350,7 +1055,6 @@ class GenomeAccessibilityService:
             if is_legacy_bin:
                 raw_vals = raw_vals / 10.0
 
-            # Quantize to 0.1 resolution (legacy compatibility)
             raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
 
             results.append(
