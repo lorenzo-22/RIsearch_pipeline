@@ -1,6 +1,5 @@
 import typer
 from pathlib import Path
-from typing import List, Optional
 from Bio import SeqIO
 from loguru import logger
 from rich.console import Console
@@ -105,7 +104,7 @@ def run(
         # Download Raw Cluster FASTA
         raw_fasta_path = orthologs_dir / f"cluster_{cluster_id}.fasta"
         if not raw_fasta_path.exists():
-            with console.status(f"[cyan]Downloading cluster FASTA..."):
+            with console.status("[cyan]Downloading cluster FASTA..."):
                 orthodb.download_fasta(cluster_id, raw_fasta_path)
         else:
             console.print(f"[dim]Using cached cluster FASTA: {raw_fasta_path}[/dim]")
@@ -197,4 +196,4 @@ def run(
                 f"[green]MSA completed. Alignments saved to {alignments_dir}[/green]"
             )
 
-    console.print(f"\n[bold green]Orthologs pipeline completed![/bold green]")
+    console.print("\n[bold green]Orthologs pipeline completed![/bold green]")

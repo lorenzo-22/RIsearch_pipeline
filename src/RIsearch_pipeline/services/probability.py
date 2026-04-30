@@ -6,7 +6,6 @@ import numpy as np
 
 from RIsearch_pipeline.services.accessibility import (
     GenomeAccessibilityService,
-    AccessibilityError,
 )
 
 R = 0.001987  # kcal/mol·K

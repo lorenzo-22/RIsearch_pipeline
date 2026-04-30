@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 from Bio import Entrez
 from loguru import logger
 import urllib.error
@@ -128,7 +128,6 @@ class NCBIClient:
             # Construct CDS FASTA filename
             # FTP structure: ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/.../GCF_XXX_YYY/
             # Files: GCF_XXX_YYY_*.cds_from_genomic.fna.gz
-            import urllib.request
             import gzip
 
             assembly_accession = doc_sum.get("AssemblyAccession", "")
@@ -137,7 +136,6 @@ class NCBIClient:
 
             # List FTP directory to find CDS file
             from ftplib import FTP
-            import re
 
             ftp_url_parts = ftp_path.replace("ftp://", "").split("/", 1)
             ftp_host = ftp_url_parts[0]

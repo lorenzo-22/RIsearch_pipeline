@@ -18,8 +18,8 @@ Usage::
 
 import time
 import contextlib
-from dataclasses import dataclass, field
-from typing import Generator, Optional
+from dataclasses import dataclass
+from typing import Generator
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,6 @@ class PipelineProfiler:
             return
 
         from rich.table import Table
-        from rich.panel import Panel
 
         total_time = sum(s.elapsed for s in self._stages)
 
