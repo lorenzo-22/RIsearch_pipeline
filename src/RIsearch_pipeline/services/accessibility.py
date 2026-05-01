@@ -265,41 +265,40 @@ class GenomeAccessibilityService:
             prog_task = progress.add_task("Folding chromosomes...", total=total_tasks)
 
         results: dict[str, Path] = {}
-        futures = {}
 
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        def _run_chrom(chrom: str, sequence: str) -> Path:
+            out_path = str(self.data_dir / f"{chrom}.accessibility.parquet")
+            path = _fold_full_chromosome(sequence, chrom, window_size, max_span, unpaired_prob, out_path)
+            return Path(path)
+
+        def _finish_chrom(chrom: str, path: Path) -> None:
+            results[chrom] = path
+            logger.info(f"Completed {chrom} → {path}")
+            if progress is not None and prog_task is not None:
+                progress.update(prog_task, advance=1, description=f"Folded {chrom}")
+            elif progress_callback:
+                progress_callback(advance=1, description=f"Folded {chrom}")
+
+        if workers == 1:
+            # In-process: skip subprocess startup overhead (~20s per chromosome
+            # from forkserver interpreter re-init + module reimports).
             for chrom, sequence in chromosomes:
-                out_path = str(self.data_dir / f"{chrom}.accessibility.parquet")
-                fut = pool.submit(
-                    _fold_full_chromosome,
-                    sequence,
-                    chrom,
-                    window_size,
-                    max_span,
-                    unpaired_prob,
-                    out_path,
-                )
-                futures[fut] = chrom
+                _finish_chrom(chrom, _run_chrom(chrom, sequence))
+        else:
+            futures = {}
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                for chrom, sequence in chromosomes:
+                    out_path = str(self.data_dir / f"{chrom}.accessibility.parquet")
+                    futures[pool.submit(_fold_full_chromosome, sequence, chrom,
+                                        window_size, max_span, unpaired_prob, out_path)] = chrom
 
-            for fut in as_completed(futures):
-                chrom = futures[fut]
-                try:
-                    path = fut.result()
-                except Exception as e:
-                    logger.error(f"Error folding {chrom}: {e}")
-                    raise
-
-                results[chrom] = Path(path)
-                logger.info(f"Completed {chrom} → {path}")
-
-                if progress is not None and prog_task is not None:
-                    progress.update(
-                        prog_task,
-                        advance=1,
-                        description=f"Folded {chrom}",
-                    )
-                elif progress_callback:
-                    progress_callback(advance=1, description=f"Folded {chrom}")
+                for fut in as_completed(futures):
+                    chrom = futures[fut]
+                    try:
+                        _finish_chrom(chrom, Path(fut.result()))
+                    except Exception as e:
+                        logger.error(f"Error folding {chrom}: {e}")
+                        raise
 
         return results
 
