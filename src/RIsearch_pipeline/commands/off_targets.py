@@ -812,7 +812,7 @@ def run(
                             _perf_lines.append(f"  drain_wait_for_future_s: {_drain_wait_total:.3f}s  (avg {_drain_wait_total/_drain_n*1000:.1f}ms/siRNA)")
 
                 if _perf_lines:
-                    console.print("\n".join(_perf_lines))
+                    console.print("\n".join(_perf_lines), markup=False, highlight=False)
 
                 # Report results
                 if total_rows > 0 and out_path is not None:

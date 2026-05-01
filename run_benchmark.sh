@@ -112,6 +112,9 @@ echo "Results will be appended to: $RESULTS_TSV"
 # --- Conda setup string (reused in old pipeline command) ---
 CONDA_SETUP="source /home/users/lorenzo/miniconda3/etc/profile.d/conda.sh && conda activate /home/users/lorenzo/.conda/envs/pitone2"
 
+# Resolve risearch2.x absolute path from module; parallel workers don't inherit PATH from login shell
+RISEARCH2_BIN="$(module show RIsearch2 2>&1 | awk '/prepend-path.*PATH/{print $3}')/risearch2.x"
+
 # --- Generate master FASTA at max size; derive smaller subsets as prefixes ---
 # Nested subsets (500 ⊂ 1000 ⊂ 2000) ensure per-siRNA workload is identical
 # across sizes, so cross-size comparisons reflect only siRNA count.
@@ -206,7 +209,7 @@ parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
 -gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
 -oi {1} --sort -p ${TMP_ACC} \
 -theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \
--rx risearch2.x \
+-rx ${RISEARCH2_BIN} \
 -q '{1}-{2}-{3}' \
 -os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
 
