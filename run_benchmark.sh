@@ -87,6 +87,9 @@ run_and_record() {
 echo "--- Checking prerequisites ---"
 mkdir -p "$TMP_ACC" "$RAMDISK" "$SUBSET_DIR" "$LOG_DIR"
 
+# Purge temp files left by any interrupted prior runs; they can grow to GBs and fill disk
+rm -f "${SCRATCH}"/*.temp.bed "${SCRATCH}"/*.targets "${SCRATCH}"/*.targets.*
+
 if [ ! -f "$INPUT_FASTA" ]; then
     echo "Error: $INPUT_FASTA not found."
     exit 1
