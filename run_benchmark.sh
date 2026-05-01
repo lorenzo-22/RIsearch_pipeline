@@ -67,14 +67,12 @@ run_and_record() {
         "$subset_size" "$pipeline" "$run_num" "$wall_sec" "$peak_rss" "$exit_code" \
         >> "$RESULTS_TSV"
 
-    # Extract [perf] block (new pipeline emits it at end of run)
-    if grep -q '^\[perf\]' "$log_file" 2>/dev/null; then
+    local perf_block
+    perf_block=$(sed -n '/^\[perf\]/,$p' "$log_file")
+    if [[ -n "$perf_block" ]]; then
         echo "    --- [perf] ${pipeline} n=${subset_size} run${run_num} ---"
-        grep -A 999 '^\[perf\]' "$log_file" | head -30
-        {
-            printf '\n=== %s n=%s run%s ===\n' "$pipeline" "$subset_size" "$run_num"
-            grep -A 999 '^\[perf\]' "$log_file" | head -30
-        } >> "$PERF_LOG"
+        echo "$perf_block"
+        printf '\n=== %s n=%s run%s ===\n%s\n' "$pipeline" "$subset_size" "$run_num" "$perf_block" >> "$PERF_LOG"
     fi
 
     if [ "$exit_code" -eq 0 ]; then
@@ -144,38 +142,6 @@ for SUBSET_SIZE in "${SUBSET_SIZES[@]}"; do
 
     echo "  IDs: $(wc -l < "$SUBSET_IDS") siRNAs"
 
-    # --- Old pipeline (3 runs) ---
-    echo "--- Old pipeline ---"
-    # Clean up any stale intersection files to ensure a fair benchmark and avoid corruption
-    rm -f "${SCRATCH}"/*.targets "${SCRATCH}"/*.targets.* "${SCRATCH}"/*.temp.bed
-
-    CMD_OLD="${CONDA_SETUP} && \
-mkdir -p ${SCRATCH}/old && \
-cd ${SCRATCH} && \
-parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
--r '${RESULTS_DIR}/risearch_{1}-{2}-{3}.out.gz' \
--o 'old/{1}-{2}-{3}.H1299.off' \
--t ${RAMDISK}/E-MTAB-2770_fixed.bed \
--alpha '0.5;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
--gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
--oi {1} --sort -p ${TMP_ACC} \
--theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \
--rx risearch2.x \
--q '{1}-{2}-{3}' \
--os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
-
-    echo "  Warming up (${N_WARMUP} runs)..."
-    for run in $(seq 1 $N_WARMUP); do
-        rm -rf "${SCRATCH}/old"
-        bash -c "$CMD_OLD" > /dev/null 2>&1 || true
-    done
-
-    for run in $(seq 1 $N_RUNS); do
-        rm -rf "${SCRATCH}/old"
-        run_and_record "$SUBSET_SIZE" "old" "$run" "$CMD_OLD"
-    done
-    rm -rf "${SCRATCH}/old"
-
     # --- Conversion: .out.gz → .parquet (1 run, reported separately) ---
     echo "--- Conversion (.out.gz → .parquet) ---"
     mkdir -p "$SUBSET_PARQUET"
@@ -222,10 +188,42 @@ uv run src/RIsearch_pipeline/cli.py off-targets \
         run_and_record "$SUBSET_SIZE" "new" "$run" "$CMD_NEW"
     done
     rm -rf "${SCRATCH}/new"
-
-    # --- Cleanup: delete intermediates and kill orphaned workers ---
-    echo "--- Cleanup for size ${SUBSET_SIZE} ---"
     rm -rf "$SUBSET_PARQUET"
+
+    # --- Old pipeline (3 runs) ---
+    echo "--- Old pipeline ---"
+    # Clean up any stale intersection files to ensure a fair benchmark and avoid corruption
+    rm -f "${SCRATCH}"/*.targets "${SCRATCH}"/*.targets.* "${SCRATCH}"/*.temp.bed
+
+    CMD_OLD="${CONDA_SETUP} && \
+mkdir -p ${SCRATCH}/old && \
+cd ${SCRATCH} && \
+parallel -j 32 --colsep '-' \"python2.7 /dev/shm/src/pipeline.py \
+-r '${RESULTS_DIR}/risearch_{1}-{2}-{3}.out.gz' \
+-o 'old/{1}-{2}-{3}.H1299.off' \
+-t ${RAMDISK}/E-MTAB-2770_fixed.bed \
+-alpha '0.5;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
+-gamma '0.55;0.65;0.7;0.75;0.8;0.85;0.9;0.95;1' \
+-oi {1} --sort -p ${TMP_ACC} \
+-theta '0.5;0.6;0.7;0.75;0.8;0.85;0.9;0.95' \
+-rx risearch2.x \
+-q '{1}-{2}-{3}' \
+-os ${SUBSET_FA}\" :::: ${SUBSET_IDS}"
+
+    echo "  Warming up (${N_WARMUP} runs)..."
+    for run in $(seq 1 $N_WARMUP); do
+        rm -rf "${SCRATCH}/old"
+        bash -c "$CMD_OLD" > /dev/null 2>&1 || true
+    done
+
+    for run in $(seq 1 $N_RUNS); do
+        rm -rf "${SCRATCH}/old"
+        run_and_record "$SUBSET_SIZE" "old" "$run" "$CMD_OLD"
+    done
+    rm -rf "${SCRATCH}/old"
+
+    # --- Cleanup ---
+    echo "--- Cleanup for size ${SUBSET_SIZE} ---"
     rm -f "$SUBSET_FA" "$SUBSET_IDS" "$SUBSET_ON_TARGET_MAP"
     pkill -f "spawn_main|forkserver" 2>/dev/null || true
     sleep 2
