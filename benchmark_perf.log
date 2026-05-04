@@ -162,3 +162,58 @@
   drain_wait_for_future_s: 0.002s  (avg 0.0ms/siRNA)
 ✓ Processed 45901829 predictions (no output file specified)
 ✓ Wrote 500 .summary files to /var/tmp/results/new
+# benchmark run: 2026-05-04T14:21:01+02:00  sizes: 50
+
+=== new n=50 run1 ===
+[perf] per-siRNA stage breakdown (N=50, times are sums over all siRNAs):
+  drain_deserialize_s: 0.162s  (avg 3.2ms/siRNA)
+  drain_summary_s: 0.025s  (avg 0.5ms/siRNA)
+  drain_write_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_match_s: 5.547s  (avg 110.9ms/siRNA)
+  intersect_ncls_build_s: 0.002s  (avg 0.0ms/siRNA)
+  intersect_partition_preds_s: 7.236s  (avg 144.7ms/siRNA)
+  intersect_partition_trans_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_s: 16.786s  (avg 335.7ms/siRNA)
+  load_s: 1.938s  (avg 38.8ms/siRNA)
+  prob_s: 17.133s  (avg 342.7ms/siRNA)
+  serialize_s: 0.748s  (avg 15.0ms/siRNA)
+  total_s: 36.606s  (avg 732.1ms/siRNA)
+  drain_wait_for_future_s: 0.000s  (avg 0.0ms/siRNA)
+✓ Processed 2817819 predictions (no output file specified)
+✓ Wrote 50 .summary files to /var/tmp/results/new
+
+=== new n=50 run2 ===
+[perf] per-siRNA stage breakdown (N=50, times are sums over all siRNAs):
+  drain_deserialize_s: 0.161s  (avg 3.2ms/siRNA)
+  drain_summary_s: 0.024s  (avg 0.5ms/siRNA)
+  drain_write_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_match_s: 5.442s  (avg 108.8ms/siRNA)
+  intersect_ncls_build_s: 0.002s  (avg 0.0ms/siRNA)
+  intersect_partition_preds_s: 7.362s  (avg 147.2ms/siRNA)
+  intersect_partition_trans_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_s: 16.813s  (avg 336.3ms/siRNA)
+  load_s: 2.055s  (avg 41.1ms/siRNA)
+  prob_s: 16.970s  (avg 339.4ms/siRNA)
+  serialize_s: 0.734s  (avg 14.7ms/siRNA)
+  total_s: 36.572s  (avg 731.4ms/siRNA)
+  drain_wait_for_future_s: 0.000s  (avg 0.0ms/siRNA)
+✓ Processed 2817819 predictions (no output file specified)
+✓ Wrote 50 .summary files to /var/tmp/results/new
+
+=== new n=50 run3 ===
+[perf] per-siRNA stage breakdown (N=50, times are sums over all siRNAs):
+  drain_deserialize_s: 0.163s  (avg 3.3ms/siRNA)
+  drain_summary_s: 0.023s  (avg 0.5ms/siRNA)
+  drain_write_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_match_s: 5.417s  (avg 108.3ms/siRNA)
+  intersect_ncls_build_s: 0.002s  (avg 0.0ms/siRNA)
+  intersect_partition_preds_s: 7.421s  (avg 148.4ms/siRNA)
+  intersect_partition_trans_s: 0.000s  (avg 0.0ms/siRNA)
+  intersect_s: 16.873s  (avg 337.5ms/siRNA)
+  load_s: 1.984s  (avg 39.7ms/siRNA)
+  prob_s: 16.969s  (avg 339.4ms/siRNA)
+  serialize_s: 0.755s  (avg 15.1ms/siRNA)
+  total_s: 36.581s  (avg 731.6ms/siRNA)
+  drain_wait_for_future_s: 0.000s  (avg 0.0ms/siRNA)
+✓ Processed 2817819 predictions (no output file specified)
+✓ Wrote 50 .summary files to /var/tmp/results/new
