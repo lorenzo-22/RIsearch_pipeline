@@ -1,36 +1,11 @@
-"""Pipeline profiling utilities.
-
-Lightweight wall-time + RSS-memory profiler that requires no third-party
-dependencies (uses /proc/self/status on Linux, time.perf_counter everywhere).
-
-Usage::
-
-    from RIsearch_pipeline.services.profiling import PipelineProfiler
-
-    profiler = PipelineProfiler(enabled=True)
-
-    with profiler.stage("Intersection", rows_in=df.height) as stage:
-        result = intersect(df, df_trans)
-        stage.rows_out = result.height
-
-    profiler.print_summary(console)
-"""
-
 import time
 import contextlib
-from dataclasses import dataclass, field
-from typing import Generator, Optional
+from collections.abc import Generator
+from dataclasses import dataclass
 
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _rss_mb() -> float:
-    """Return process RSS in MB via /proc/self/status (Linux).
-
-    Returns 0.0 on platforms that don't have /proc (macOS, Windows).
-    """
+    """RSS in MB via /proc/self/status; returns 0.0 on macOS/Windows."""
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -40,10 +15,6 @@ def _rss_mb() -> float:
         pass
     return 0.0
 
-
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class StageRecord:
@@ -56,10 +27,9 @@ class StageRecord:
 
 
 class _StageContext:
-    """Mutable handle yielded inside a ``with profiler.stage(...)`` block.
+    """Mutable handle yielded inside ``with profiler.stage(...)``.
 
-    The caller can set ``stage.rows_out`` after the work is done so the
-    profiler can report throughput without requiring the caller to track timing.
+    Caller sets ``stage.rows_out`` after work completes; profiler picks it up.
     """
 
     def __init__(self, record: StageRecord) -> None:
@@ -74,32 +44,15 @@ class _StageContext:
         self._record.rows_out = value
 
 
-# ---------------------------------------------------------------------------
-# Main profiler
-# ---------------------------------------------------------------------------
-
 class PipelineProfiler:
-    """Collects per-stage timing and memory deltas, then renders a Rich table.
-
-    When ``enabled=False`` every call is a no-op with negligible overhead.
-    """
+    """Per-stage wall-time + RSS profiler. ``enabled=False`` → no-op."""
 
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
         self._stages: list[StageRecord] = []
 
     @contextlib.contextmanager
-    def stage(
-        self, name: str, rows_in: int = 0
-    ) -> Generator[_StageContext, None, None]:
-        """Context manager that records wall time and RSS delta for one stage.
-
-        Example::
-
-            with profiler.stage("Intersection", rows_in=df.height) as stage:
-                result = intersect(df, df_trans)
-                stage.rows_out = result.height
-        """
+    def stage(self, name: str, rows_in: int = 0) -> Generator[_StageContext, None, None]:
         record = StageRecord(name=name, rows_in=rows_in)
         ctx = _StageContext(record)
 
@@ -117,15 +70,10 @@ class PipelineProfiler:
             self._stages.append(record)
 
     def print_summary(self, console) -> None:
-        """Print a Rich table summarising all recorded stages.
-
-        Does nothing if the profiler is disabled or no stages were recorded.
-        """
         if not self.enabled or not self._stages:
             return
 
         from rich.table import Table
-        from rich.panel import Panel
 
         total_time = sum(s.elapsed for s in self._stages)
 
@@ -147,7 +95,6 @@ class PipelineProfiler:
         for s in self._stages:
             pct = (s.elapsed / total_time * 100) if total_time > 0 else 0.0
             delta_mem = s.mem_after_mb - s.mem_before_mb
-            # Throughput is based on whichever row count is non-zero
             ref_rows = s.rows_out if s.rows_out > 0 else s.rows_in
             throughput = (ref_rows / s.elapsed / 1_000) if s.elapsed > 0 and ref_rows > 0 else 0.0
 
@@ -160,8 +107,7 @@ class PipelineProfiler:
             else:
                 rows_str = "–"
 
-            # Show absolute RSS after stage + delta in parentheses.
-            # RSS is always shown; delta shown only when ≥ 0.5 MB to avoid noise.
+            # delta suppressed below 0.5 MB to avoid noise from normal allocator fluctuation
             rss_str = f"{s.mem_after_mb:.0f}"
             if abs(delta_mem) >= 0.5:
                 sign = "+" if delta_mem > 0 else ""
@@ -177,7 +123,6 @@ class PipelineProfiler:
                 tput_str,
             )
 
-        # Separator + total (peak RSS shown in the RSS column)
         table.add_section()
         table.add_row(
             "[bold]TOTAL[/bold]",
@@ -191,7 +136,6 @@ class PipelineProfiler:
         console.print(table)
 
     def to_dict(self) -> dict:
-        """Return profile data as a plain dict (useful for JSON export)."""
         return {
             "stages": [
                 {

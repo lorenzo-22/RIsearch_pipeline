@@ -1,31 +1,32 @@
-from loguru import logger
 from pathlib import Path
-from typing import Optional
+
 import typer
+from loguru import logger
+
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
 
 
 def run(
-    genome: Optional[Path] = typer.Option(None, "--fasta", "-f", help="Path to genome FASTA file (not needed with --profiles-dir)"),
+    genome: Path | None = typer.Option(None, "--fasta", "-f", help="Path to genome FASTA file (not needed with --profiles-dir)"),
     output: Path = typer.Option(
         ...,
         "--output",
         "-o",
         help="Output directory (full-genome mode) or .parquet file (binding-site / profiles mode)",
     ),
-    risearch_dir: Optional[Path] = typer.Option(
+    risearch_dir: Path | None = typer.Option(
         None,
         "--risearch-dir",
         "-r",
         help="Directory of per-siRNA RIsearch output files.",
     ),
-    risearch_file: Optional[Path] = typer.Option(
+    risearch_file: Path | None = typer.Option(
         None,
         "--risearch-file",
         "-R",
         help="Single merged RIsearch TSV file (alternative to --risearch-dir).",
     ),
-    profiles_dir: Optional[Path] = typer.Option(
+    profiles_dir: Path | None = typer.Option(
         None,
         "--profiles-dir",
         "-p",
@@ -70,7 +71,6 @@ def run(
 
     console = Console(stderr=True)
 
-    # --- Profiles-to-Parquet mode ---
     if profiles_dir is not None:
         if risearch_dir is None:
             console.print("[red]Error: --profiles-dir requires --risearch-dir[/red]")
@@ -103,7 +103,6 @@ def run(
         raise typer.Exit(code=1)
 
     if risearch_dir is not None or risearch_file is not None:
-        # --- Binding-site mode ---
         if risearch_dir and not risearch_dir.is_dir():
             console.print(f"[red]Error: {risearch_dir} is not a directory[/red]")
             raise typer.Exit(code=1)
@@ -159,7 +158,6 @@ def run(
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
     else:
-        # --- Full-genome mode ---
         output.mkdir(parents=True, exist_ok=True)
         service = GenomeAccessibilityService(output)
 
