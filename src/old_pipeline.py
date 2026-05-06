@@ -28,7 +28,7 @@
 import sys
 import os
 import subprocess
-from subprocess import Popen
+from subprocess import PIPE, check_output, Popen
 import gzip
 import re
 from math import exp
@@ -36,6 +36,7 @@ import time
 import argparse
 import random
 import string
+import array
 
 __author__ = "Ferhat Alkan: ferro@rth.dk"
 # This is the general pipeline to analyze off-target candidates that are predicted by RIsearch2

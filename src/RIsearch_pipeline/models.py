@@ -1,5 +1,9 @@
+"""Polars schema definitions for RIsearch2 data structures."""
+
 import polars as pl
 
+# RIsearch2 output TSV schema (tab-separated, no header)
+# Columns: siRNA_id, si_start, si_end, chrom, start, end, strand, energy, structure, query_seq, left_flank, right_flank
 RISEARCH_COLUMNS = [
     "sirna_id",
     "chrom",

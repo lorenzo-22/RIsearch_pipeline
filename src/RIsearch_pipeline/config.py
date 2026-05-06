@@ -8,7 +8,9 @@ from omegaconf import OmegaConf, MISSING, DictConfig
 
 @dataclass
 class OffTargetsConfig:
-    risearch_file: str = MISSING
+    """Schema for off-targets command configuration."""
+
+    risearch_file: str = MISSING  # Required
     input_dir: Optional[str] = None
     transcriptome: Optional[str] = None
     transcriptome_format: str = "auto"
@@ -39,8 +41,10 @@ class OffTargetsConfig:
 
 @dataclass
 class AccessibilityConfig:
-    fasta: str = MISSING
-    output: str = MISSING
+    """Schema for accessibility command configuration."""
+
+    fasta: str = MISSING  # Required
+    output: str = MISSING  # Required
     window: int = 80
     span: int = 40
     unpaired: int = 30
@@ -48,37 +52,87 @@ class AccessibilityConfig:
 
 
 @dataclass
+class OrthologsConfig:
+    """Schema for orthologs command configuration."""
+
+    target_gene: str = MISSING
+    species_list: str = MISSING
+    output: str = MISSING
+    email: str = MISSING
+    insecta_level: int = 50557
+    plot_lengths: bool = False
+    run_msa: bool = False
+
+
+@dataclass
 class PipelineConfig:
-    command: str = MISSING  # "off-targets" or "accessibility"
+    """Top-level config schema."""
+
+    command: str = MISSING  # "off-targets", "accessibility", or "orthologs"
     verbose: bool = False
     off_targets: Optional[OffTargetsConfig] = None
     accessibility: Optional[AccessibilityConfig] = None
+    orthologs: Optional[OrthologsConfig] = None
 
 
 def load_config(config_path: Path) -> DictConfig:
-    """Load and validate a YAML config file.
+    """
+    Load and validate a YAML config file.
 
     Resolves relative paths relative to the config file's directory.
-    """
-    schema = OmegaConf.structured(PipelineConfig)
-    cfg = OmegaConf.merge(schema, OmegaConf.load(config_path))
 
-    if cfg.command not in ("off-targets", "accessibility"):
+    Args:
+        config_path: Path to YAML configuration file.
+
+    Returns:
+        Validated OmegaConf DictConfig merged with schema defaults.
+
+    Raises:
+        omegaconf.MissingMandatoryValue: If required fields are missing.
+        ValueError: If command is invalid.
+    """
+    # Load schema as structured config
+    schema = OmegaConf.structured(PipelineConfig)
+
+    # Load user config
+    user_cfg = OmegaConf.load(config_path)
+
+    # Merge (user values override schema defaults)
+    cfg = OmegaConf.merge(schema, user_cfg)
+
+    # Validate command
+    if cfg.command not in ("off-targets", "accessibility", "orthologs"):
         raise ValueError(
-            f"Unknown command: {cfg.command}. Must be 'off-targets' or 'accessibility'."
+            f"Unknown command: {cfg.command}. Must be 'off-targets', 'accessibility', or 'orthologs'."
         )
 
-    return _resolve_paths(cfg, config_path.parent.resolve())
+    # Resolve paths relative to config file directory
+    config_dir = config_path.parent.resolve()
+    cfg = _resolve_paths(cfg, config_dir)
+
+    return cfg
 
 
 def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
+    """
+    Resolve relative paths in config relative to base_dir.
+
+    Only resolves string fields that look like paths (contain / or end with common extensions).
+    """
     path_fields = {
         "off_targets": [
-            "risearch_file", "transcriptome", "accessibility_dir",
-            "output", "fasta", "on_target", "on_target_risearch_file",
-            "query", "on_target_accessibility",
+            "risearch_file",
+            "transcriptome",
+            "accessibility_dir",
+            "output",
+            "fasta",
+            "on_target",
+            "on_target_risearch_file",
+            "query",
+            "on_target_accessibility",
         ],
         "accessibility": ["fasta", "output"],
+        "orthologs": ["target_gene", "species_list", "output"],
     }
 
     for section, fields in path_fields.items():
@@ -90,26 +144,46 @@ def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
             if value is not None and isinstance(value, str):
                 p = Path(value)
                 if not p.is_absolute():
-                    OmegaConf.update(cfg, f"{section}.{field_name}", str((base_dir / p).resolve()))
+                    resolved = (base_dir / p).resolve()
+                    OmegaConf.update(cfg, f"{section}.{field_name}", str(resolved))
 
     return cfg
 
 
 def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
-    """Convert OmegaConf section to kwargs dict for command function."""
+    """
+    Convert OmegaConf section to kwargs dict for command function.
+
+    Converts string paths to Path objects for Typer compatibility.
+    """
     section = getattr(cfg, command.replace("-", "_"))
     kwargs = OmegaConf.to_container(section, resolve=True)
 
+    # Convert path strings to Path objects
     path_fields = [
-        "risearch_file", "transcriptome", "accessibility_dir", "output",
-        "fasta", "on_target", "on_target_risearch_file", "query", "on_target_accessibility",
+        "risearch_file",
+        "transcriptome",
+        "accessibility_dir",
+        "output",
+        "fasta",
+        "on_target",
+        "on_target_risearch_file",
+        "query",
+        "query",
+        "on_target_accessibility",
+        "target_gene",
+        "species_list",
     ]
     for key in path_fields:
         if key in kwargs and kwargs[key] is not None:
             kwargs[key] = Path(kwargs[key])
 
+    # Rename 'type' to 'predictions_type' to match function signature
     if "type" in kwargs:
         kwargs["predictions_type"] = kwargs.pop("type")
+
+    # Argument Mapping Logic
+    # ----------------------
 
     key_mapping = {
         "window": "window_size",
@@ -118,19 +192,48 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
     }
 
     if command == "off-targets":
-        key_mapping.update({
-            "transcriptome": "gtf_file",
-            "feature": "feature_type",
-            "output": "output_file",
-            "fasta": "genome_file",
-            "on_target": "on_target_file",
-            "query": "query_file",
-        })
-        for arg in ["sirna_fasta", "target_fasta", "target_index", "workers", "on_target_ids_file"]:
+        # off_targets.run specific mappings
+        key_mapping.update(
+            {
+                "transcriptome": "gtf_file",
+                "feature": "feature_type",
+                "output": "output_file",
+                "fasta": "genome_file",
+                "on_target": "on_target_file",
+                "query": "query_file",
+            }
+        )
+        # Explicitly set CLI-only arguments to None to prevent Typer OptionInfo defaults
+        # When calling a Typer function directly (not via CLI), typer.Option() objects
+        # become the default values, which are truthy and cause bugs.
+        cli_only_args = [
+            "sirna_fasta",
+            "target_fasta",
+            "target_index",
+            "workers",
+            "on_target_ids_file",
+        ]
+        for arg in cli_only_args:
             if arg not in kwargs:
                 kwargs[arg] = None
+
     elif command == "accessibility":
-        key_mapping.update({"fasta": "genome", "output": "output_dir"})
+        # accessibility.run specific mappings
+        key_mapping.update(
+            {
+                "fasta": "genome",
+                "output": "output_dir",
+            }
+        )
+    elif command == "orthologs":
+        # orthologs.run specific mappings
+        key_mapping.update(
+            {
+                "target_gene": "target_gene_file",
+                "species_list": "species_list_file",
+                "output": "output_dir",
+            }
+        )
 
     for old_key, new_key in key_mapping.items():
         if old_key in kwargs:
