@@ -62,49 +62,20 @@ class PipelineConfig:
 
 
 def load_config(config_path: Path) -> DictConfig:
-    """
-    Load and validate a YAML config file.
-
-    Resolves relative paths relative to the config file's directory.
-
-    Args:
-        config_path: Path to YAML configuration file.
-
-    Returns:
-        Validated OmegaConf DictConfig merged with schema defaults.
-
-    Raises:
-        omegaconf.MissingMandatoryValue: If required fields are missing.
-        ValueError: If command is invalid.
-    """
-    # Load schema as structured config
+    """Load and validate a YAML config file, resolving relative paths."""
     schema = OmegaConf.structured(PipelineConfig)
+    cfg = OmegaConf.merge(schema, OmegaConf.load(config_path))
 
-    # Load user config
-    user_cfg = OmegaConf.load(config_path)
-
-    # Merge (user values override schema defaults)
-    cfg = OmegaConf.merge(schema, user_cfg)
-
-    # Validate command
     if cfg.command not in ("off-targets", "accessibility"):
         raise ValueError(
             f"Unknown command: {cfg.command}. Must be 'off-targets' or 'accessibility'."
         )
 
-    # Resolve paths relative to config file directory
-    config_dir = config_path.parent.resolve()
-    cfg = _resolve_paths(cfg, config_dir)
-
-    return cfg
+    return _resolve_paths(cfg, config_path.parent.resolve())
 
 
 def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
-    """
-    Resolve relative paths in config relative to base_dir.
-
-    Only resolves string fields that look like paths (contain / or end with common extensions).
-    """
+    """Resolve relative path fields in the config relative to base_dir."""
     path_fields = {
         "off_targets": [
             "risearch_file",
@@ -136,37 +107,19 @@ def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
 
 
 def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
-    """
-    Convert OmegaConf section to kwargs dict for command function.
-
-    Converts string paths to Path objects for Typer compatibility.
-    """
+    """Convert OmegaConf section to kwargs dict for the given command function."""
     section = getattr(cfg, command.replace("-", "_"))
     kwargs = OmegaConf.to_container(section, resolve=True)
 
-    # Convert path strings to Path objects
-    path_fields = [
-        "risearch_file",
-        "transcriptome",
-        "accessibility_dir",
-        "output",
-        "fasta",
-        "on_target",
-        "on_target_risearch_file",
-        "query",
-        "query",
-        "on_target_accessibility",
-    ]
-    for key in path_fields:
+    for key in [
+        "risearch_file", "transcriptome", "accessibility_dir", "output",
+        "fasta", "on_target", "on_target_risearch_file", "query", "on_target_accessibility",
+    ]:
         if key in kwargs and kwargs[key] is not None:
             kwargs[key] = Path(kwargs[key])
 
-    # Rename 'type' to 'predictions_type' to match function signature
     if "type" in kwargs:
         kwargs["predictions_type"] = kwargs.pop("type")
-
-    # Argument Mapping Logic
-    # ----------------------
 
     key_mapping = {
         "window": "window_size",
@@ -175,39 +128,22 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
     }
 
     if command == "off-targets":
-        # off_targets.run specific mappings
-        key_mapping.update(
-            {
-                "transcriptome": "gtf_file",
-                "feature": "feature_type",
-                "output": "output_file",
-                "fasta": "genome_file",
-                "on_target": "on_target_file",
-                "query": "query_file",
-            }
-        )
-        # Explicitly set CLI-only arguments to None to prevent Typer OptionInfo defaults
-        # When calling a Typer function directly (not via CLI), typer.Option() objects
-        # become the default values, which are truthy and cause bugs.
-        cli_only_args = [
-            "sirna_fasta",
-            "target_fasta",
-            "target_index",
-            "workers",
-            "on_target_ids_file",
-        ]
-        for arg in cli_only_args:
-            if arg not in kwargs:
-                kwargs[arg] = None
+        key_mapping.update({
+            "transcriptome": "gtf_file",
+            "feature": "feature_type",
+            "output": "output_file",
+            "fasta": "genome_file",
+            "on_target": "on_target_file",
+            "query": "query_file",
+        })
+        # Typer OptionInfo objects become defaults when calling the function directly,
+        # not via CLI — set these to None so callers get clean None defaults.
+        for arg in ("sirna_fasta", "target_fasta", "target_index", "workers", "on_target_ids_file"):
+            kwargs.setdefault(arg, None)
 
     elif command == "accessibility":
-        # accessibility.run specific mappings
-        key_mapping.update(
-            {
-                "fasta": "genome",
-                "output": "output_dir",
-            }
-        )
+        key_mapping.update({"fasta": "genome", "output": "output_dir"})
+
     for old_key, new_key in key_mapping.items():
         if old_key in kwargs:
             kwargs[new_key] = kwargs.pop(old_key)
