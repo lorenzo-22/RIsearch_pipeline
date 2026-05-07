@@ -5,6 +5,23 @@ import typer
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
 
 
+def _make_progress(console):
+    from rich.progress import (
+        Progress, SpinnerColumn, TextColumn, BarColumn,
+        TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
+    )
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    )
+
+
 def run(
     genome: Optional[Path] = typer.Option(None, "--fasta", "-f", help="Path to genome FASTA file (not needed with --profiles-dir)"),
     output: Path = typer.Option(
@@ -58,19 +75,8 @@ def run(
       Parquet (no ViennaRNA needed). Use --profiles-dir + --risearch-dir.
     """
     from rich.console import Console
-    from rich.progress import (
-        Progress,
-        SpinnerColumn,
-        TextColumn,
-        BarColumn,
-        TaskProgressColumn,
-        TimeElapsedColumn,
-        TimeRemainingColumn,
-    )
-
     console = Console(stderr=True)
 
-    # --- Profiles-to-Parquet mode ---
     if profiles_dir is not None:
         if risearch_dir is None:
             console.print("[red]Error: --profiles-dir requires --risearch-dir[/red]")
@@ -89,9 +95,7 @@ def run(
                 risearch_dir=risearch_dir,
                 output_path=out_path,
             )
-            console.print(
-                f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]"
-            )
+            console.print(f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]")
         except Exception as e:
             logger.exception("Failed to convert profiles to Parquet")
             console.print(f"[red]Error: {e}[/red]")
@@ -103,7 +107,6 @@ def run(
         raise typer.Exit(code=1)
 
     if risearch_dir is not None or risearch_file is not None:
-        # --- Binding-site mode ---
         if risearch_dir and not risearch_dir.is_dir():
             console.print(f"[red]Error: {risearch_dir} is not a directory[/red]")
             raise typer.Exit(code=1)
@@ -111,9 +114,7 @@ def run(
             console.print(f"[red]Error: {risearch_file} is not a file[/red]")
             raise typer.Exit(code=1)
 
-        out_path = (
-            output if output.suffix == ".parquet" else output / "accessibility.parquet"
-        )
+        out_path = output if output.suffix == ".parquet" else output / "accessibility.parquet"
         service = GenomeAccessibilityService(out_path.parent)
 
         source = risearch_dir or risearch_file
@@ -121,22 +122,11 @@ def run(
         console.print(f"  Genome:       {genome}")
         console.print(f"  Input:        {source}")
         console.print(f"  Output:       {out_path}")
-        console.print(
-            f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
-        )
+        console.print(f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}")
         console.print(f"  Workers:      {workers}\n")
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-                console=console,
-                transient=False,
-            ) as prog:
+            with _make_progress(console) as prog:
                 result_path = service.compute_binding_site_accessibility(
                     genome_path=genome,
                     output_path=out_path,
@@ -149,39 +139,23 @@ def run(
                     progress=prog,
                     verbose=verbose,
                 )
-
-            console.print(
-                f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]"
-            )
-
+            console.print(f"\n[green bold]✓[/green bold] Saved to [cyan]{result_path}[/cyan]")
         except Exception as e:
             logger.exception("Failed to compute binding-site accessibility")
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
     else:
-        # --- Full-genome mode ---
         output.mkdir(parents=True, exist_ok=True)
         service = GenomeAccessibilityService(output)
 
         console.print("\n[bold]Full-genome accessibility computation[/bold]")
         console.print(f"  Genome:       {genome}")
         console.print(f"  Output dir:   {output}")
-        console.print(
-            f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
-        )
+        console.print(f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}")
         console.print(f"  Workers:      {workers}\n")
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-                console=console,
-                transient=False,
-            ) as prog:
+            with _make_progress(console) as prog:
                 results = service.compute_genome_accessibility(
                     genome,
                     window_size=window_size,
@@ -190,13 +164,9 @@ def run(
                     workers=workers,
                     progress=prog,
                 )
-
-            console.print(
-                f"\n[green bold]✓[/green bold] Processed {len(results)} chromosome(s)"
-            )
+            console.print(f"\n[green bold]✓[/green bold] Processed {len(results)} chromosome(s)")
             for chrom, path in results.items():
                 console.print(f"  {chrom}: [cyan]{path}[/cyan]")
-
         except Exception as e:
             logger.exception("Failed to compute accessibility")
             console.print(f"[red]Error: {e}[/red]")
