@@ -1,27 +1,12 @@
 """Typer CLI for the siRNA off-target discovery pipeline."""
 
-import sys
 from pathlib import Path
 from typing import Optional
 
 import typer
-from loguru import logger
 
-
+from RIsearch_pipeline._logging import setup_logging
 from RIsearch_pipeline.commands import accessibility, off_targets, risearch
-
-
-def setup_logging(verbose: bool) -> None:
-    """Configure loguru based on verbosity."""
-    logger.remove()  # Remove default handler
-    if verbose:
-        logger.add(
-            sys.stderr,
-            level="DEBUG",
-            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-        )
-    else:
-        logger.add(sys.stderr, level="WARNING", format="<level>{message}</level>")
 
 
 app = typer.Typer(
