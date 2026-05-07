@@ -8,7 +8,7 @@ import typer
 from loguru import logger
 
 
-from RIsearch_pipeline.commands import accessibility, off_targets, orthologs
+from RIsearch_pipeline.commands import accessibility, off_targets, orthologs, risearch
 
 
 def setup_logging(verbose: bool) -> None:
@@ -32,6 +32,8 @@ app = typer.Typer(
 app.command(name="accessibility")(accessibility.run)
 app.command(name="off-targets")(off_targets.run)
 app.command(name="orthologs")(orthologs.run)
+app.command(name="index")(risearch.index)
+app.command(name="search")(risearch.search)
 
 
 @app.callback(invoke_without_command=True)
