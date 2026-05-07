@@ -7,9 +7,9 @@ The RIsearch Pipeline is architected as a modular, service-oriented system built
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CLI Layer (Typer)                         │
-│  ┌────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │off-targets │  │accessibility │  │orthologs             │   │
-│  └────────────┘  └──────────────┘  └──────────────────────┘   │
+│  ┌────────────┐  ┌──────────────┐                             │
+│  │off-targets │  │accessibility │                             │
+│  └────────────┘  └──────────────┘                             │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
 ┌───────────────────────────┴─────────────────────────────────────┐
@@ -18,10 +18,10 @@ The RIsearch Pipeline is architected as a modular, service-oriented system built
 │  │ RIsearch      │  │ Probability      │  │ Accessibility    │ │
 │  │ Service       │  │ Service          │  │ Service          │ │
 │  └───────────────┘  └──────────────────┘  └──────────────────┘ │
-│  ┌───────────────┐  ┌──────────────────┐  ┌──────────────────┐ │
-│  │ Transcriptome │  │ Intersection     │  │ Ortholog         │ │
-│  │ Parser        │  │ Service          │  │ Service          │ │
-│  └───────────────┘  └──────────────────┘  └──────────────────┘ │
+│  ┌───────────────┐  ┌──────────────────┐                       │
+│  │ Transcriptome │  │ Intersection     │                       │
+│  │ Parser        │  │ Service          │                       │
+│  └───────────────┘  └──────────────────┘                       │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
 ┌───────────────────────────┴─────────────────────────────────────┐
@@ -544,12 +544,6 @@ def benchmark_10k_predictions():
 - **biopython**: FASTA/FASTQ parsing
 - **viennaRNA** (==2.7.2): RNA folding (RNAplfold)
 - **numpy** (==2.4.0): Numerical arrays
-
-### Optional
-
-- **httpx**: Ortholog fetching
-- **matplotlib/seaborn**: Visualization
-- **muscle**: Multiple sequence alignment
 
 ---
 

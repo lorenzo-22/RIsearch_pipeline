@@ -348,7 +348,7 @@ cargo install --path .
 
 - **Documentation**: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEPLOYMENT.md](DEPLOYMENT.md)
 - **Issues**: Open a GitHub issue with `[MIGRATION]` tag
-- **Legacy Support**: The old `old_pipeline.py` remains available for reference
+- **Legacy Support**: Refer to git history for the original `old_pipeline.py`
 
 ---
 

@@ -33,7 +33,7 @@ pyrefly check src/
 pytest tests/
 pytest tests/off-targets/test_scripts/test_probability.py   # single test file
 ```
-Test data lives in `tests/off-targets/` (unit tests) and `tests/dsRNA/` (ortholog integration data).
+Test data lives in `tests/off-targets/` (unit tests).
 
 The golden regression tests (`test_regression_golden.py`) require pre-generated fixtures. If `tests/off-targets/fixtures/regression_input.parquet` is missing, regenerate them:
 ```bash
@@ -44,12 +44,6 @@ python tests/off-targets/fixtures/create_regression_fixtures.py
 ```bash
 scalene risearch-pipeline off-targets ...
 ```
-
-### Benchmark
-```bash
-./run_benchmark.sh [500 1000 2000]   # subset sizes; default: 500 1000 2000
-```
-Requires `module load RIsearch2` and `module load bedtools` (HPC environment). Outputs wall-clock time and peak RSS to `benchmark_results.tsv`.
 
 ### Convert RIsearch output to Parquet
 ```bash
@@ -64,7 +58,7 @@ Converts `.out.gz` files (one per siRNA) to per-siRNA `.parquet` files. The new 
 
 ```
 cli.py                          ← Typer app, --config YAML dispatch
-commands/{off_targets,accessibility,orthologs}.py  ← one module per subcommand
+commands/{off_targets,accessibility}.py  ← one module per subcommand
 services/                       ← stateless processing units
   risearch_service.py           ← wraps risearch PyO3 bindings (index + search, in-process)
   risearch_parser.py            ← parses RIsearch TSV/parquet output into Polars DataFrames
@@ -72,9 +66,7 @@ services/                       ← stateless processing units
   intersection_service.py       ← joins predictions to annotations (gw or tw mode)
   accessibility.py              ← RNAplfold wrapper + memmap binary profile lookup
   probability.py                ← partition-function probability calculation
-  orthodb_client.py / ncbi_client.py  ← async HTTP for ortholog downloads
   helpers.py / profiling.py
-analysis/                       ← post-processing (MSA via muscle, length plots)
 models.py                       ← shared dataclasses / typed structs
 config.py                       ← OmegaConf schema + YAML loading + path resolution
 ```

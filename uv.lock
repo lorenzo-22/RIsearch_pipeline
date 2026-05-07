@@ -838,6 +838,11 @@ dependencies = [
     { name = "viennarna" },
 ]
 
+[package.optional-dependencies]
+risearch = [
+    { name = "risearch" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pre-commit" },
@@ -862,13 +867,12 @@ requires-dist = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "rich", specifier = ">=14.3.0" },
+    { name = "risearch", marker = "extra == 'risearch'", directory = "risearch/risearch-python" },
     { name = "seaborn", specifier = ">=0.12.0" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },
 ]
-
-[package.metadata.optional-dependencies]
-risearch = [{ name = "risearch", directory = "risearch/risearch-python" }]
+provides-extras = ["risearch"]
 
 [package.metadata.requires-dev]
 dev = [

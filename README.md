@@ -11,7 +11,7 @@ siRNA (small interfering RNA) therapeutics are powerful tools for gene silencing
 1. **Identify** potential off-target binding sites across the transcriptome
 2. **Quantify** the probability of off-target hybridization using thermodynamic models
 3. **Prioritize** which off-targets are biologically relevant based on expression levels and RNA accessibility
-4. **Compare** across orthologs in different species for conservation analysis
+4. **Prioritize** results by configurable thermodynamic parameter sweeps
 
 ---
 
@@ -51,19 +51,6 @@ risearch-pipeline accessibility \
   --unpaired 30
 ```
 
-### `orthologs` — Cross-species Ortholog Analysis
-
-Downloads orthologs from OrthoDB and transcriptomes from NCBI for comparative analysis.
-
-```bash
-risearch-pipeline orthologs \
-  --target-gene PSMC2 \
-  --species-list species.txt \
-  --email user@example.com \
-  --plot-lengths \
-  --run-msa
-```
-
 ---
 
 ## 📦 Dependencies
@@ -77,9 +64,6 @@ risearch-pipeline orthologs \
 | **typer**              | CLI framework with automatic help generation                      |
 | **rich**               | Beautiful terminal output (progress bars, tables)                 |
 | **loguru**             | Structured logging                                                |
-| **httpx**              | Async HTTP client for OrthoDB/NCBI APIs                           |
-| **matplotlib/seaborn** | Visualization (ortholog length plots)                             |
-| **muscle**             | Multiple sequence alignment                                       |
 | **omegaconf**          | YAML configuration file support                                   |
 
 ---
