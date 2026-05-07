@@ -8,7 +8,7 @@ import typer
 from loguru import logger
 
 
-from RIsearch_pipeline.commands import accessibility, off_targets, orthologs, risearch
+from RIsearch_pipeline.commands import accessibility, off_targets, risearch
 
 
 def setup_logging(verbose: bool) -> None:
@@ -31,7 +31,6 @@ app = typer.Typer(
 )
 app.command(name="accessibility")(accessibility.run)
 app.command(name="off-targets")(off_targets.run)
-app.command(name="orthologs")(orthologs.run)
 app.command(name="index")(risearch.index)
 app.command(name="search")(risearch.search)
 
@@ -84,8 +83,6 @@ def main(
                 off_targets.run(**kwargs)
             elif cfg.command == "accessibility":
                 accessibility.run(**kwargs)
-            elif cfg.command == "orthologs":
-                orthologs.run(**kwargs)
         except Exception as e:
             typer.echo(f"Error loading config: {e}", err=True)
             raise typer.Exit(code=1)
