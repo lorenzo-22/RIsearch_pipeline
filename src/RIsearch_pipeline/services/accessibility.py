@@ -1,7 +1,6 @@
 from loguru import logger
 from pathlib import Path
 from collections import OrderedDict
-from typing import Dict
 import numpy as np
 
 # Try to import ViennaRNA
@@ -193,7 +192,6 @@ class GenomeAccessibilityService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._max_cached = max_cached
         self._profiles: OrderedDict[str, np.ndarray] = OrderedDict()
-        self._profile_flags: Dict[str, bool] = {}
 
     def get_profile_path(self, chrom: str, strand: str = "+") -> Path:
         """Get path for accessibility profile. Strand can be '+' or '-'."""
@@ -578,19 +576,17 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
-        use_cli: bool = False,
     ) -> np.ndarray:
         """Return 2D opening-energy array [seq_len, unpaired_prob] for a single sequence."""
+        if not HAS_VIENNA_BINDINGS:
+            raise AccessibilityError(
+                "ViennaRNA Python bindings ('import RNA') not found. "
+                "Please install ViennaRNA."
+            )
+
         seq_len = len(sequence)
         if seq_len == 0:
             return np.array([], dtype=np.float32)
-
-        if use_cli or not HAS_VIENNA_BINDINGS:
-            if use_cli:
-                logger.info("Using RNAplfold CLI (--use-rnaplfold-cli flag)")
-            else:
-                logger.info("ViennaRNA Python not available, falling back to RNAplfold CLI")
-            return self._run_rnaplfold_cli(sequence, window_size, max_span, unpaired_prob)
 
         w = min(window_size, seq_len)
         max_span_adj = min(max_span, seq_len)
@@ -615,68 +611,6 @@ class GenomeAccessibilityService:
 
         return profile
 
-    def _run_rnaplfold_cli(
-        self,
-        sequence: str,
-        window_size: int = 80,
-        max_span: int = 40,
-        unpaired_prob: int = 30,
-    ) -> np.ndarray:
-        import subprocess
-        import tempfile
-        import shutil
-
-        seq_len = len(sequence)
-        seq_id = "rnaplfold_seq"
-        w = min(window_size, seq_len)
-        max_span_adj = min(max_span, seq_len)
-
-        if not shutil.which("RNAplfold"):
-            raise AccessibilityError(
-                "RNAplfold binary not found in PATH. "
-                "Please install ViennaRNA or add RNAplfold to PATH."
-            )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fasta_path = Path(tmpdir) / "input.fa"
-            fasta_path.write_text(f">{seq_id}\n{sequence}\n")
-
-            cmd = f"RNAplfold -W {w} -L {max_span_adj} -u {unpaired_prob} -O"
-            logger.debug(f"Running: {cmd}")
-
-            try:
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=tmpdir,
-                    stdin=open(fasta_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if result.returncode != 0:
-                    logger.error(f"RNAplfold stderr: {result.stderr}")
-                    raise AccessibilityError(f"RNAplfold failed with exit code {result.returncode}")
-            except subprocess.TimeoutExpired:
-                raise AccessibilityError("RNAplfold timed out after 5 minutes")
-            except FileNotFoundError:
-                raise AccessibilityError("RNAplfold binary not found")
-
-            openen_path = Path(tmpdir) / f"{seq_id}_openen"
-            if not openen_path.exists():
-                candidates = list(Path(tmpdir).glob("*_openen"))
-                if candidates:
-                    openen_path = candidates[0]
-                else:
-                    raise AccessibilityError(
-                        f"RNAplfold output file not found. Files in tmpdir: {list(Path(tmpdir).iterdir())}"
-                    )
-
-            profile = self._parse_openen_text(openen_path)
-
-        logger.info(f"Computed accessibility via RNAplfold CLI (len={seq_len})")
-        return profile
-
     def _ensure_profile(self, chrom: str, strand: str) -> str:
         """Load profile for (chrom, strand) into LRU cache; return profile_key."""
         profile_key = f"{chrom}_{strand}"
@@ -689,28 +623,14 @@ class GenomeAccessibilityService:
         if not path:
             raise AccessibilityError(
                 f"Profile for {chrom} {strand} not found in {self.data_dir}. "
-                "Expected .access.npy, .access.bin, or legacy open.acc.bin files."
+                "Expected .access.npy files."
             )
 
-        if path.suffix == ".npy":
-            self._profiles[profile_key] = np.load(path, mmap_mode="r")
-        elif path.suffix == ".bin":
-            raw_data = np.memmap(path, dtype=np.uint8, mode="r")
-            if len(raw_data) % 30 == 0:
-                self._profiles[profile_key] = raw_data.reshape(-1, 30)
-            else:
-                logger.warning(f"Binary file {path} size not divisible by 30, using as 1D")
-                self._profiles[profile_key] = raw_data
-            self._profile_flags[f"{profile_key}_is_legacy_bin"] = True
-        elif "openen" in path.name:
-            logger.info(f"Parsing legacy text file: {path}")
-            self._profiles[profile_key] = self._parse_openen_text(path)
-
+        self._profiles[profile_key] = np.load(path, mmap_mode="r")
         logger.info(f"Loaded accessibility profile for {chrom} {strand} from {path}")
 
         while len(self._profiles) > self._max_cached:
             evicted_key, _ = self._profiles.popitem(last=False)
-            self._profile_flags.pop(f"{evicted_key}_is_legacy_bin", None)
             logger.debug(f"Evicted profile cache entry: {evicted_key}")
 
         return profile_key
@@ -719,7 +639,6 @@ class GenomeAccessibilityService:
         """Return opening energies for a region (0-based, half-open [start, end))."""
         profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
-        is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
         seq_len = len(profile)
 
         if start < 0 or end > seq_len:
@@ -727,10 +646,7 @@ class GenomeAccessibilityService:
                 f"Query {start}-{end} out of bounds for {chrom} {strand} (len {seq_len}, path={self._find_profile(chrom, strand)})"
             )
 
-        data = profile[start:end]
-        if is_legacy_bin:
-            return data.astype(np.float32) / 10.0
-        return data
+        return profile[start:end]
 
     def query_single(
         self, chrom: str, start: int, end: int, strand: str = "+"
@@ -738,7 +654,6 @@ class GenomeAccessibilityService:
         """Return one opening energy for a 1-based RIsearch prediction (quantized to 0.1 kcal/mol)."""
         profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
-        is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
         seq_len = len(profile)
 
         start0 = start - 1
@@ -754,13 +669,9 @@ class GenomeAccessibilityService:
             col_idx = max(min(interaction_len, matrix_width) - 1, 0)
             row_idx = end0 - 1 if strand == "+" else start0
             raw_val = float(profile[row_idx, col_idx])
-            if is_legacy_bin:
-                raw_val /= 10.0
         else:
             row_idx = end0 - 1 if strand == "+" else start0
             raw_val = float(profile[row_idx])
-            if is_legacy_bin:
-                raw_val /= 10.0
 
         return int(round(raw_val * 10.0)) / 10.0
 
@@ -791,7 +702,6 @@ class GenomeAccessibilityService:
                 continue
 
             profile = self._profiles[profile_key]
-            is_legacy_bin = self._profile_flags.get(f"{profile_key}_is_legacy_bin", False)
             seq_len = len(profile)
 
             idx = np.array(row_indices, dtype=np.int64)
@@ -813,101 +723,16 @@ class GenomeAccessibilityService:
                 row_idx = np.clip(row_idx, 0, seq_len - 1)
                 raw_vals = profile[row_idx].astype(np.float32)
 
-            if is_legacy_bin:
-                raw_vals = raw_vals / 10.0
-
             raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
             opening_energies[idx[in_bounds]] = raw_vals[in_bounds]
 
         return df.with_columns(pl.Series("opening_energy", opening_energies, dtype=pl.Float32))
 
-    def _parse_openen_text(self, path: Path) -> np.ndarray:
-        """
-        Parse RNAplfold -O text output.
-        Returns 2D array [seq_len, stride] (usually stride=30).
-        """
-        vals = []
-        max_idx = 0
-        stride = 0
-
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if (
-                    not line
-                    or line.startswith("#")
-                    or line.lower().startswith("position")
-                ):
-                    continue
-
-                parts = line.split()
-                try:
-                    pos = int(parts[0])
-                    max_idx = max(max_idx, pos)
-
-                    # Values are parts[1:]
-                    row_vals = []
-                    for s in parts[1:]:
-                        if s == "NA" or s == "nan":
-                            row_vals.append(25.5)
-                        else:
-                            row_vals.append(float(s))
-
-                    if stride == 0:
-                        stride = len(row_vals)
-
-                    vals.append((pos, row_vals))
-                except (ValueError, IndexError):
-                    continue
-
-        if max_idx == 0:
-            return np.array([], dtype=np.float32)
-
-        # Create 2D array
-        arr = np.full((max_idx, stride), 25.5, dtype=np.float32)
-        for pos, r_vals in vals:
-            if 0 <= pos - 1 < max_idx:
-                # Truncate or pad if length mismatch (though unlikely if stride constant)
-                # Just take min len
-                n = min(len(r_vals), stride)
-                arr[pos - 1, :n] = r_vals[:n]
-
-        return arr
-
     def _find_profile(self, chrom: str, strand: str) -> Path | None:
-        """Find profile file: .npy > .bin > legacy bin > legacy text."""
+        """Find profile file (.npy only)."""
         suffix = "plus" if strand == "+" else "minus"
-
         p = self.data_dir / f"{chrom}_{suffix}.access.npy"
-        if p.exists():
-            return p
-
-        p = self.data_dir / f"{chrom}_{suffix}.access.bin"
-        if p.exists():
-            return p
-
-        candidates = list(self.data_dir.glob(f"{chrom}*{suffix}*.bin"))
-        if candidates:
-            return candidates[0]
-
-        if strand == "+":
-            for name in (f"{chrom}.open.acc.bin", f"{chrom}_open.acc.bin"):
-                p = self.data_dir / name
-                if p.exists():
-                    return p
-        else:
-            for name in (f"{chrom}.rev.open.acc.bin", f"{chrom}_rev.open.acc.bin"):
-                p = self.data_dir / name
-                if p.exists():
-                    return p
-
-        # Use _ or . separator to avoid prefix collision (transcript_3 vs transcript_35)
-        candidates_txt = list(self.data_dir.glob(f"{chrom}_*openen")) or \
-                         list(self.data_dir.glob(f"{chrom}.*openen"))
-        if candidates_txt:
-            return candidates_txt[0]
-
-        return None
+        return p if p.exists() else None
 
     def precompute_parquet_from_profiles(
         self,
@@ -951,16 +776,7 @@ class GenomeAccessibilityService:
                 results.append(group.with_columns(pl.lit(10.0).cast(pl.Float32).alias("opening_energy")))
                 continue
 
-            is_legacy_bin = False
-            if path.suffix == ".npy":
-                profile = np.load(path, mmap_mode="r")
-            elif path.suffix == ".bin":
-                raw = np.memmap(path, dtype=np.uint8, mode="r")
-                profile = raw.reshape(-1, 30) if len(raw) % 30 == 0 else raw
-                is_legacy_bin = True
-            else:
-                profile = self._parse_openen_text(path)
-
+            profile = np.load(path, mmap_mode="r")
             seq_len = len(profile)
             starts = group["start"].to_numpy().astype(np.int64)
             ends = group["end"].to_numpy().astype(np.int64)
@@ -978,9 +794,6 @@ class GenomeAccessibilityService:
                 row_idx = np.where(strand == "+", end0 - 1, start0)
                 row_idx = np.clip(row_idx, 0, seq_len - 1)
                 raw_vals = profile[row_idx].astype(np.float32)
-
-            if is_legacy_bin:
-                raw_vals = raw_vals / 10.0
 
             raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
             results.append(group.with_columns(pl.Series("opening_energy", raw_vals, dtype=pl.Float32)))

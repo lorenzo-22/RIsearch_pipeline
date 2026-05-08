@@ -39,7 +39,6 @@ def _init_worker(
     ipc_path: str,
     accessibility_dir: str,
     accessibility_file: str,
-    use_rnaplfold_cli: bool,
     polars_max_threads: int,
     on_target_map: dict,
     self_hyb_emin: dict,
@@ -74,7 +73,6 @@ def _init_worker(
 
     _WORKER_PROB_SERVICE = ProbabilityService(
         acc_service,
-        use_rnaplfold_cli=use_rnaplfold_cli,
         precomputed_accessibility=precomputed_acc,
     )
 
@@ -407,11 +405,6 @@ def run(
         "--profile",
         help="Print a per-stage timing and memory profile table at the end of the run.",
     ),
-    use_rnaplfold_cli: bool = typer.Option(
-        False,
-        "--use-rnaplfold-cli",
-        help="Use RNAplfold binary instead of ViennaRNA Python bindings for accessibility.",
-    ),
     chunk_mode: bool = typer.Option(
         False,
         "--chunk-mode",
@@ -554,7 +547,6 @@ def run(
                 )
             prob_service = ProbabilityService(
                 acc_service,
-                use_rnaplfold_cli=use_rnaplfold_cli,
                 precomputed_accessibility=precomputed_acc,
             )
 
@@ -685,7 +677,6 @@ def run(
                     str(_ipc_path) if gtf_file else "",
                     str(accessibility_dir) if accessibility_dir else "",
                     str(accessibility_file) if accessibility_file else "",
-                    use_rnaplfold_cli,
                     polars_threads_per_worker,
                     on_target_map,
                     self_hyb_emin,
@@ -878,7 +869,6 @@ def run(
                     )
                 prob_service = ProbabilityService(
                     acc_service,
-                    use_rnaplfold_cli=use_rnaplfold_cli,
                     precomputed_accessibility=precomputed_acc,
                 )
 
@@ -1152,7 +1142,6 @@ def run(
             )
             prob_service = ProbabilityService(
                 None,
-                use_rnaplfold_cli=use_rnaplfold_cli,
                 precomputed_accessibility=precomputed_acc,
             )
 
@@ -1161,9 +1150,7 @@ def run(
                 f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
             )
             acc_service = GenomeAccessibilityService(accessibility_dir, max_cached=4)
-            prob_service = ProbabilityService(
-                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
-            )
+            prob_service = ProbabilityService(acc_service)
 
         elif genome_file:
             console.print(
@@ -1199,15 +1186,13 @@ def run(
                     progress_callback=progress_callback,
                 )
 
-            prob_service = ProbabilityService(
-                acc_service, use_rnaplfold_cli=use_rnaplfold_cli
-            )
+            prob_service = ProbabilityService(acc_service)
 
         else:
             console.print(
                 "[yellow]Warning:[/yellow] No accessibility data provided. P(OT) based on energy only."
             )
-            prob_service = ProbabilityService(None, use_rnaplfold_cli=use_rnaplfold_cli)
+            prob_service = ProbabilityService(None)
 
         # Calculate P(OT)
         # Calculate P(OT)
