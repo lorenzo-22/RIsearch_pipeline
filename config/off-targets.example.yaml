@@ -40,7 +40,7 @@ off_targets:
   query: ../tests/off-targets/single/input/siRNA.fa
   on_target_expression: 1000.0
   on_target_risearch_file: ../tests/off-targets/single/input/risearch_siRNAID_only.out
-  on_target_accessibility: ../tests/off-targets/single/input/accessibility/onTarget.open.acc.bin
+  on_target_accessibility: ../tests/off-targets/single/input/accessibility/onTarget_plus.access.npy
 
   # [OPTIONAL] Analysis Flags
   legacy_format: true # Save in old pipeline format (.results)
@@ -56,7 +56,7 @@ accessibility:
   # [REQUIRED] Genome FASTA file
   fasta: ../tests/off-targets/single/input/transcripts.fa
 
-  # [REQUIRED] Output directory for binary profiles
+  # [REQUIRED] Output directory for accessibility profiles
   output: ../tests/off-targets/single/output/accessibility
 
   # Parameters

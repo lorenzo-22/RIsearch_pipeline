@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from loguru import logger
 
+from RIsearch_pipeline._logging import setup_logging
 from RIsearch_pipeline.services.risearch_service import RIsearchService
 
 
@@ -22,15 +22,7 @@ def index(
     ),
 ) -> None:
     """Build a RIsearch index from a target FASTA file."""
-    if verbose:
-        import sys
-        logger.remove()
-        logger.add(
-            sys.stderr,
-            level="DEBUG",
-            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-        )
-
+    setup_logging(verbose)
     svc = RIsearchService()
     index_path = svc.index_target(target, output)
     typer.echo(f"Index written to: {index_path}")
@@ -66,15 +58,7 @@ def search(
     ),
 ) -> None:
     """Run a RIsearch search and output hits as TSV."""
-    if verbose:
-        import sys
-        logger.remove()
-        logger.add(
-            sys.stderr,
-            level="DEBUG",
-            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-        )
-
+    setup_logging(verbose)
     svc = RIsearchService()
     df = svc.run_search(
         query_path=query,

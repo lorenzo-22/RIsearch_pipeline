@@ -16,10 +16,13 @@ Usage::
     profiler.print_summary(console)
 """
 
-import time
 import contextlib
+import time
 from dataclasses import dataclass, field
 from typing import Generator, Optional
+
+from rich.panel import Panel
+from rich.table import Table
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +126,6 @@ class PipelineProfiler:
         """
         if not self.enabled or not self._stages:
             return
-
-        from rich.table import Table
-        from rich.panel import Panel
 
         total_time = sum(s.elapsed for s in self._stages)
 

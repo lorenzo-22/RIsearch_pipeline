@@ -18,19 +18,19 @@ def service() -> RIsearchService:
 @pytest.fixture
 def sirna_single_path() -> Path:
     """Path to single siRNA FASTA."""
-    return Path(__file__).parent.parent / "single" / "input" / "sirna.fa"
+    return Path(__file__).parent / "data" / "sirna.fa"
 
 
 @pytest.fixture
 def sirna_multi_path() -> Path:
     """Path to multi-siRNA FASTA."""
-    return Path(__file__).parent.parent / "multiple" / "input" / "sirnas.fa"
+    return Path(__file__).parent / "data" / "sirnas.fa"
 
 
 @pytest.fixture
 def genome_path() -> Path:
     """Path to test genome FASTA."""
-    return Path(__file__).parent.parent / "single" / "input" / "genome.fa"
+    return Path(__file__).parent / "data" / "genome.fa"
 
 
 class TestValidateSirnaFasta:
