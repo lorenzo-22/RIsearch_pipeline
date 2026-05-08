@@ -28,7 +28,7 @@ from RIsearch_pipeline.services.probability import ProbabilityService
 # Fixtures
 # ---------------------------------------------------------------------------
 
-FIXTURE_DIR = Path(__file__).parents[1] / "fixtures"
+FIXTURE_DIR = Path(__file__).parent / "data"
 
 # Parameters used when the reference was generated
 ALPHA_GAMMA = [

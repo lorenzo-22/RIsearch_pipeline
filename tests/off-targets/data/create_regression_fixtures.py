@@ -2,15 +2,15 @@
 One-time script to generate regression test fixtures from validated pipeline output.
 
 Run from the repo root:
-    uv run python tests/off-targets/fixtures/create_regression_fixtures.py
+    uv run python tests/off-targets/data/create_regression_fixtures.py
 
 Inputs (must exist on the machine that generated the validated outputs):
     /tmp/compare4/new_out3/output.tsv      – pipeline output for 4 siRNAs
     /tmp/compare4/new_out3/*.summary       – summary files (Z values)
 
 Outputs (committed to the repo):
-    tests/off-targets/fixtures/regression_input.parquet    – input for ProbabilityService
-    tests/off-targets/fixtures/regression_reference.json   – expected Zoff_noacc values
+    tests/off-targets/data/regression_input.parquet    – input for ProbabilityService
+    tests/off-targets/data/regression_reference.json   – expected Zoff_noacc values
 """
 
 import json
