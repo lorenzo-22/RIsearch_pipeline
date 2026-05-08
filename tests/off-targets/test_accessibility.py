@@ -1,6 +1,5 @@
 import shutil
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 import numpy as np
 from RIsearch_pipeline.services.accessibility import (
@@ -77,13 +76,6 @@ class TestAccessibility(unittest.TestCase):
             any(v != 25.5 for v in u1_vals),
             "Should have non-default accessibility values",
         )
-
-    @patch("RIsearch_pipeline.services.accessibility.HAS_VIENNA_BINDINGS", False)
-    def test_missing_bindings_raises(self):
-        """Test that missing bindings raise error."""
-        service = GenomeAccessibilityService(self.test_dir)
-        with self.assertRaises(AccessibilityError):
-            service.compute_genome_accessibility(self.fasta_path)
 
     def test_query_service(self):
         """Test querying the created profiles."""

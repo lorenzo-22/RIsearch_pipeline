@@ -1,15 +1,18 @@
 from loguru import logger
 from pathlib import Path
 from typing import Optional
+
 import typer
+from rich.console import Console
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn,
+    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
+)
+
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
 
 
 def _make_progress(console):
-    from rich.progress import (
-        Progress, SpinnerColumn, TextColumn, BarColumn,
-        TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
-    )
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -74,7 +77,6 @@ def run(
     - Profiles-to-Parquet: converts existing binary/npy profiles to a per-site
       Parquet (no ViennaRNA needed). Use --profiles-dir + --risearch-dir.
     """
-    from rich.console import Console
     console = Console(stderr=True)
 
     if profiles_dir is not None:

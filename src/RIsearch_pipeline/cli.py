@@ -7,6 +7,7 @@ import typer
 
 from RIsearch_pipeline._logging import setup_logging
 from RIsearch_pipeline.commands import accessibility, off_targets, risearch
+from RIsearch_pipeline.config import load_config, config_to_kwargs
 
 
 app = typer.Typer(
@@ -47,8 +48,6 @@ def main(
     setup_logging(verbose)
 
     if config is not None:
-        from RIsearch_pipeline.config import load_config, config_to_kwargs
-
         try:
             cfg = load_config(config)
             kwargs = config_to_kwargs(cfg, cfg.command)

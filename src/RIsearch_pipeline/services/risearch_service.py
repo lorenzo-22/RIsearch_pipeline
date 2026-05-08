@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
+from Bio import SeqIO
 from loguru import logger
 
 
@@ -31,8 +32,6 @@ class RIsearchService:
 
     def validate_sirna_fasta(self, path: Path) -> List[str]:
         """Validate siRNA FASTA for existence, format, and unique IDs. Returns ordered ID list."""
-        from Bio import SeqIO
-
         if not path.exists():
             raise FileNotFoundError(f"siRNA FASTA file not found: {path}")
 
@@ -169,8 +168,6 @@ class RIsearchService:
         Each siRNA is searched against itself (seed_length = len - 1, energy ≤ 0),
         replicating the old pipeline's minimum-energy anchor for alpha/gamma clamping.
         """
-        from Bio import SeqIO
-
         if not fasta_path.exists():
             raise FileNotFoundError(f"siRNA FASTA not found: {fasta_path}")
 
@@ -203,5 +200,4 @@ class RIsearchService:
 @lru_cache(maxsize=32)
 def _fasta_names(path_str: str) -> tuple:
     """Return sequence IDs from a FASTA file (cached by path string)."""
-    from Bio import SeqIO
     return tuple(r.id for r in SeqIO.parse(path_str, "fasta"))

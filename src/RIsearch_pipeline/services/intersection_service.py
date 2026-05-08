@@ -1,15 +1,15 @@
 """Service for intersecting RIsearch predictions with transcriptome annotations."""
 
-import polars as pl
-import numpy as np
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterator, Optional
 
+import numpy as np
+import polars as pl
 from loguru import logger
+from ncls import NCLS
 
-try:
-    from ncls import NCLS
-except Exception:  # pragma: no cover - optional dependency
-    NCLS = None
+from RIsearch_pipeline.models import PredictionsMode
 
 _BATCH_SIZE = 50_000
 
@@ -40,12 +40,12 @@ class IntersectionService:
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
-        mode: str = "gw",
+        mode: str = PredictionsMode.GW,
         workers: int = 1,
         _timings: Optional[dict] = None,
     ) -> pl.DataFrame:
         """Filter predictions to those overlapping transcriptome features."""
-        if mode == "tw":
+        if mode == PredictionsMode.TW:
             return self._transcriptome_wide_join(risearch_df, transcriptome_df)
         else:
             return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers, _timings=_timings)
@@ -75,8 +75,6 @@ class IntersectionService:
         workers: int = 1,
         _timings: Optional[dict] = None,
     ) -> pl.DataFrame:
-        import time
-
         chrom_strand_pairs = risearch_df.select(["chrom", "strand"]).unique().to_dicts()
 
         _t_part_preds = time.perf_counter()
@@ -141,8 +139,6 @@ class IntersectionService:
         all_results: list[pl.DataFrame] = []
 
         if workers > 1 and len(chrom_strand_pairs) > 1:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
             # Cap at 8: beyond that, peak memory from concurrent chromosome-sized DataFrames outweighs speedup.
             safe_workers = min(workers, 8)
             with ThreadPoolExecutor(max_workers=safe_workers) as pool:
@@ -286,11 +282,11 @@ class IntersectionService:
         self,
         risearch_df: pl.DataFrame,
         transcriptome_df: pl.DataFrame,
-        mode: str = "gw",
+        mode: str = PredictionsMode.GW,
         workers: int = 1,
     ) -> Iterator[pl.DataFrame]:
         """Streaming intersection that yields batches instead of accumulating."""
-        if mode == "tw":
+        if mode == PredictionsMode.TW:
             yield self._transcriptome_wide_join(risearch_df, transcriptome_df)
             return
 

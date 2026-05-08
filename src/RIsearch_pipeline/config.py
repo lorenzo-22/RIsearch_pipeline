@@ -1,9 +1,12 @@
 """Configuration management using OmegaConf."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
-from omegaconf import OmegaConf, MISSING, DictConfig
+
+from omegaconf import MISSING, OmegaConf, DictConfig
+
+from RIsearch_pipeline.models import PredictionsMode
 
 
 @dataclass
@@ -33,7 +36,7 @@ class OffTargetsConfig:
     legacy_format: bool = False
     detailed_report: bool = False
     sense_only: bool = False
-    type: str = "gw"
+    type: str = PredictionsMode.GW
     verbose: bool = False
     chunk_mode: bool = False
     batch_size: int = 50

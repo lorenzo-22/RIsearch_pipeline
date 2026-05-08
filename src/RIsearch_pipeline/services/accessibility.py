@@ -1,15 +1,21 @@
-from loguru import logger
+import gzip
+import math
+from collections import OrderedDict, defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import islice
 from pathlib import Path
-from collections import OrderedDict
+from typing import Dict
+
 import numpy as np
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
+import RNA
+from loguru import logger
 
-# Try to import ViennaRNA
-try:
-    import RNA
-
-    HAS_VIENNA_BINDINGS = True
-except ImportError:
-    HAS_VIENNA_BINDINGS = False
+from RIsearch_pipeline.models import Strand
+from RIsearch_pipeline.services.helpers import read_fasta, reverse_complement, merge_intervals
+from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
 
 class AccessibilityError(Exception):
@@ -39,12 +45,6 @@ def _fold_full_chromosome(
     Top-level (not a method) so ProcessPoolExecutor can pickle it; only the
     output path string is pickled back, avoiding O(N×u) OOM on large chromosomes.
     """
-    import RNA as _RNA
-    import math
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     RT = 0.616  # kcal/mol at 37°C
     seq_len = len(sequence)
 
@@ -70,7 +70,7 @@ def _fold_full_chromosome(
             l_adj = min(max_span, chunk_len)
 
             try:
-                probs_matrix = _RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
+                probs_matrix = RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
                 probs_ok = True
             except Exception:
                 probs_ok = False
@@ -126,8 +126,6 @@ def _fold_island(
     unpaired_prob: int,
 ) -> dict[tuple[int, int], float]:
     """Fold one island and return {(orig_s, orig_e): opening_energy}. Top-level for pickling."""
-    import RNA as _RNA
-
     RT = 0.616  # kcal/mol at 37°C
     sub_len = len(rna_seq)
     w = min(window_size, sub_len)
@@ -136,7 +134,7 @@ def _fold_island(
     result: dict[tuple[int, int], float] = {}
 
     try:
-        probs_matrix = _RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
+        probs_matrix = RNA.pfl_fold_up(rna_seq, unpaired_prob, w, l_adj)
     except Exception:
         # Default penalty for all sites in this island
         for orig_s, orig_e in binding_sites:
@@ -161,8 +159,6 @@ def _fold_island(
         if 0 < idx_1based < len(probs_matrix) and u_col < len(probs_matrix[idx_1based]):
             p = probs_matrix[idx_1based][u_col]
             if p is not None and p > 0:
-                import math
-
                 energy_val = -RT * math.log(p)
                 energy_val = int(round(energy_val * 10.0)) / 10.0
 
@@ -209,16 +205,6 @@ class GenomeAccessibilityService:
         progress_callback=None,
     ) -> Dict[str, Path]:
         """Fold all chromosomes; return {chrom: parquet_path}."""
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-
-        if not HAS_VIENNA_BINDINGS:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Please install ViennaRNA or use the CLI fallback."
-            )
-
-        from RIsearch_pipeline.services.helpers import read_fasta
-
         chromosomes = list(read_fasta(genome_path))
         # longest-first scheduling minimises tail latency
         chromosomes.sort(key=lambda cs: len(cs[1]), reverse=True)
@@ -286,26 +272,13 @@ class GenomeAccessibilityService:
         verbose: bool = False,
     ) -> Path:
         """Fold only binding-site islands; write per-site opening energies to Parquet."""
-        if not HAS_VIENNA_BINDINGS:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Please install ViennaRNA or use the CLI fallback."
-            )
-
         if not risearch_dir and not risearch_file:
             raise AccessibilityError("Provide either risearch_dir or risearch_file")
-
-        import polars as pl
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-        from RIsearch_pipeline.services.helpers import read_fasta, reverse_complement, merge_intervals
 
         if progress:
             scan_task = progress.add_task("Scanning RIsearch files...", total=None)
 
         if risearch_file:
-            import gzip
-
             opener = gzip.open if str(risearch_file).endswith(".gz") else open
             with opener(risearch_file, "rt") as fh:
                 first_line = fh.readline().strip()
@@ -326,8 +299,6 @@ class GenomeAccessibilityService:
             ])
             source_desc = risearch_file.name
         else:
-            from RIsearch_pipeline.services.risearch_parser import RIsearchParser
-
             parser = RIsearchParser()
             all_files = parser.list_directory_files(risearch_dir)
             if not all_files:
@@ -412,7 +383,7 @@ class GenomeAccessibilityService:
                 )
 
             all_island_tasks = []
-            for strand in ["+", "-"]:
+            for strand in Strand:
                 strand_sites = chrom_sites.filter(pl.col("strand") == strand)
                 if strand_sites.height == 0:
                     continue
@@ -489,16 +460,13 @@ class GenomeAccessibilityService:
             pos_energy_by_strand: dict[str, dict[tuple[int, int], float]] = {"+": {}, "-": {}}
 
             if workers > 1 and n_tasks > 1:
-                from concurrent.futures import ProcessPoolExecutor, as_completed
-                from itertools import islice as _islice
-
                 packed = [(strand, fold_args) for strand, _, _, _, fold_args in all_island_tasks]
 
                 # workers×4 chunks: amortise IPC overhead while keeping cores balanced
                 chunk_size = max(1, (n_tasks + workers * 4 - 1) // (workers * 4))
                 chunks = []
                 it = iter(packed)
-                while batch_chunk := list(_islice(it, chunk_size)):
+                while batch_chunk := list(islice(it, chunk_size)):
                     chunks.append(batch_chunk)
 
                 with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -525,7 +493,7 @@ class GenomeAccessibilityService:
                 progress.remove_task(island_task)
                 island_task = None
 
-            for strand in ["+", "-"]:
+            for strand in Strand:
                 strand_sites = chrom_sites.filter(pl.col("strand") == strand)
                 if strand_sites.height == 0:
                     continue
@@ -578,12 +546,6 @@ class GenomeAccessibilityService:
         unpaired_prob: int = 30,
     ) -> np.ndarray:
         """Return 2D opening-energy array [seq_len, unpaired_prob] for a single sequence."""
-        if not HAS_VIENNA_BINDINGS:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Please install ViennaRNA."
-            )
-
         seq_len = len(sequence)
         if seq_len == 0:
             return np.array([], dtype=np.float32)
@@ -675,11 +637,8 @@ class GenomeAccessibilityService:
 
         return int(round(raw_val * 10.0)) / 10.0
 
-    def annotate_opening_energy_vectorized(self, df: "pl.DataFrame") -> "pl.DataFrame":
+    def annotate_opening_energy_vectorized(self, df: pl.DataFrame) -> pl.DataFrame:
         """Add `opening_energy` column by vectorized numpy gather per (chrom, strand) group."""
-        import polars as pl
-        from collections import defaultdict
-
         n_rows = df.height
         opening_energies = np.full(n_rows, 10.0, dtype=np.float32)
 
@@ -740,10 +699,6 @@ class GenomeAccessibilityService:
         output_path: Path,
     ) -> Path:
         """Look up opening energies for all binding sites in risearch_dir; write to Parquet."""
-        import polars as pl
-
-        from RIsearch_pipeline.services.risearch_parser import RIsearchParser
-
         parser = RIsearchParser()
         all_files = parser.list_directory_files(risearch_dir)
         if not all_files:

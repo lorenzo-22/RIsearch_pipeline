@@ -1,13 +1,17 @@
-from loguru import logger
+import tempfile
 from pathlib import Path
-import polars as pl
 from typing import Optional, Tuple, Dict
+
 import numpy as np
+import polars as pl
+from loguru import logger
 
 from RIsearch_pipeline.services.accessibility import (
     GenomeAccessibilityService,
     AccessibilityError,
 )
+from RIsearch_pipeline.services.helpers import read_fasta
+from RIsearch_pipeline.services.risearch_service import RIsearchService
 
 # Gas constant in kcal/mol*K
 R = 0.001987
@@ -329,8 +333,6 @@ class ProbabilityService:
             logger.info(f"In-predictions mode: computed on-target weights for {on_df.height} siRNAs")
 
         elif on_target_data_fasta:
-            import numpy as np
-
             min_e_dict = {row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()}
             z_modifications = []
 
@@ -716,8 +718,6 @@ class ProbabilityService:
         elif t_end > 0:
             # Compute accessibility on-the-fly from the on-target FASTA
             try:
-                from RIsearch_pipeline.services.helpers import read_fasta
-
                 sequence = None
                 for seq_id, seq in read_fasta(on_target_path):
                     sequence = seq
@@ -726,7 +726,6 @@ class ProbabilityService:
                 if sequence:
                     logger.info(f"Computing on-target accessibility on-the-fly (len={len(sequence)})")
 
-                    import tempfile
                     with tempfile.TemporaryDirectory() as tmpdir:
                         temp_service = GenomeAccessibilityService(Path(tmpdir))
                         profile = temp_service.compute_sequence_accessibility(sequence)
@@ -750,8 +749,6 @@ class ProbabilityService:
                 else:
                     logger.warning(f"No sequence found in on-target FASTA: {on_target_path}")
 
-            except ImportError:
-                logger.warning("ViennaRNA not available for on-the-fly accessibility computation")
             except Exception as e:
                 logger.error(f"Failed to compute on-target accessibility: {e}")
                 dG_open = 0.0
@@ -761,7 +758,6 @@ class ProbabilityService:
     def _run_risearch_binary(
         self, query_path: Path, target_path: Path
     ) -> tuple[float, int, int, str]:
-        from RIsearch_pipeline.services.risearch_service import RIsearchService
         return RIsearchService().search_single_sirna(query_path, target_path)
 
     def _parse_risearch_file(self, path: Path) -> tuple[float, int, int, str]:

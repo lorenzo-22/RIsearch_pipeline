@@ -1,6 +1,18 @@
-"""Polars schema definitions for RIsearch2 data structures."""
+"""Polars schema definitions and domain enums for the RIsearch pipeline."""
+
+from enum import StrEnum
 
 import polars as pl
+
+
+class Strand(StrEnum):
+    PLUS = "+"
+    MINUS = "-"
+
+
+class PredictionsMode(StrEnum):
+    GW = "gw"
+    TW = "tw"
 
 # RIsearch2 output TSV schema (tab-separated, no header)
 # Columns: siRNA_id, si_start, si_end, chrom, start, end, strand, energy, structure, query_seq, left_flank, right_flank

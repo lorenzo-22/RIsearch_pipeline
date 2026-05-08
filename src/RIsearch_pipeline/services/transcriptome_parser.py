@@ -1,5 +1,6 @@
 """Service for parsing transcriptome annotation files (GTF/GFF/BED)."""
 
+import gzip
 from pathlib import Path
 
 import polars as pl
@@ -37,8 +38,6 @@ class TranscriptomeParser:
     def _load_bed(
         self, path: Path, force_bed6: bool = False, force_bed7: bool = False
     ) -> pl.DataFrame:
-        import gzip
-
         if force_bed6:
             num_cols = 6
         elif force_bed7:
