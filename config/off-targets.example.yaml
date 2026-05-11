@@ -1,65 +1,210 @@
-# RIsearch Pipeline Configuration Example
-# You can place this file anywhere. Run with:
-# risearch-pipeline --config path/to/this/config.yaml
+# =============================================================================
+# RIsearch Pipeline — Complete Configuration Reference
+# =============================================================================
+# Usage:
+#   risearch-pipeline --config path/to/this/config.yaml
+#   gw --config path/to/this/config.yaml   # alias
+#
+# All relative paths are resolved relative to this file's directory.
+# Parameters marked [CLI-ONLY] cannot be set here; pass them on the command
+# line instead (e.g. --workers 8).
+# =============================================================================
 
-# -----------------------------------------------------------------------------
-# COMMAND SELECTION
-# Options: "off-targets" or "accessibility"
+# Command to run. Required.
+# Options: "off-targets" | "accessibility"
 command: off-targets
-# -----------------------------------------------------------------------------
-# Global Options
-verbose: false # Enable detailed debug logging
 
-# -----------------------------------------------------------------------------
-# OFF-TARGETS CONFIGURATION
-# Required if command is "off-targets"
-# -----------------------------------------------------------------------------
+# Enable rich debug logging globally (overridden by section-level verbose). Default: false
+verbose: false
+
+# =============================================================================
+# OFF-TARGETS COMMAND
+# Required when command: "off-targets"
+# =============================================================================
 off_targets:
-  # [REQUIRED] Path to RIsearch2 output predictions (TSV)
+
+  # ---------------------------------------------------------------------------
+  # Input — choose ONE of the three mutually exclusive input modes
+  # ---------------------------------------------------------------------------
+
+  # [REQUIRED unless using input_dir] Pre-computed RIsearch2 output (.tsv / .out.gz / directory of .parquet).
+  # If a directory is passed, it is treated as input_dir automatically.
   risearch_file: ../tests/off-targets/single/input/risearch_siRNAID.out
 
-  # [OPTIONAL] Transcriptome annotation (GTF/GFF3)
+  # Directory of per-siRNA RIsearch output files (*.gz or *.tsv / *.parquet).
+  # Enables multi-process parallel mode (one worker per siRNA file).
+  # [CLI-ONLY when used with --sirna-fasta to run RIsearch inline]
+  input_dir: null
+
+  # ---------------------------------------------------------------------------
+  # Transcriptome annotation (optional)
+  # ---------------------------------------------------------------------------
+
+  # Transcriptome annotation file: GTF, GFF3, BED6, or BED7.
+  # Join predictions to gene/transcript features and expression values.
   transcriptome: ../tests/off-targets/single/input/expression_data.bed
 
-  # [OPTIONAL] Feature type to filter from GTF (default: exon)
+  # File format for the transcriptome file. Default: "auto" (detected by extension).
+  # Options: "auto" | "gtf" | "bed6" | "bed7"
+  transcriptome_format: auto
+
+  # Feature type to extract from GTF/GFF3 (ignored for BED). Default: "exon"
   feature: exon
 
-  # [OPTIONAL] Expression metric column in GTF attributes (default: RPKM)
+  # Column / attribute in the annotation file that holds expression values. Default: "RPKM"
   expression_metric: RPKM
 
-  # [OPTIONAL] Output file path
-  output: ../tests/off-targets/single/output/tw.results
+  # ---------------------------------------------------------------------------
+  # Accessibility profiles — choose ONE source (or omit for energy-only P(OT))
+  # ---------------------------------------------------------------------------
 
-  # [OPTIONAL] Accessibility Data
-  # Provide EITHER accessibility_dir (pre-computed) OR fasta (compute on-the-fly)
+  # Directory of pre-computed binary accessibility profiles (<chrom>.open.acc.bin).
+  # Memory-mapped; never loaded fully into RAM.
   accessibility_dir: ../tests/off-targets/single/input/accessibility
-  #fasta: tests/input/genome.fa
 
-  # [OPTIONAL] On-Target Calculation (for Probability P(OT))
+  # FASTA file for computing accessibility on-the-fly via ViennaRNA.
+  # Slower than pre-computed profiles; uses window/span/unpaired parameters below.
+  # fasta: ../tests/off-targets/single/input/transcripts.fa
+
+  # ViennaRNA RNAplfold window size (W). Default: 80
+  window: 80
+
+  # ViennaRNA RNAplfold maximum base-pair span (L). Default: 40
+  span: 40
+
+  # ViennaRNA RNAplfold unpaired probability length (u). Default: 30
+  unpaired: 30
+
+  # ---------------------------------------------------------------------------
+  # On-target configuration — for partition-function P(OT)
+  # Only ONE method needed; pre-computed RIsearch file is faster.
+  # ---------------------------------------------------------------------------
+
+  # FASTA of on-target transcript sequence (triggers on-the-fly RIsearch search).
   on_target: ../tests/off-targets/single/input/onTarget.fa
+
+  # siRNA FASTA (required when on_target is set for in-process RIsearch).
   query: ../tests/off-targets/single/input/siRNA.fa
+
+  # Expression level for the on-target gene. Default: 1000.0
   on_target_expression: 1000.0
+
+  # Pre-computed RIsearch output for the on-target (skips on-the-fly search).
   on_target_risearch_file: ../tests/off-targets/single/input/risearch_siRNAID_only.out
+
+  # Binary (.open.acc.bin) or text accessibility file for the on-target site.
   on_target_accessibility: ../tests/off-targets/single/input/accessibility/onTarget.open.acc.bin
 
-  # [OPTIONAL] Analysis Flags
-  legacy_format: true # Save in old pipeline format (.results)
-  detailed_report: true # Save detailed probability breakdown per transcript
-  sense_only: true # Filter for sense strand only
-  type: tw # Transcriptome-wide mode (match by transcript ID)
+  # ---------------------------------------------------------------------------
+  # Partition-function parameters
+  # Multiple values separated by ";" generate one P_off_target column each.
+  # All (alpha, gamma) pairs where alpha ≤ gamma are computed in one Polars pass.
+  # ---------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# ACCESSIBILITY CONFIGURATION
-# Required if command is "accessibility"
-# -----------------------------------------------------------------------------
+  # Alpha clamping parameter. Constraint: alpha ≤ gamma. Default: "1.0"
+  # Example multi-value sweep: "0.8;0.9;1.0"
+  alpha: "1.0"
+
+  # Gamma clamping parameter. Default: "1.0"
+  # Example multi-value sweep: "0.9;1.0"
+  gamma: "1.0"
+
+  # Theta energy-scaling parameter(s). Empty string = disabled. Default: ""
+  # Example: "0.5;0.7"
+  theta: ""
+
+  # ---------------------------------------------------------------------------
+  # Predictions mode
+  # ---------------------------------------------------------------------------
+
+  # Type of RIsearch2 predictions. Default: "gw"
+  # "gw" = genome-wide  → intersection uses genomic coordinates + chromosome join
+  # "tw" = transcriptome-wide → intersection matches chrom column to transcript_id
+  type: gw
+
+  # ---------------------------------------------------------------------------
+  # Output
+  # ---------------------------------------------------------------------------
+
+  # Path for the main output file (TSV by default; extension depends on output_format).
+  output: ../tests/off-targets/single/output/results.tsv
+
+  # Write in legacy .results format aggregated by transcript (old pipeline). Default: false
+  legacy_format: false
+
+  # Write per-transcript probability breakdown alongside .results. Default: false
+  # Only effective when legacy_format is true.
+  detailed_report: false
+
+  # ---------------------------------------------------------------------------
+  # Filtering
+  # ---------------------------------------------------------------------------
+
+  # Keep only sense-strand (+) predictions; discard antisense. Default: false
+  sense_only: false
+
+  # ---------------------------------------------------------------------------
+  # Performance
+  # ---------------------------------------------------------------------------
+
+  # Process siRNAs in sequential batches from a single large file.
+  # Reduces peak RAM when risearch_file contains thousands of siRNAs. Default: false
+  chunk_mode: false
+
+  # siRNAs per batch in chunk_mode. Default: 50
+  batch_size: 50
+
+  # Verbose output: print sample DataFrames and extra stats. Default: false
+  verbose: false
+
+  # ---------------------------------------------------------------------------
+  # CLI-ONLY parameters (cannot be set in YAML — use the command line)
+  # ---------------------------------------------------------------------------
+  # --sirna-fasta / -s       siRNA FASTA; runs RIsearch in-process (requires --target-fasta)
+  # --target-fasta / --genome  Target FASTA for integrated RIsearch execution
+  # --target-index / -idx    Pre-built RIsearch index (speeds up repeated runs)
+  # --accessibility-file     Parquet of pre-computed binding-site accessibility
+  # --on-target-ids / -oi    TSV mapping siRNA IDs to on-target transcript IDs (sirna_id\ttranscript_id)
+  # --workers / -j           Number of parallel worker processes (default: CPU count)
+  # --scratch-dir            Directory for temporary Arrow IPC files (default: system temp)
+  # --output-format          Output format: "tsv" | "csv" | "parquet" (default: tsv)
+  # --summary-only           Write only .summary files; skip per-prediction output
+  # --profile                Print per-stage timing/memory table at run end
+  # --use-rnaplfold-cli      Use RNAplfold binary instead of ViennaRNA Python bindings
+
+# =============================================================================
+# ACCESSIBILITY COMMAND
+# Required when command: "accessibility"
+# Three operating modes (mutually exclusive; see below):
+#   1. Full-genome  : --fasta required; profiles written per chromosome
+#   2. Binding-site : --fasta + --risearch-dir/--risearch-file (CLI-only)
+#   3. Profiles→Parquet: --profiles-dir + --risearch-dir (CLI-only, no FASTA needed)
+# =============================================================================
 accessibility:
-  # [REQUIRED] Genome FASTA file
+
+  # [REQUIRED for full-genome and binding-site modes]
+  # Path to genome or transcriptome FASTA file.
   fasta: ../tests/off-targets/single/input/transcripts.fa
 
-  # [REQUIRED] Output directory for binary profiles
+  # [REQUIRED] Output directory (full-genome) or .parquet file path (binding-site / Parquet modes).
   output: ../tests/off-targets/single/output/accessibility
 
-  # Parameters
+  # ViennaRNA RNAplfold window size (W). Default: 80
   window: 80
+
+  # ViennaRNA RNAplfold maximum base-pair span (L). Default: 40
   span: 40
+
+  # ViennaRNA RNAplfold unpaired probability length (u). Default: 30
   unpaired: 30
+
+  # Verbose progress output. Default: false
+  verbose: false
+
+  # ---------------------------------------------------------------------------
+  # CLI-ONLY parameters (cannot be set in YAML — use the command line)
+  # ---------------------------------------------------------------------------
+  # --risearch-dir / -r   Directory of per-siRNA RIsearch files (binding-site mode)
+  # --risearch-file / -R  Single merged RIsearch TSV (alternative to --risearch-dir)
+  # --profiles-dir / -p   Directory of pre-computed binary/npy profiles (Parquet conversion mode)
+  # --workers / -j        Parallel workers for chromosome/island folding (default: 1)
