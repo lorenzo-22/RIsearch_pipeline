@@ -21,6 +21,7 @@ class AccessibilityError(Exception):
 
 
 _COMPLEMENT_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
+_GAS_CONSTANT = 0.001987  # kcal / (mol·K)
 
 
 def _reverse_complement(seq: str) -> str:
@@ -42,7 +43,6 @@ def _fold_full_chromosome(
     Top-level (not a method) so ProcessPoolExecutor can pickle it; only the
     output path string is pickled back, avoiding O(N×u) OOM on large chromosomes.
     """
-    _GAS_CONSTANT = 0.001987  # kcal / (mol·K)
     RT = _GAS_CONSTANT * (temperature + 273.15)
     seq_len = len(sequence)
 
@@ -250,7 +250,7 @@ class GenomeAccessibilityService:
         """
         Compute accessibility for a single sequence (e.g., on-target).
 
-        Uses ViennaRNA's RNA.pfl_fold_up to compute unpaired probabilities,
+        Uses ViennaRNA's RNA.fold_compound with RNA.OPTION_WINDOW to compute unpaired probabilities,
         then converts to opening energies.
 
         Args:
@@ -258,6 +258,7 @@ class GenomeAccessibilityService:
             window_size: -W parameter (default 80).
             max_span: -L parameter (default 40).
             unpaired_prob: -u parameter (default 30).
+            temperature: Folding temperature in °C (default 37.0).
 
         Returns:
             2D numpy array [seq_len, unpaired_prob] of opening energies.
@@ -275,9 +276,9 @@ class GenomeAccessibilityService:
         if seq_len == 0:
             return np.array([], dtype=np.float32)
 
+        rna_seq = sequence.upper().replace("T", "U")
         w = min(window_size, seq_len)
         max_span_adj = min(max_span, seq_len)
-        _GAS_CONSTANT = 0.001987  # kcal / (mol·K)
         RT = _GAS_CONSTANT * (temperature + 273.15)
 
         profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
@@ -287,7 +288,7 @@ class GenomeAccessibilityService:
             md.temperature = temperature
             md.window_size = w
             md.max_bp_span = max_span_adj
-            fc = RNA.fold_compound(sequence, md, RNA.OPTION_WINDOW)
+            fc = RNA.fold_compound(rna_seq, md, RNA.OPTION_WINDOW)
             probs_matrix = [None] * (seq_len + 2)
 
             def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
