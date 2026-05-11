@@ -35,9 +35,9 @@ pytest tests/off-targets/test_scripts/test_probability.py   # single test file
 ```
 Test data lives in `tests/off-targets/` (unit tests).
 
-The golden regression tests (`test_regression_golden.py`) require pre-generated fixtures. If `tests/off-targets/fixtures/regression_input.parquet` is missing, regenerate them:
+The golden regression tests (`test_regression_golden.py`) require pre-generated fixtures. If `tests/off-targets/data/regression_input.parquet` is missing, regenerate them:
 ```bash
-python tests/off-targets/fixtures/create_regression_fixtures.py
+python tests/off-targets/data/create_regression_fixtures.py
 ```
 
 ### Profile

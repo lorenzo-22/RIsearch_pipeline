@@ -1,15 +1,16 @@
 """Service for executing RIsearch and validating siRNA inputs.
 
-Provides a clean interface to run RIsearch searches, index targets, and validate
-siRNA FASTA files before processing. Uses the risearch Python bindings (PyO3/maturin)
-for in-process execution — no subprocess or intermediate TSV files.
+Uses the risearch PyO3 bindings for in-process execution — no subprocess or
+intermediate TSV files.
 """
 
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
+from Bio import SeqIO
 from loguru import logger
 
 
@@ -20,83 +21,36 @@ class RIsearchError(Exception):
 
 
 class RIsearchService:
-    """Wrapper for the risearch Python bindings.
-
-    Encapsulates index creation, search execution, and input validation.
-    Supports both single and multi-siRNA FASTA inputs.
+    """Wrapper for the risearch PyO3 bindings.
 
     An internal registry maps each index path to its source target FASTA so
-    that ``run_search()`` can resolve integer target indices to sequence names.
+    that run_search() can resolve integer target indices to sequence names.
     """
 
     def __init__(self) -> None:
-        # Maps str(index_path) → target_fasta path for name resolution
         self._target_registry: Dict[str, Path] = {}
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def validate_sirna_fasta(self, path: Path) -> List[str]:
-        """Validate siRNA FASTA and return list of sequence IDs.
-
-        Checks for:
-        - File existence
-        - Valid FASTA format
-        - Duplicate sequence IDs (raises error if found)
-
-        Args:
-            path: Path to siRNA FASTA file.
-
-        Returns:
-            List of unique sequence IDs in order of appearance.
-
-        Raises:
-            FileNotFoundError: If the file does not exist.
-            ValueError: If duplicate IDs are found.
-        """
-        from Bio import SeqIO
-
+        """Validate siRNA FASTA for existence, format, and unique IDs. Returns ordered ID list."""
         if not path.exists():
             raise FileNotFoundError(f"siRNA FASTA file not found: {path}")
 
         ids: List[str] = []
         seen: set[str] = set()
-
         for record in SeqIO.parse(path, "fasta"):
-            seq_id = record.id
-            if seq_id in seen:
-                raise ValueError(
-                    f"Duplicate siRNA ID found: '{seq_id}'. "
-                    f"Each siRNA must have a unique identifier."
-                )
-            seen.add(seq_id)
-            ids.append(seq_id)
+            if record.id in seen:
+                raise ValueError(f"Duplicate siRNA ID: '{record.id}'")
+            seen.add(record.id)
+            ids.append(record.id)
 
         logger.info(f"Validated {len(ids)} siRNA(s) from {path.name}")
         return ids
 
-    def index_target(
-        self,
-        target_path: Path,
-        index_path: Optional[Path] = None,
-    ) -> Path:
-        """Create or retrieve RIsearch index for a target FASTA.
+    def index_target(self, target_path: Path, index_path: Optional[Path] = None) -> Path:
+        """Create or reuse a RIsearch index for a target FASTA.
 
-        If index_path is None, creates an index next to the target file.
-        If index already exists and is newer than target, reuses it.
-        Registers the target_path so run_search() can resolve target names.
-
-        Args:
-            target_path: Path to target FASTA (genome/transcriptome).
-            index_path: Optional path for index output.
-
-        Returns:
-            Path to the created/existing index.
-
-        Raises:
-            RIsearchError: If indexing fails.
-            FileNotFoundError: If target FASTA doesn't exist.
+        Registers target_path so run_search() can resolve sequence names.
+        Reuses an existing index if it is newer than the target.
         """
         import risearch
 
@@ -106,21 +60,17 @@ class RIsearchService:
         if index_path is None:
             index_path = target_path.with_suffix(".idx")
 
-        # Always register so run_search() can resolve target names
         self._target_registry[str(index_path)] = target_path
 
         if index_path.exists():
             if index_path.stat().st_mtime > target_path.stat().st_mtime:
                 logger.info(f"Reusing existing index: {index_path}")
                 return index_path
-            else:
-                logger.info(f"Index outdated, rebuilding: {index_path}")
+            logger.info(f"Index outdated, rebuilding: {index_path}")
 
         try:
             risearch.index(target_path, index_path)
-            logger.info(
-                f"Created index: {index_path} ({index_path.stat().st_size} bytes)"
-            )
+            logger.info(f"Created index: {index_path} ({index_path.stat().st_size} bytes)")
             return index_path
         except Exception as e:
             raise RIsearchError(f"RIsearch index failed: {e}") from e
@@ -134,24 +84,10 @@ class RIsearchService:
         max_extension: int = 20,
         energy_threshold: float = -10.0,
     ) -> pl.DataFrame:
-        """Run RIsearch search and return results as a DataFrame.
+        """Run RIsearch and return hits as a DataFrame (sirna_id, chrom, start, end, strand, energy).
 
-        Args:
-            query_path: Path to siRNA FASTA (single or multiple sequences).
-            index_path: Path to pre-built RIsearch index.
-            target_fasta: Path to the target FASTA used to build the index.
-                          Required when the index was not created in this
-                          session via index_target(). Needed for name resolution.
-            seed_length: Seed length integer (default 6).
-            max_extension: Max extension length on each side (default 20).
-            energy_threshold: Energy cutoff in kcal/mol (default -10.0).
-
-        Returns:
-            Polars DataFrame with columns: sirna_id, chrom, start, end, strand, energy.
-
-        Raises:
-            RIsearchError: If search fails or target names cannot be resolved.
-            FileNotFoundError: If query or index don't exist.
+        target_fasta is required when the index was not built in this session
+        via index_target() — needed to resolve integer target indices to names.
         """
         import risearch
 
@@ -160,7 +96,6 @@ class RIsearchService:
         if not index_path.exists():
             raise FileNotFoundError(f"Index not found: {index_path}")
 
-        # Resolve target FASTA for name lookup
         resolved_target = target_fasta or self._target_registry.get(str(index_path))
         if resolved_target is None:
             raise RIsearchError(
@@ -183,27 +118,17 @@ class RIsearchService:
         if raw.is_empty():
             logger.info("Search complete: 0 hits")
             return pl.DataFrame(
-                schema={
-                    "sirna_id": pl.Utf8,
-                    "chrom": pl.Utf8,
-                    "start": pl.Int32,
-                    "end": pl.Int32,
-                    "strand": pl.Utf8,
-                    "energy": pl.Float32,
-                }
+                schema={"sirna_id": pl.Utf8, "chrom": pl.Utf8, "start": pl.Int32,
+                        "end": pl.Int32, "strand": pl.Utf8, "energy": pl.Float32}
             )
 
-        # Build name lookup arrays
-        query_names = _fasta_names(query_path)
-        target_names = _fasta_names(resolved_target)
-
-        sirna_ids = [query_names[i] for i in raw["query_idx"].to_list()]
-        chroms = [target_names[i] for i in raw["target_idx"].to_list()]
+        query_names = pl.Series(_fasta_names(str(query_path)), dtype=pl.Utf8)
+        target_names = pl.Series(_fasta_names(str(resolved_target)), dtype=pl.Utf8)
 
         df = (
             raw.with_columns([
-                pl.Series("sirna_id", sirna_ids),
-                pl.Series("chrom", chroms),
+                query_names.gather(raw["query_idx"]).alias("sirna_id"),
+                target_names.gather(raw["target_idx"]).alias("chrom"),
             ])
             .rename({"t_start": "start", "t_end": "end"})
             .select(["sirna_id", "chrom", "start", "end", "strand", "energy"])
@@ -214,17 +139,11 @@ class RIsearchService:
         return df
 
     def self_hybridization_emin(self, sequence: str, sirna_id: str = "query") -> float:
-        """Compute E_min via self-hybridization (siRNA vs itself).
+        """Compute E_min by searching a siRNA against itself.
 
-        Replicates old pipeline: ``risearch2.x -q siRNA.fa -i siRNA.pksuf -s len-1 -e 0``
-        Seed length = len(seq)-1 ensures near-full-length hybridizations only.
-
-        Args:
-            sequence: siRNA nucleotide sequence (RNA or DNA; U→T conversion applied).
-            sirna_id: ID label used for the FASTA header.
-
-        Returns:
-            Minimum hybridisation energy (most negative value). Returns 0.0 if no hits.
+        seed_length = len(seq) - 1 ensures only near-full-length hybridisations,
+        replicating ``risearch2.x -q siRNA.fa -i siRNA.pksuf -s len-1 -e 0``.
+        Returns 0.0 if no hits found.
         """
         seq_dna = sequence.upper().replace("U", "T")
         with tempfile.TemporaryDirectory(prefix="risearch_self_") as tmpdir:
@@ -233,16 +152,11 @@ class RIsearchService:
             fasta_path.write_text(f">{sirna_id}\n{seq_dna}\n")
             self.index_target(fasta_path, index_path)
             df = self.run_search(
-                fasta_path,
-                index_path,
-                target_fasta=fasta_path,
-                seed_length=len(seq_dna) - 1,
-                energy_threshold=0.0,
+                fasta_path, index_path, target_fasta=fasta_path,
+                seed_length=len(seq_dna) - 1, energy_threshold=0.0,
             )
             if df.is_empty():
-                logger.warning(
-                    f"No self-hybridisation hits for {sirna_id}, using E_min=0.0"
-                )
+                logger.warning(f"No self-hybridisation hits for {sirna_id}, using E_min=0.0")
                 return 0.0
             emin = float(df["energy"].min())
             logger.debug(f"Self-hyb E_min {sirna_id}: {emin:.4f} kcal/mol")
@@ -251,81 +165,39 @@ class RIsearchService:
     def self_hybridization_emin_batch(self, fasta_path: Path) -> Dict[str, float]:
         """Compute self-hybridisation E_min for all siRNAs in a FASTA file.
 
-        Each siRNA is searched against itself with seed_length = len(seq) - 1
-        and energy_threshold = 0.0, replicating the old pipeline's minimum-energy
-        anchor used for alpha/gamma clamping.
-
-        Args:
-            fasta_path: Path to FASTA file containing one or more siRNA sequences.
-
-        Returns:
-            Dict mapping siRNA ID → minimum self-hybridisation energy (float).
-
-        Raises:
-            FileNotFoundError: If fasta_path does not exist.
+        Each siRNA is searched against itself (seed_length = len - 1, energy ≤ 0),
+        replicating the old pipeline's minimum-energy anchor for alpha/gamma clamping.
         """
-        from Bio import SeqIO
-
         if not fasta_path.exists():
             raise FileNotFoundError(f"siRNA FASTA not found: {fasta_path}")
 
         records = list(SeqIO.parse(fasta_path, "fasta"))
-        logger.info(
-            f"Computing self-hybridisation E_min for {len(records)} siRNA(s)..."
-        )
-        result: Dict[str, float] = {}
-        for record in records:
-            result[record.id] = self.self_hybridization_emin(str(record.seq), record.id)
+        logger.info(f"Computing self-hybridisation E_min for {len(records)} siRNA(s)...")
+        result = {r.id: self.self_hybridization_emin(str(r.seq), r.id) for r in records}
         logger.info(f"Self-hybridisation complete: {len(result)} siRNA(s) processed")
         return result
 
-    def search_single_sirna(
-        self,
-        query_path: Path,
-        target_path: Path,
-    ) -> Tuple[float, int, int, str]:
-        """Run RIsearch for a single siRNA and return best hit.
+    def search_single_sirna(self, query_path: Path, target_path: Path) -> Tuple[float, int, int, str]:
+        """Run RIsearch for a single siRNA and return (energy, start, end, strand) of the best hit.
 
-        Convenience method for on-target calculations. Creates a temporary
-        index, runs search, and returns the best (lowest energy) result.
-
-        Args:
-            query_path: Path to single-siRNA FASTA.
-            target_path: Path to target sequence FASTA.
-
-        Returns:
-            Tuple of (energy, start, end, strand) for the best hit.
-            Returns (0.0, 0, 0, "+") if no hits found.
+        Returns (0.0, 0, 0, "+") if no hits found or search fails.
         """
         with tempfile.TemporaryDirectory(prefix="risearch_") as tmpdir:
             index_path = Path(tmpdir) / "target.idx"
-
             try:
                 self.index_target(target_path, index_path)
                 df = self.run_search(query_path, index_path)
-
                 if df.is_empty():
                     logger.warning("No valid hits found")
                     return 0.0, 0, 0, "+"
-
                 best = df.sort("energy").row(0, named=True)
-                return (
-                    float(best["energy"]),
-                    int(best["start"]),
-                    int(best["end"]),
-                    str(best["strand"]),
-                )
-
+                return float(best["energy"]), int(best["start"]), int(best["end"]), str(best["strand"])
             except RIsearchError as e:
                 logger.error(f"RIsearch failed: {e}")
                 return 0.0, 0, 0, "+"
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def _fasta_names(path: Path) -> List[str]:
-    """Return sequence IDs from a FASTA file in order of appearance."""
-    from Bio import SeqIO
-    return [r.id for r in SeqIO.parse(path, "fasta")]
+@lru_cache(maxsize=32)
+def _fasta_names(path_str: str) -> tuple:
+    """Return sequence IDs from a FASTA file (cached by path string)."""
+    return tuple(r.id for r in SeqIO.parse(path_str, "fasta"))

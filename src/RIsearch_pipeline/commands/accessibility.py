@@ -1,8 +1,28 @@
 from loguru import logger
 from pathlib import Path
 from typing import Optional
+
 import typer
+from rich.console import Console
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn,
+    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
+)
+
 from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+
+
+def _make_progress(console):
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    )
 
 
 def run(
@@ -38,17 +58,6 @@ def run(
     Profiles can later be consumed by the off-targets command via
     --accessibility-dir.
     """
-    from rich.console import Console
-    from rich.progress import (
-        Progress,
-        SpinnerColumn,
-        TextColumn,
-        BarColumn,
-        TaskProgressColumn,
-        TimeElapsedColumn,
-        TimeRemainingColumn,
-    )
-
     console = Console(stderr=True)
 
     if genome is None:
@@ -67,16 +76,7 @@ def run(
     console.print(f"  Workers:      {workers}\n")
 
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-            transient=False,
-        ) as prog:
+        with _make_progress(console) as prog:
             results = service.compute_genome_accessibility(
                 genome,
                 window_size=window_size,

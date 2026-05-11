@@ -1,23 +1,37 @@
-from pathlib import Path
+import ctypes
+import gc
+import multiprocessing
+import os
+import shutil
+import sys
 import tempfile
-import typer
-import polars as pl
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 from typing import Optional
+
+import polars as pl
+import pyarrow.parquet as pq
+import typer
+from loguru import logger
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
     TextColumn,
-    BarColumn,
     TimeElapsedColumn,
 )
+from rich.table import Table
 
-from loguru import logger
-
-from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+from RIsearch_pipeline.services.intersection_service import IntersectionService
+from RIsearch_pipeline.services.probability import ProbabilityService
 from RIsearch_pipeline.services.profiling import PipelineProfiler
+from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+from RIsearch_pipeline.services.risearch_service import RIsearchService
+from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
 
 console = Console()
 
@@ -48,14 +62,10 @@ def _init_worker(
     rather than being re-parsed from the original BED/GTF.  All workers share the
     same physical memory pages via the OS page cache.
     """
-    import os
     os.environ["POLARS_MAX_THREADS"] = str(polars_max_threads)
 
     global _WORKER_DF_TRANS, _WORKER_INTERSECTOR, _WORKER_PROB_SERVICE
     global _WORKER_ON_TARGET_MAP, _WORKER_SELF_HYB_EMIN
-
-    from RIsearch_pipeline.services.intersection_service import IntersectionService
-    from RIsearch_pipeline.services.probability import ProbabilityService
 
     if ipc_path:
         _WORKER_DF_TRANS = pl.read_ipc(Path(ipc_path), memory_map=True)
@@ -90,8 +100,6 @@ def _process_one_sirna(
     Returns:
         (PyArrow Table, metadata dict) or (None, {}) if no predictions remain.
     """
-    import sys
-    import time
     _m = sys.modules[__name__]
 
     df_trans = _m._WORKER_DF_TRANS
@@ -99,8 +107,6 @@ def _process_one_sirna(
     prob_service = _m._WORKER_PROB_SERVICE
     on_target_map = _m._WORKER_ON_TARGET_MAP
     self_hyb_emin = _m._WORKER_SELF_HYB_EMIN
-
-    from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 
     _t_start = time.perf_counter()
 
@@ -154,10 +160,8 @@ def _process_one_sirna(
     # Return freed pages to OS to prevent RSS growth across sequential siRNAs
     # in the same worker. Python's allocator retains pages by default; gc +
     # malloc_trim release them, keeping per-siRNA memory cost constant.
-    import gc
     gc.collect()
     try:
-        import ctypes
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception:
         pass
@@ -430,7 +434,6 @@ def run(
 
     profiler = PipelineProfiler(enabled=profile)
 
-    import os
     n_workers: int = workers if workers is not None else os.cpu_count() or 1
 
     try:
@@ -460,8 +463,6 @@ def run(
 
         # Mode 1: Integrated RIsearch execution
         if is_running_risearch:
-            from RIsearch_pipeline.services.risearch_service import RIsearchService
-
             risearch_service = RIsearchService()
 
             # Validate siRNA FASTA (checks for duplicates)
@@ -515,11 +516,6 @@ def run(
             )
 
             # Prepare services
-            from RIsearch_pipeline.services.probability import ProbabilityService
-            from RIsearch_pipeline.services.accessibility import (
-                GenomeAccessibilityService,
-            )
-
             acc_service = None
             if accessibility_dir:
                 acc_service = GenomeAccessibilityService(
@@ -531,13 +527,6 @@ def run(
             df_trans = None
             intersector = None
             if gtf_file:
-                from RIsearch_pipeline.services.transcriptome_parser import (
-                    TranscriptomeParser,
-                )
-                from RIsearch_pipeline.services.intersection_service import (
-                    IntersectionService,
-                )
-
                 if not isinstance(gtf_file, Path):
                     gtf_file = Path(gtf_file)
 
@@ -581,7 +570,6 @@ def run(
             # energy of the siRNA hybridised against itself (not the genome-wide min).
             self_hyb_emin: dict[str, float] = {}
             if sirna_fasta is not None:
-                from RIsearch_pipeline.services.risearch_service import RIsearchService
                 _ris_svc = RIsearchService()
                 console.print(
                     f"  └─ Computing self-hybridisation E_min from [bold]{sirna_fasta.name}[/bold]..."
@@ -639,16 +627,13 @@ def run(
             summary_count = 0
 
             try:
-                from concurrent.futures import ProcessPoolExecutor, as_completed
-                import multiprocessing as _mp
-
                 # Polars threads per worker: 2 keeps N_workers × 2 ≤ available cores.
                 polars_threads_per_worker = max(1, n_workers // n_proc)
 
                 # spawn: each worker starts a fresh Python interpreter, avoiding
                 # fork+Rayon deadlocks. Benchmarks show spawn is faster than
                 # forkserver for this workload (13.8s vs 17.6s at 32 workers).
-                _ctx = _mp.get_context("spawn")
+                _ctx = multiprocessing.get_context("spawn")
 
                 _init_args = (
                     str(_ipc_path) if gtf_file else "",
@@ -689,14 +674,13 @@ def run(
                             for f in all_files
                         }
 
-                        import time as _time
                         _drain_stage_totals: dict[str, float] = {}
                         _drain_n = 0
                         _drain_wait_total = 0.0
 
                         completed = 0
                         for future in as_completed(futures):
-                            _t_drain_start = _time.perf_counter()
+                            _t_drain_start = time.perf_counter()
                             completed += 1
                             progress.update(
                                 task,
@@ -711,9 +695,9 @@ def run(
                             # results in memory for the entire loop — O(N) growth.
                             f = futures.pop(future)
                             try:
-                                _t_wait = _time.perf_counter()
+                                _t_wait = time.perf_counter()
                                 arrow_table, batch_metadata = future.result()
-                                _drain_wait_total += _time.perf_counter() - _t_wait
+                                _drain_wait_total += time.perf_counter() - _t_wait
                             except Exception as exc:
                                 logger.error(f"Worker failed for {f.name}: {exc}")
                                 continue
@@ -721,14 +705,14 @@ def run(
                             if arrow_table is None:
                                 continue
 
-                            _t_deserialize = _time.perf_counter()
+                            _t_deserialize = time.perf_counter()
                             df_chunk = pl.from_arrow(arrow_table)
                             del arrow_table  # Arrow copy no longer needed; Polars owns the data
                             total_rows += df_chunk.height
-                            _dt_deserialize = _time.perf_counter() - _t_deserialize
+                            _dt_deserialize = time.perf_counter() - _t_deserialize
 
                             # Stream .summary files as each siRNA completes
-                            _t_summary = _time.perf_counter()
+                            _t_summary = time.perf_counter()
                             if summary_out_dir is not None:
                                 z_per_sirna = batch_metadata.get("z_per_sirna", {})
                                 w_per_sirna = batch_metadata.get("on_target_weights", {})
@@ -742,14 +726,13 @@ def run(
                                     )
                                     (summary_out_dir / f"{sid}.summary").write_text(text)
                                     summary_count += 1
-                            _dt_summary = _time.perf_counter() - _t_summary
+                            _dt_summary = time.perf_counter() - _t_summary
 
-                            _t_write = _time.perf_counter()
+                            _t_write = time.perf_counter()
                             if out_path is not None:
                                 if output_format == "parquet":
                                     arrow_tbl = _downcast_schema(df_chunk).to_arrow()
                                     if _pq_writer is None:
-                                        import pyarrow.parquet as pq
                                         _pq_writer = pq.ParquetWriter(out_path, arrow_tbl.schema)
                                     _pq_writer.write_table(arrow_tbl)
                                 else:
@@ -757,7 +740,7 @@ def run(
                                     with open(out_path, "w" if _csv_first_batch else "a") as _f:
                                         df_chunk.write_csv(_f, separator=sep, include_header=_csv_first_batch)
                                     _csv_first_batch = False
-                            _dt_write = _time.perf_counter() - _t_write
+                            _dt_write = time.perf_counter() - _t_write
 
                             del df_chunk
 
@@ -803,7 +786,6 @@ def run(
                 if _pq_writer is not None:
                     _pq_writer.close()
                 # Clean up the temp Arrow IPC file used to share the transcriptome
-                import shutil
                 if "_ipc_tmp" in dir() and _ipc_tmp:
                     shutil.rmtree(_ipc_tmp, ignore_errors=True)
 
@@ -830,11 +812,6 @@ def run(
                 )
 
                 # Prepare services
-                from RIsearch_pipeline.services.probability import ProbabilityService
-                from RIsearch_pipeline.services.accessibility import (
-                    GenomeAccessibilityService,
-                )
-
                 acc_service = None
                 if accessibility_dir:
                     acc_service = GenomeAccessibilityService(
@@ -845,13 +822,6 @@ def run(
                 # Prepare transcriptome if provided
                 df_trans = None
                 if gtf_file:
-                    from RIsearch_pipeline.services.transcriptome_parser import (
-                        TranscriptomeParser,
-                    )
-                    from RIsearch_pipeline.services.intersection_service import (
-                        IntersectionService,
-                    )
-
                     if not isinstance(gtf_file, Path):
                         gtf_file = Path(gtf_file)
 
@@ -1054,13 +1024,6 @@ def run(
 
         # Load Transcriptome if provided
         if gtf_file:
-            from RIsearch_pipeline.services.transcriptome_parser import (
-                TranscriptomeParser,
-            )
-            from RIsearch_pipeline.services.intersection_service import (
-                IntersectionService,
-            )
-
             if not isinstance(gtf_file, Path):
                 gtf_file = Path(gtf_file)
 
@@ -1099,9 +1062,6 @@ def run(
             logger.info(f"After intersection: {df.height:,} rows")
 
         # Accessibility and Probability Calculation
-        from RIsearch_pipeline.services.probability import ProbabilityService
-        from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
-
         # Keep reference to temp dir object so it persists until function exit
         temp_dir_obj = None
 

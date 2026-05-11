@@ -1,8 +1,17 @@
-from loguru import logger
+import gzip
+import math
+from collections import OrderedDict, defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import islice
 from pathlib import Path
-from collections import OrderedDict
 from typing import Dict
+
 import numpy as np
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
+import RNA
+from loguru import logger
 
 
 class AccessibilityError(Exception):
@@ -27,37 +36,11 @@ def _fold_full_chromosome(
     output_path: str,
     chunk_size: int = 1_000_000,
 ) -> str:
+    """Fold both strands of a chromosome in chunks and stream to Parquet.
+
+    Top-level (not a method) so ProcessPoolExecutor can pickle it; only the
+    output path string is pickled back, avoiding O(N×u) OOM on large chromosomes.
     """
-    Worker: fold both strands of a chromosome in chunks, stream to Parquet.
-
-    Must be a top-level function (not a method) for ProcessPoolExecutor
-    pickling.  Only the output path string (a few bytes) is pickled back to
-    the parent — avoiding the O(N × u) Python-side OOM that killed the old
-    implementation on large chromosomes.
-
-    Chunked folding matches long_RNAplfold_openen.py: each chunk of
-    chunk_size bp is folded with window_size bp of context on each side.
-    Only the interior positions (without the boundary overlap) are written,
-    so every emitted position has a full folding window available.
-
-    Args:
-        sequence: Full chromosome sequence (+ strand, 5'→3').
-        chrom: Chromosome name (used only for logging).
-        window_size: -W parameter.
-        max_span: -L parameter.
-        unpaired_prob: -u parameter (typically 30).
-        output_path: Destination Parquet file path (string, for pickling).
-        chunk_size: Bases to process per pfl_fold_up call (default 1 M).
-
-    Returns:
-        output_path (the same string passed in).
-    """
-    import RNA as _RNA
-    import math
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     RT = 0.616  # kcal/mol at 37°C
     seq_len = len(sequence)
 
@@ -67,36 +50,30 @@ def _fold_full_chromosome(
     )
 
     def _fold_strand(writer: pq.ParquetWriter, seq: str, strand_char: str) -> None:
-        """Fold one strand in chunks; write one RecordBatch per chunk."""
         rna_seq = seq.upper().replace("T", "U")
-        pos = 0  # 0-based start of the current data window
+        pos = 0
 
         while pos < seq_len:
-            # Extended context window: W bases on each side for full folding.
             ext_start = max(0, pos - window_size)
             ext_end = min(seq_len, pos + chunk_size + window_size)
             chunk_seq = rna_seq[ext_start:ext_end]
             chunk_len = len(chunk_seq)
 
-            # Offsets within chunk_seq for the data we actually emit.
-            data_start_in_chunk = pos - ext_start          # ≥ 0
+            data_start_in_chunk = pos - ext_start
             data_end_in_chunk = min(seq_len, pos + chunk_size) - ext_start
 
             w = min(window_size, chunk_len)
             l_adj = min(max_span, chunk_len)
 
             try:
-                probs_matrix = _RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
+                probs_matrix = RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
                 probs_ok = True
             except Exception:
                 probs_ok = False
                 probs_matrix = None
 
             n_pos = data_end_in_chunk - data_start_in_chunk
-            # 1-based positions in the full sequence
             positions = np.arange(pos + 1, pos + n_pos + 1, dtype=np.int32)
-
-            # u_matrix[i, u-1] = opening energy at position i, u-length u
             u_matrix = np.full((n_pos, unpaired_prob), 25.5, dtype=np.float32)
 
             if probs_ok:
@@ -111,10 +88,9 @@ def _fold_full_chromosome(
                         p = row_probs[u]
                         if p is not None and p > 0:
                             ev = -RT * math.log(p)
-                            # Quantize to 0.1 kcal/mol (legacy compatibility)
                             u_matrix[i, u - 1] = round(ev * 10.0) / 10.0
             else:
-                u_matrix[:] = 10.0  # folding error sentinel
+                u_matrix[:] = 10.0  # folding error
 
             arrays = [
                 pa.array(positions),
@@ -147,7 +123,6 @@ class GenomeAccessibilityService:
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._max_cached = max_cached
-        # OrderedDict for LRU eviction: profile_key -> numpy array
         self._profiles: OrderedDict[str, np.ndarray] = OrderedDict()
 
     def compute_genome_accessibility(
@@ -289,7 +264,6 @@ class GenomeAccessibilityService:
 
         try:
             probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, max_span_adj)
-
             for i in range(1, seq_len + 1):
                 if i < len(probs_matrix):
                     for u in range(1, unpaired_prob + 1):
@@ -299,7 +273,6 @@ class GenomeAccessibilityService:
                                 profile[i - 1, u - 1] = -RT * np.log(p)
 
             logger.debug(f"Computed accessibility for sequence of length {seq_len}")
-
         except Exception as e:
             logger.error(f"ViennaRNA error computing accessibility: {e}")
             raise AccessibilityError(f"Failed to compute accessibility: {e}") from e
@@ -371,18 +344,7 @@ class GenomeAccessibilityService:
         return profile_key
 
     def query(self, chrom: str, start: int, end: int, strand: str = "+") -> np.ndarray:
-        """
-        Query accessibility for a region (0-based, half-open [start, end)).
-
-        Args:
-            chrom: Chromosome name
-            start: Start position (0-based)
-            end: End position (0-based, exclusive)
-            strand: Strand ('+' or '-')
-
-        Returns:
-            Numpy array of opening energies for the region.
-        """
+        """Return opening energies for a region (0-based, half-open [start, end))."""
         profile_key = self._ensure_profile(chrom, strand)
         profile = self._profiles[profile_key]
         seq_len = len(profile)
@@ -420,12 +382,11 @@ class GenomeAccessibilityService:
         profile = self._profiles[profile_key]
         seq_len = len(profile)
 
-        # Convert 1-based RIsearch coords to 0-based
         start0 = start - 1
         end0 = end  # half-open
 
         if start0 < 0 or end0 > seq_len:
-            return 10.0  # Default penalty for out-of-bounds
+            return 10.0
 
         interaction_len = end0 - start0
         matrix_width = profile.shape[1]
@@ -437,27 +398,16 @@ class GenomeAccessibilityService:
 
         return int(round(raw_val * 10.0)) / 10.0
 
-    def annotate_opening_energy_vectorized(self, df: "pl.DataFrame") -> "pl.DataFrame":
-        """Vectorized batch equivalent of calling query_single() per row.
-
-        Groups rows by (chrom, strand), loads profile once per group, then
-        does numpy gather over all rows in that group. Out-of-bounds positions
-        and missing profiles get the default penalty (10.0). Returns df with
-        an added `opening_energy` column (Float32).
-        """
-        import polars as pl
-
+    def annotate_opening_energy_vectorized(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Add `opening_energy` column by vectorized numpy gather per (chrom, strand) group."""
         n_rows = df.height
         opening_energies = np.full(n_rows, 10.0, dtype=np.float32)
 
-        # Extract coordinate arrays once
         chroms = df["chrom"].to_numpy()
         starts = df["start"].to_numpy().astype(np.int64)
         ends = df["end"].to_numpy().astype(np.int64)
         strands = df["strand"].to_numpy()
 
-        # Build row-index groups per (chrom, strand) with a single pass
-        from collections import defaultdict
         groups: dict[tuple, list] = defaultdict(list)
         for i in range(n_rows):
             c = str(chroms[i])
@@ -469,7 +419,7 @@ class GenomeAccessibilityService:
             try:
                 profile_key = self._ensure_profile(chrom, strand)
             except Exception:
-                continue  # missing profile → default 10.0
+                continue
 
             profile = self._profiles[profile_key]
             seq_len = len(profile)
@@ -477,13 +427,9 @@ class GenomeAccessibilityService:
             idx = np.array(row_indices, dtype=np.int64)
             s = starts[idx]
             e = ends[idx]
-
-            # 1-based RIsearch coords → 0-based half-open
             start0 = s - 1
             end0 = e
             interaction_len = end0 - start0
-
-            # Mask out-of-bounds rows; they keep the default 10.0
             in_bounds = (start0 >= 0) & (end0 <= seq_len)
 
             matrix_width = profile.shape[1]
@@ -495,8 +441,6 @@ class GenomeAccessibilityService:
 
             # Quantize to 0.1 resolution (match legacy query_single behaviour)
             raw_vals = (np.round(raw_vals * 10.0) / 10.0).astype(np.float32)
-
-            # Apply only in-bounds results; rest stay at default 10.0
             opening_energies[idx[in_bounds]] = raw_vals[in_bounds]
 
         return df.with_columns(

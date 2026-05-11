@@ -1,175 +1,181 @@
 # RIsearch Pipeline
 
-A specialized bioinformatics pipeline for **siRNA off-target discovery and analysis**. This tool integrates RNA-RNA interaction predictions with transcriptome annotations, accessibility profiling, and thermodynamic modeling to quantify off-target binding probabilities.
+A bioinformatics pipeline for **siRNA off-target discovery and probability quantification**. Integrates RNA-RNA interaction predictions with transcriptome annotations, RNA accessibility profiling, and thermodynamic modeling to rank off-target binding sites.
 
 ---
 
-## 🎯 What This Pipeline Does
+## Pipeline Workflow
 
-siRNA (small interfering RNA) therapeutics are powerful tools for gene silencing, but they can inadvertently bind to unintended mRNA targets, causing **off-target effects**. This pipeline helps researchers:
+```mermaid
+flowchart TD
+    A([siRNA FASTA]) --> B[RIsearchService\nin-process PyO3 bindings]
+    C([Target FASTA / Index]) --> B
+    B --> D[(Predictions\nTSV / Parquet)]
+    D --> E[RIsearchParser]
 
-1. **Identify** potential off-target binding sites across the transcriptome
-2. **Quantify** the probability of off-target hybridization using thermodynamic models
-3. **Prioritize** which off-targets are biologically relevant based on expression levels and RNA accessibility
-4. **Prioritize** results by configurable thermodynamic parameter sweeps
+    E --> F[Predictions DataFrame]
+    G([Transcriptome\nGTF / BED]) --> H[TranscriptomeParser]
+    H --> I[Annotations + Expression]
 
----
+    F --> J[IntersectionService\ngw: chrom join · tw: transcript_id match]
+    I --> J
 
-## 🧬 Commands
+    K([Accessibility Profiles\n.parquet per chrom]) --> L[GenomeAccessibilityService\nRNA.pfl_fold_up lookup]
+    J --> L
 
-### `off-targets` — Core Analysis Command
+    L --> M[ProbabilityService\nper-siRNA partition function]
+    N([On-target ID map\noptional]) --> M
 
-Analyzes RIsearch2 predictions to calculate off-target probabilities.
+    M --> O([TSV output\nP_off_target columns])
+    M --> P([.results legacy format\noptional])
 
-```bash
-risearch-pipeline off-targets \
-  -r predictions.tsv \           # RIsearch2 output
-  -t transcriptome.gtf \         # Annotated transcriptome
-  -a accessibility_profiles/ \   # Pre-computed accessibility
-  --on-target on_target.fa \     # On-target sequence
-  -q sirna.fa \                  # siRNA query
-  -o results.tsv
+    style A fill:#d4edda,stroke:#28a745
+    style C fill:#d4edda,stroke:#28a745
+    style G fill:#d4edda,stroke:#28a745
+    style K fill:#d4edda,stroke:#28a745
+    style N fill:#d4edda,stroke:#28a745
+    style O fill:#cce5ff,stroke:#004085
+    style P fill:#cce5ff,stroke:#004085
 ```
 
-**Key Features:**
+---
 
-- Partition function-based probability calculation
-- Integration of hybridization energy + RNA accessibility (opening energy)
-- Expression-weighted Boltzmann statistics
-- Legacy format output compatible with existing pipelines
+## Commands
 
-### `accessibility` — Pre-compute Accessibility Profiles
+### `off-targets` — Core Analysis
 
-Generates RNA accessibility profiles using ViennaRNA's `RNAplfold`.
+Loads RIsearch predictions, intersects them with a transcriptome, annotates RNA accessibility, and computes per-site off-target probabilities.
+
+```bash
+# From pre-computed predictions file
+risearch-pipeline off-targets \
+  -r predictions.tsv \
+  -t transcriptome.gtf \
+  -a accessibility_profiles/ \
+  --on-target-id-map on_target_map.tsv \
+  -o results.tsv
+
+# Run RIsearch in-process (siRNA + target FASTA)
+risearch-pipeline off-targets \
+  -s sirna.fa \
+  --target-fasta genome.fa \
+  -t transcriptome.gtf \
+  -a accessibility_profiles/ \
+  -o results.tsv
+
+# Via YAML config
+risearch-pipeline -c config/off-targets.example.yaml
+```
+
+**Key options:**
+
+| Flag | Description |
+|------|-------------|
+| `-r / --risearch-file` | Pre-computed predictions (TSV, `.out.gz`, or directory of Parquet) |
+| `-s / --sirna-fasta` | siRNA FASTA — runs RIsearch in-process via PyO3 bindings |
+| `-t / --transcriptome` | GTF or BED annotation file |
+| `-a / --accessibility-dir` | Directory of per-chromosome accessibility Parquet files |
+| `--expression-metric` | GTF attribute for expression weighting (default: `RPKM`) |
+| `--mode` | `gw` (genome-wide) or `tw` (transcriptome-wide) |
+| `--alpha / --gamma / --theta` | Parameter sweep values (semicolon-separated) |
+| `--on-target-id-map / -oi` | TSV mapping `sirna_id → gene_id` for on-target normalization |
+| `-j / --workers` | Parallel worker processes (default: CPU count) |
+
+### `accessibility` — Pre-compute Profiles
+
+Folds genome/transcriptome sequences with ViennaRNA (`RNA.pfl_fold_up`) and writes per-chromosome Parquet files for fast downstream lookup.
 
 ```bash
 risearch-pipeline accessibility \
-  -i genome.fa \
-  -o profiles/ \
+  --fasta genome.fa \
+  --output profiles/ \
   --window 80 \
   --span 40 \
   --unpaired 30
 ```
 
----
+Can also convert existing binary `.open.acc.bin` profiles to Parquet:
 
-## 📦 Dependencies
-
-| Package                | Purpose                                                           |
-| ---------------------- | ----------------------------------------------------------------- |
-| **polars**             | High-performance DataFrames for processing large prediction files |
-| **biopython**          | Sequence I/O (FASTA/FASTQ parsing)                                |
-| **viennaRNA**          | RNA secondary structure and accessibility (`RNAplfold`)           |
-| **numpy**              | Numerical operations and memory-mapped array storage              |
-| **typer**              | CLI framework with automatic help generation                      |
-| **rich**               | Beautiful terminal output (progress bars, tables)                 |
-| **loguru**             | Structured logging                                                |
-| **omegaconf**          | YAML configuration file support                                   |
+```bash
+risearch-pipeline accessibility \
+  --profiles-dir old_profiles/ \
+  --risearch-dir predictions/ \
+  --output profiles.parquet
+```
 
 ---
 
-## 🔬 Why This Is Interesting
+## Installation
 
-### 1. **Thermodynamic-Based Probability Model**
+Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.
 
-Unlike simple sequence matching, this pipeline uses **free energy (ΔG)** calculations to predict binding affinity:
+```bash
+# Clone with submodules (includes the Rust RIsearch core)
+git clone --recurse-submodules https://github.com/your-org/RIsearch_pipeline.git
+cd RIsearch_pipeline
 
+# Create virtual environment and install all dependencies
+uv venv && source .venv/bin/activate
+uv sync
+
+# Verify
+risearch-pipeline --help
 ```
-P(off-target) = W_off / Z_total
 
-where:
-  W = Expression × exp(-ΔG_total / RT)
-  ΔG_total = ΔG_hybridization + ΔG_opening
-  Z_total = Σ(all targets) + W_on-target
+The `risearch` package is a local PyO3 binding built from the `risearch/` git submodule. `uv sync` compiles and installs it automatically.
+
+### Optional: pre-build RIsearch binary
+
+```bash
+cargo install --path risearch/
 ```
 
-This partition function approach properly accounts for competition between all potential binding sites.
-
-### 2. **RNA Accessibility Integration**
-
-Not all binding sites are equally accessible—some are buried in secondary structures. The pipeline:
-
-- Pre-computes accessibility profiles using `RNAplfold`
-- Stores profiles as memory-mapped binary arrays for fast random access
-- Looks up **opening energy** (cost to unfold the target region) for each prediction
-
-### 3. **Expression-Weighted Analysis**
-
-Highly expressed transcripts contribute more to off-target effects. The pipeline:
-
-- Parses expression values from GTF attributes (RPKM, TPM, etc.)
-- Weights Boltzmann probabilities by expression level
-- Properly normalizes across the entire transcriptome
-
-### 4. **Genome-Wide & Transcriptome-Wide Modes**
-
-Supports both:
-
-- **GW (Genome-Wide)**: Predictions mapped to genomic coordinates, intersected with annotations
-- **TW (Transcriptome-Wide)**: Predictions directly on transcript sequences
+The binary at `~/.cargo/bin/RIsearch` is used only for the legacy CLI path; in-process search via PyO3 bindings does not require it.
 
 ---
 
-## ⚡ Performance Optimizations
+## Thermodynamic Model
 
-### Memory-Mapped Accessibility Profiles
+Off-target probability is computed from a Boltzmann partition function over all predicted binding sites for each siRNA:
 
-```python
-# Binary format: uint8 values (energy × 10) for compact storage
-# Memory-mapped for constant-memory access to multi-GB profiles
-profile = np.memmap(path, dtype=np.uint8, mode='r')
+```
+W_i  = Expression_i × exp(−ΔG_total_i / RT)
+
+       ΔG_total = ΔG_hybridization + ΔG_opening
+
+Z_s  = Σ W_i  (all off-targets of siRNA s)  +  W_on-target
+
+P(off-target_i | siRNA_s) = W_i / Z_s
 ```
 
-Genome-wide accessibility profiles can be gigabytes—memory mapping avoids loading them entirely.
+- **ΔG_hybridization**: RNA-RNA interaction energy from RIsearch (Turner 2004 parameters).
+- **ΔG_opening**: Accessibility penalty — cost to unfold the target region, retrieved from pre-computed `RNA.pfl_fold_up` profiles.
+- **Expression weighting**: GTF-derived RPKM/TPM values scale each site's contribution.
+- **Per-siRNA normalization**: Partition functions are computed independently per siRNA; mixing them is biologically incorrect.
 
-### Polars Over Pandas
+### Parameter sweeps
 
-```python
-# Lazy evaluation and parallel execution
-df = pl.scan_csv(file).filter(...).collect()
-```
-
-Polars provides:
-
-- Zero-copy operations where possible
-- Automatic parallelization
-- Lazy query optimization
-
-### Efficient Coordinate Intersection
-
-```python
-# Group by chromosome, then binary search or interval trees
-intersector.intersect(predictions_df, transcriptome_df, mode="gw")
-```
-
-Genomic interval operations are optimized for large-scale analysis.
-
-### Caching & Deduplication
-
-- Unique target coordinates are extracted before accessibility lookups
-- Results are joined back, avoiding redundant queries
-- Temporary files are cleaned up automatically
+`--alpha`/`--gamma` clamp extremely favorable energies; `--theta` scales energy differences around a −10 kcal/mol reference. All combinations are computed in a single Polars `group_by` pass, producing separate `P_off_target:alpha=X,gamma=Y` columns.
 
 ---
 
-## 📊 Output Format
+## Output
 
-### Standard TSV Output
+### TSV (default)
 
-| Column           | Description                     |
-| ---------------- | ------------------------------- |
-| `chrom`          | Chromosome/Transcript ID        |
-| `start`, `end`   | Binding site coordinates        |
-| `strand`         | Strand orientation              |
-| `energy`         | Hybridization energy (kcal/mol) |
-| `opening_energy` | Accessibility penalty           |
-| `dG_total`       | Combined free energy            |
-| `exp_value`      | Expression level                |
-| `P_off_target`   | Off-target probability          |
+| Column | Description |
+|--------|-------------|
+| `chrom` | Chromosome or transcript ID |
+| `start`, `end` | Binding site coordinates |
+| `strand` | Strand orientation |
+| `energy` | Hybridization energy (kcal/mol) |
+| `opening_energy` | Accessibility penalty (kcal/mol) |
+| `dG_total` | Combined free energy |
+| `exp_value` | Expression level |
+| `P_off_target` | Off-target probability (baseline α=γ=θ=1) |
+| `P_off_target:alpha=X,gamma=Y` | Per-parameter-set probabilities |
 
-### Legacy Format (`.results`)
-
-Compatible with older pipeline outputs:
+### Legacy `.results` (optional)
 
 ```
 # On-target info for siRNA #
@@ -179,72 +185,47 @@ Compatible with older pipeline outputs:
 
 ---
 
-## 🛠️ Installation
+## Performance
 
-### Quick Start (Local)
+| Dataset | Time | Memory |
+|---------|------|--------|
+| 1 k predictions | ~0.2 s | ~80 MB |
+| 10 k predictions | ~0.8 s | ~145 MB |
+| 100 k predictions | ~6.5 s | ~200 MB |
 
-```bash
-# 1. Install Rust (for RIsearch binary)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-
-# 2. Clone and build RIsearch
-git clone https://github.com/your-org/RIsearch_pipeline.git
-cd RIsearch_pipeline/risearch
-cargo install --path .
-cd ..
-
-# 3. Install Python pipeline
-uv venv && source .venv/bin/activate
-uv sync
-
-# 4. Verify
-risearch-pipeline --help
-```
-
-Requires **Python ≥3.14**, **Rust 1.70+**, and **ViennaRNA** (for accessibility).
-
-### Production Deployment
-
-For SSH servers, HPC clusters, or containerized environments, see:
-
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide with troubleshooting
-- **Installation script**: Run `bash scripts/install.sh` for automated setup
+Key optimizations:
+- **Polars** throughout — Rust-backed columnar operations, lazy query planning.
+- **Parquet accessibility profiles** — memory-mapped columnar lookup, no full-file reads.
+- **ProcessPoolExecutor with Arrow IPC** — per-siRNA files processed in parallel; workers share transcriptome pages via OS page cache.
+- **Single `group_by` pass** — all parameter-sweep columns computed in one aggregation.
 
 ---
 
-## 📈 Performance Benchmarks
+## Dependencies
 
-| Dataset Size        | Legacy Pipeline | New Pipeline | Speedup |
-| ------------------- | --------------- | ------------ | ------- |
-| 100 predictions     | 2.1s            | 0.15s        | **14x** |
-| 1,000 predictions   | 8.5s            | 0.22s        | **38x** |
-| 10,000 predictions  | 45s             | 0.8s         | **56x** |
-| 100,000 predictions | ~7min           | 6.5s         | **65x** |
-
-_Benchmarked on M1 Mac, 16 GB RAM, with accessibility enabled_
-
-**Memory usage**: ~145 MB vs ~800 MB (legacy) for 10k predictions
-
----
-
-## 📖 Documentation
-
-- **[MIGRATION.md](MIGRATION.md)** - Migrating from legacy `old_pipeline.py`
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical deep dive for developers
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Production deployment guide
-- **[README.md](README.md)** - This file (overview and quick start)
+| Package | Purpose |
+|---------|---------|
+| `polars` | High-performance DataFrames |
+| `pyarrow` | Parquet I/O and Arrow IPC |
+| `viennaRNA 2.7.2` | RNA folding (`RNA.pfl_fold_up`) |
+| `numpy` | Memory-mapped array operations |
+| `biopython` | FASTA parsing |
+| `typer` | CLI framework |
+| `rich` | Progress bars and terminal output |
+| `loguru` | Structured logging |
+| `omegaconf` | YAML config loading |
+| `ncls` | Interval tree for genomic intersection |
 
 ---
 
-## 📚 Related: Rust RIsearch Core
+## Related: Rust RIsearch Core
 
-This Python pipeline is designed to work with predictions from [RIsearch](./risearch/), a high-performance RNA-RNA interaction predictor written in Rust. The Rust core provides:
+`risearch/` is a git submodule containing the Rust RIsearch binary and its PyO3 Python bindings. The pipeline calls the bindings **in-process** — no subprocess, no intermediate TSV. Features:
 
 - Suffix-array based seed-and-extend search
 - Turner 2004 thermodynamic parameters
 - Multi-threaded parallel search via Rayon
-- SIMD-optimized alignment kernels (see `docs/SIMD_ARCHITECTURE.md`)
+- SIMD-optimized alignment kernels
 
 ---
 

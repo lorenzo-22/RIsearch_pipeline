@@ -186,7 +186,7 @@ accessibility:
   # Path to genome or transcriptome FASTA file.
   fasta: ../tests/off-targets/single/input/transcripts.fa
 
-  # [REQUIRED] Output directory (full-genome) or .parquet file path (binding-site / Parquet modes).
+  # [REQUIRED] Output directory for accessibility profiles
   output: ../tests/off-targets/single/output/accessibility
 
   # ViennaRNA RNAplfold window size (W). Default: 80

@@ -104,6 +104,7 @@ class TestAccessibility(unittest.TestCase):
             else:
                 sys.modules["RNA"] = saved
 
+
     def test_query_service(self):
         """Test querying a pre-computed profile."""
         service = GenomeAccessibilityService(self.test_dir)
