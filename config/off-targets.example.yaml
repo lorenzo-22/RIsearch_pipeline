@@ -58,8 +58,8 @@ off_targets:
   # Accessibility profiles — choose ONE source (or omit for energy-only P(OT))
   # ---------------------------------------------------------------------------
 
-  # Directory of pre-computed binary accessibility profiles (<chrom>.open.acc.bin).
-  # Memory-mapped; never loaded fully into RAM.
+  # Directory of per-chromosome accessibility Parquet files produced by the
+  # "risearch-pipeline accessibility" command ({chrom}.accessibility.parquet).
   accessibility_dir: ../tests/off-targets/single/input/accessibility
 
   # FASTA file for computing accessibility on-the-fly via ViennaRNA.
@@ -92,8 +92,10 @@ off_targets:
   # Pre-computed RIsearch output for the on-target (skips on-the-fly search).
   on_target_risearch_file: ../tests/off-targets/single/input/risearch_siRNAID_only.out
 
-  # Binary (.open.acc.bin) or text accessibility file for the on-target site.
-  on_target_accessibility: ../tests/off-targets/single/input/accessibility/onTarget.open.acc.bin
+  # Accessibility Parquet for the on-target transcript (same schema as the files
+  # produced by the accessibility command: columns position, strand, u1..u30).
+  # If omitted, accessibility is computed on-the-fly from the on-target FASTA.
+  on_target_accessibility: null
 
   # ---------------------------------------------------------------------------
   # Partition-function parameters
@@ -163,14 +165,12 @@ off_targets:
   # --sirna-fasta / -s       siRNA FASTA; runs RIsearch in-process (requires --target-fasta)
   # --target-fasta / --genome  Target FASTA for integrated RIsearch execution
   # --target-index / -idx    Pre-built RIsearch index (speeds up repeated runs)
-  # --accessibility-file     Parquet of pre-computed binding-site accessibility
   # --on-target-ids / -oi    TSV mapping siRNA IDs to on-target transcript IDs (sirna_id\ttranscript_id)
   # --workers / -j           Number of parallel worker processes (default: CPU count)
   # --scratch-dir            Directory for temporary Arrow IPC files (default: system temp)
   # --output-format          Output format: "tsv" | "csv" | "parquet" (default: tsv)
   # --summary-only           Write only .summary files; skip per-prediction output
   # --profile                Print per-stage timing/memory table at run end
-  # --use-rnaplfold-cli      Use RNAplfold binary instead of ViennaRNA Python bindings
 
 # =============================================================================
 # ACCESSIBILITY COMMAND
@@ -204,7 +204,4 @@ accessibility:
   # ---------------------------------------------------------------------------
   # CLI-ONLY parameters (cannot be set in YAML — use the command line)
   # ---------------------------------------------------------------------------
-  # --risearch-dir / -r   Directory of per-siRNA RIsearch files (binding-site mode)
-  # --risearch-file / -R  Single merged RIsearch TSV (alternative to --risearch-dir)
-  # --profiles-dir / -p   Directory of pre-computed binary/npy profiles (Parquet conversion mode)
-  # --workers / -j        Parallel workers for chromosome/island folding (default: 1)
+  # --workers / -j        Parallel workers for chromosome folding (default: 1)

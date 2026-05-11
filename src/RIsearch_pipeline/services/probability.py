@@ -25,11 +25,9 @@ class ProbabilityService:
     def __init__(
         self,
         accessibility_service: Optional[GenomeAccessibilityService] = None,
-        use_rnaplfold_cli: bool = False,
         precomputed_accessibility: Optional[pl.DataFrame] = None,
     ):
         self.accessibility_service = accessibility_service
-        self.use_rnaplfold_cli = use_rnaplfold_cli
         self.precomputed_accessibility = precomputed_accessibility
 
     def calculate_probabilities(
@@ -962,100 +960,43 @@ class ProbabilityService:
         dG_open = 0.0
 
         if accessibility_path and accessibility_path.exists() and t_end > 0:
-            # Use pre-computed accessibility file
+            # Use pre-computed accessibility Parquet file
             try:
-                # Manual parsing of the accessibility file (Text or Binary)
-                # Since we don't have a service instance pointing here necessarily.
-                # Use AccessibilityService static-like logic?
-                # For now, implement simplified text parser if file is text.
-                # Assuming text format from tests/output/old_accessibility.
+                import polars as pl
 
-                # We need to reuse the sophisticated logic from AccessibilityService for matrix/coords.
-                # Best way: Check if we have a service. If not, separate logic.
+                df_acc = (
+                    pl.read_parquet(accessibility_path)
+                    .filter(pl.col("strand") == strand)
+                    .sort("position")
+                )
+                u_cols = sorted(
+                    [c for c in df_acc.columns if c.startswith("u") and c[1:].isdigit()],
+                    key=lambda x: int(x[1:]),
+                )
+                max_pos = int(df_acc["position"].max())
+                n_u = len(u_cols)
+                profile = np.full((max_pos, n_u), 25.5, dtype=np.float32)
+                pos_0 = df_acc["position"].to_numpy() - 1
+                for col_idx, col_name in enumerate(u_cols):
+                    profile[pos_0, col_idx] = df_acc[col_name].to_numpy()
 
-                # Use a temp service to parse/query
-                temp_service = GenomeAccessibilityService(accessibility_path.parent)
-                # Force load this specific file into cache with a known key
-                # Query using the file stem as "chrom"?
-                # If accessibility_path is "path/to/onTarget_openen", stem is "onTarget_openen".
-                # The user "onTarget" ID might be "onTarget".
-                # RIsearch target ID is "onTarget" (from FASTA).
-
-                # Hack: Determine "chrom" name expected by query.
-                # The _run_risearch_binary returns target ID e.g. "onTarget".
-
-                # If we use temp_service.query("onTarget", ...):
-                # It will look for various files.
-                # If we rename/symlink? No.
-
-                # Direct parse:
-                if "openen" in accessibility_path.name:
-                    profile = temp_service._parse_openen_text(accessibility_path)
-                elif accessibility_path.suffix == ".npy":
-                    profile = np.load(accessibility_path, mmap_mode="r")
-                elif accessibility_path.suffix == ".bin":
-                    # Legacy binary format: flattened 2D matrix (Nx30)
-                    raw_data = np.memmap(accessibility_path, dtype=np.uint8, mode="r")
-                    # Reshape to 2D: each row has 30 columns (u-values from 1 to 30)
-                    if len(raw_data) % 30 == 0:
-                        profile = raw_data.reshape(-1, 30)
-                    else:
-                        logger.warning(
-                            "Binary file size not divisible by 30, using as 1D"
-                        )
-                        profile = raw_data
-                else:
-                    profile = np.array([])
-
-                # Now replicate the _annotate_opening_energy logic
-                # Profile is likely 2D (Nx30) or 1D.
-                # Coords: t_start (1-based), t_end (1-based).
                 start0 = t_start - 1
                 interaction_len = t_end - start0
-
-                if profile.size > 0:
-                    if profile.ndim == 2:
-                        matrix_width = profile.shape[1]
-                        col_idx = min(interaction_len, matrix_width) - 1
-                        if col_idx < 0:
-                            col_idx = 0
-
-                        # Bounds check
-                        if start0 >= 0 and t_end <= profile.shape[0]:
-                            # Endpoint index
-                            # If +, end of site (t_end-1).
-                            # If -, start of site (start0).
-                            target_idx = (t_end - 1) if strand == "+" else start0
-
-                            if 0 <= target_idx < profile.shape[0]:
-                                val = profile[target_idx, col_idx]
-                                # Binary files store uint8 * 10, so divide by 10
-                                if profile.dtype == np.uint8:
-                                    dG_open = int(round(float(val))) / 10.0
-                                else:
-                                    dG_open = int(round(float(val) * 10.0)) / 10.0
-                            else:
-                                dG_open = 10.0
-                        else:
-                            dG_open = 10.0
-                    else:
-                        # 1D
-                        target_idx = (t_end - 1) if strand == "+" else start0
-                        if 0 <= target_idx < profile.shape[0]:
-                            val = profile[target_idx]
-                            # If legacy bin (uint8)
-                            if profile.dtype == np.uint8:
-                                val = float(val) / 10.0
-
-                            dG_open = int(round(float(val) * 10.0)) / 10.0
-                        else:
-                            dG_open = 10.0
+                matrix_width = profile.shape[1]
+                col_idx = min(interaction_len, matrix_width) - 1
+                if col_idx < 0:
+                    col_idx = 0
+                target_idx = (t_end - 1) if strand == "+" else start0
+                if 0 <= target_idx < profile.shape[0]:
+                    dG_open = int(round(float(profile[target_idx, col_idx]) * 10.0)) / 10.0
+                else:
+                    dG_open = 10.0
 
             except Exception as e:
                 logger.error(
-                    f"Failed to calculate on-target accessibility from file: {e}"
+                    f"Failed to read on-target accessibility parquet: {e}"
                 )
-                dG_open = 0.0  # Fallback
+                dG_open = 0.0
 
         elif t_end > 0:
             # Compute accessibility on-the-fly from the on-target FASTA
@@ -1079,7 +1020,7 @@ class ProbabilityService:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         temp_service = GenomeAccessibilityService(Path(tmpdir))
                         profile = temp_service.compute_sequence_accessibility(
-                            sequence, use_cli=self.use_rnaplfold_cli
+                            sequence
                         )
 
                         # Extract opening energy at binding site

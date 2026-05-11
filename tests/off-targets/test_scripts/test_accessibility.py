@@ -1,8 +1,9 @@
 import shutil
+import sys
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 import numpy as np
+import polars as pl
 from RIsearch_pipeline.services.accessibility import (
     GenomeAccessibilityService,
     AccessibilityError,
@@ -15,6 +16,25 @@ ACGTACGTACGT
 >chr2
 GGGGCCCC
 """
+
+
+def _write_test_parquet(
+    path: Path,
+    positions: list[int],
+    strands: list[str],
+    u_values: list[list[float]],
+) -> None:
+    """Write a minimal accessibility Parquet for testing."""
+    n_u = len(u_values[0])
+    data = {"position": positions, "strand": strands}
+    for i in range(1, n_u + 1):
+        data[f"u{i}"] = [row[i - 1] for row in u_values]
+    schema = {
+        "position": pl.Int32,
+        "strand": pl.Utf8,
+        **{f"u{i}": pl.Float32 for i in range(1, n_u + 1)},
+    }
+    pl.DataFrame(data).cast(schema).write_parquet(path)
 
 
 class TestAccessibility(unittest.TestCase):
@@ -43,63 +63,66 @@ class TestAccessibility(unittest.TestCase):
 
     def test_compute_accessibility_real(self):
         """Test compute logic with REAL ViennaRNA."""
-        import polars as pl
-
         service = GenomeAccessibilityService(self.test_dir)
-        # Use small window/span for short sequence
-        # Sequence: ACGT... length 12
-        # Use W=10, L=5, u=3
+        # Use small window/span for short sequence (length 12, W=10, L=5, u=3)
         results = service.compute_genome_accessibility(
             self.fasta_path, window_size=10, max_span=5, unpaired_prob=3
         )
 
-        # Results keyed by chromosome name
         self.assertIn("chr1", results)
 
-        # Verify Parquet file created
         chr1_path = results["chr1"]
         self.assertTrue(chr1_path.exists())
         self.assertEqual(chr1_path.suffix, ".parquet")
 
-        # Read and validate content
         df = pl.read_parquet(chr1_path)
         # Should have 12 positions × 2 strands = 24 rows
         self.assertEqual(df.height, 24)
-        # Must contain position, strand, u1, u2, u3
         self.assertIn("position", df.columns)
         self.assertIn("strand", df.columns)
         self.assertIn("u1", df.columns)
         self.assertIn("u2", df.columns)
         self.assertIn("u3", df.columns)
-        # Check some non-default values exist (accessibility computed)
         u1_vals = df.filter(pl.col("strand") == "+")["u1"].to_list()
         self.assertTrue(
             any(v != 25.5 for v in u1_vals),
             "Should have non-default accessibility values",
         )
 
-    @patch("RIsearch_pipeline.services.accessibility.HAS_VIENNA_BINDINGS", False)
     def test_missing_bindings_raises(self):
-        """Test that missing bindings raise error."""
-        service = GenomeAccessibilityService(self.test_dir)
-        with self.assertRaises(AccessibilityError):
-            service.compute_genome_accessibility(self.fasta_path)
+        """Test that missing ViennaRNA raises AccessibilityError."""
+        # Temporarily hide RNA from sys.modules to simulate missing bindings
+        saved = sys.modules.get("RNA", None)
+        sys.modules["RNA"] = None  # type: ignore[assignment]
+        try:
+            service = GenomeAccessibilityService(self.test_dir)
+            with self.assertRaises((AccessibilityError, ImportError)):
+                service.compute_genome_accessibility(self.fasta_path)
+        finally:
+            if saved is None:
+                sys.modules.pop("RNA", None)
+            else:
+                sys.modules["RNA"] = saved
 
     def test_query_service(self):
-        """Test querying the created profiles."""
+        """Test querying a pre-computed profile."""
         service = GenomeAccessibilityService(self.test_dir)
 
-        # Manually create a profile for testing query
-        chrom = "chr1"
-        data = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
-        path = service.get_profile_path(chrom)
-        np.save(path, data)
+        # Create parquet: 5 positions on + strand, one u-column
+        parquet_path = self.test_dir / "chr1.accessibility.parquet"
+        _write_test_parquet(
+            parquet_path,
+            positions=[1, 2, 3, 4, 5],
+            strands=["+", "+", "+", "+", "+"],
+            u_values=[[0.1], [0.2], [0.3], [0.4], [0.5]],
+        )
 
-        # Query
-        res = service.query(chrom, 1, 4)  # indices 1, 2, 3 -> 0.2, 0.3, 0.4
+        # query(chrom, start, end, strand) is 0-based half-open
+        # Positions 1-3 (0-based) → values 0.2, 0.3, 0.4
+        res = service.query("chr1", 1, 4, "+")
         self.assertEqual(len(res), 3)
         np.testing.assert_array_almost_equal(
-            res, np.array([0.2, 0.3, 0.4], dtype=np.float32)
+            res[:, 0], np.array([0.2, 0.3, 0.4], dtype=np.float32)
         )
 
     def test_lru_eviction(self):
@@ -108,44 +131,52 @@ class TestAccessibility(unittest.TestCase):
 
         # Create 3 chromosome profiles on disk
         for chrom in ["chrA", "chrB", "chrC"]:
-            data = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-            path = service.get_profile_path(chrom, "+")
-            np.save(path, data)
+            _write_test_parquet(
+                self.test_dir / f"{chrom}.accessibility.parquet",
+                positions=[1, 2, 3],
+                strands=["+", "+", "+"],
+                u_values=[[1.0], [2.0], [3.0]],
+            )
 
         # Load chrA, then chrB -> cache: [chrA_+, chrB_+]
-        service.query("chrA", 0, 1)
-        service.query("chrB", 0, 1)
+        service.query("chrA", 0, 1, "+")
+        service.query("chrB", 0, 1, "+")
         self.assertEqual(len(service._profiles), 2)
         self.assertIn("chrA_+", service._profiles)
         self.assertIn("chrB_+", service._profiles)
 
         # Load chrC -> evicts chrA (LRU), cache: [chrB_+, chrC_+]
-        service.query("chrC", 0, 1)
+        service.query("chrC", 0, 1, "+")
         self.assertEqual(len(service._profiles), 2)
         self.assertNotIn("chrA_+", service._profiles)
         self.assertIn("chrB_+", service._profiles)
         self.assertIn("chrC_+", service._profiles)
 
         # Re-query chrA -> reloads from disk, evicts chrB
-        res = service.query("chrA", 0, 3)
+        res = service.query("chrA", 0, 3, "+")
         self.assertEqual(len(service._profiles), 2)
         self.assertIn("chrA_+", service._profiles)
         self.assertNotIn("chrB_+", service._profiles)
         np.testing.assert_array_almost_equal(
-            res, np.array([1.0, 2.0, 3.0], dtype=np.float32)
+            res[:, 0], np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
 
     def test_query_single(self):
         """Test query_single returns a single quantized float."""
         service = GenomeAccessibilityService(self.test_dir)
 
-        # 1D profile
-        data = np.array([0.15, 0.25, 0.35, 0.45, 0.55], dtype=np.float32)
-        path = service.get_profile_path("chr1", "+")
-        np.save(path, data)
+        # 5 positions, one u-column
+        _write_test_parquet(
+            self.test_dir / "chr1.accessibility.parquet",
+            positions=[1, 2, 3, 4, 5],
+            strands=["+", "+", "+", "+", "+"],
+            u_values=[[0.15], [0.25], [0.35], [0.45], [0.55]],
+        )
 
-        # query_single uses 1-based coords: start=2, end=4 -> 0-based [1,4)
-        # strand "+": picks end0-1 = index 3 -> 0.45 -> quantized round(4.5)/10 = 0.4
+        # query_single uses 1-based coords: start=2, end=4
+        # start0=1, end0=4, interaction_len=3, col_idx=min(3,1)-1=0
+        # strand "+": row_idx = end0 - 1 = 3 → value 0.45
+        # quantized: round(0.45 * 10) / 10 = 0.4
         val = service.query_single("chr1", 2, 4, "+")
         self.assertAlmostEqual(val, 0.4, places=1)
 
