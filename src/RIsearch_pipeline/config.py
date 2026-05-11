@@ -51,6 +51,7 @@ class AccessibilityConfig:
     window: int = 80
     span: int = 40
     unpaired: int = 30
+    temperature: float = 37.0
     verbose: bool = False
 
 
@@ -145,7 +146,11 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
             kwargs.setdefault(arg, None)
 
     elif command == "accessibility":
-        key_mapping.update({"fasta": "genome", "output": "output_dir"})
+        key_mapping.update({
+            "fasta": "genome",
+            "output": "output_dir",
+            "temperature": "temperature",
+        })
 
     for old_key, new_key in key_mapping.items():
         if old_key in kwargs:

@@ -38,6 +38,9 @@ def run(
     unpaired_prob: int = typer.Option(
         30, "--unpaired", "-u", help="Unpaired probability length (u)"
     ),
+    temperature: float = typer.Option(
+        37.0, "--temperature", "-T", help="Folding temperature in °C (default 37.0)."
+    ),
     workers: int = typer.Option(
         1,
         "--workers",
@@ -71,7 +74,7 @@ def run(
     console.print(f"  Genome:       {genome}")
     console.print(f"  Output dir:   {output}")
     console.print(
-        f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}"
+        f"  Parameters:   W={window_size}, L={max_span}, u={unpaired_prob}, T={temperature}°C"
     )
     console.print(f"  Workers:      {workers}\n")
 
@@ -84,6 +87,7 @@ def run(
                 unpaired_prob=unpaired_prob,
                 workers=workers,
                 progress=prog,
+                temperature=temperature,
             )
 
         console.print(

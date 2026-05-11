@@ -21,6 +21,7 @@ class AccessibilityError(Exception):
 
 
 _COMPLEMENT_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
+_GAS_CONSTANT = 0.001987  # kcal / (mol·K)
 
 
 def _reverse_complement(seq: str) -> str:
@@ -35,13 +36,14 @@ def _fold_full_chromosome(
     unpaired_prob: int,
     output_path: str,
     chunk_size: int = 1_000_000,
+    temperature: float = 37.0,
 ) -> str:
     """Fold both strands of a chromosome in chunks and stream to Parquet.
 
     Top-level (not a method) so ProcessPoolExecutor can pickle it; only the
     output path string is pickled back, avoiding O(N×u) OOM on large chromosomes.
     """
-    RT = 0.616  # kcal/mol at 37°C
+    RT = _GAS_CONSTANT * (temperature + 273.15)
     seq_len = len(sequence)
 
     schema = pa.schema(
@@ -66,7 +68,18 @@ def _fold_full_chromosome(
             l_adj = min(max_span, chunk_len)
 
             try:
-                probs_matrix = RNA.pfl_fold_up(chunk_seq, unpaired_prob, w, l_adj)
+                md = RNA.md()
+                md.temperature = temperature
+                md.window_size = w
+                md.max_bp_span = l_adj
+                fc = RNA.fold_compound(chunk_seq, md, RNA.OPTION_WINDOW)
+                probs_matrix = [None] * (chunk_len + 2)
+
+                def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
+                    if (what & RNA.PROBS_WINDOW_UP) and v is not None:
+                        _pm[i] = list(v)
+
+                fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, _cb)
                 probs_ok = True
             except Exception:
                 probs_ok = False
@@ -82,6 +95,8 @@ def _fold_full_chromosome(
                     if chunk_pos_1based >= len(probs_matrix):
                         continue
                     row_probs = probs_matrix[chunk_pos_1based]
+                    if row_probs is None:
+                        continue
                     for u in range(1, unpaired_prob + 1):
                         if u >= len(row_probs):
                             break
@@ -134,6 +149,7 @@ class GenomeAccessibilityService:
         workers: int = 1,
         progress=None,
         progress_callback=None,
+        temperature: float = 37.0,
     ) -> Dict[str, Path]:
         """
         Compute accessibility for all sequences in the genome FASTA.
@@ -196,6 +212,8 @@ class GenomeAccessibilityService:
                     max_span,
                     unpaired_prob,
                     out_path,
+                    1_000_000,
+                    temperature,
                 )
                 futures[fut] = chrom
 
@@ -227,11 +245,12 @@ class GenomeAccessibilityService:
         window_size: int = 80,
         max_span: int = 40,
         unpaired_prob: int = 30,
+        temperature: float = 37.0,
     ) -> np.ndarray:
         """
         Compute accessibility for a single sequence (e.g., on-target).
 
-        Uses ViennaRNA's RNA.pfl_fold_up to compute unpaired probabilities,
+        Uses ViennaRNA's RNA.fold_compound with RNA.OPTION_WINDOW to compute unpaired probabilities,
         then converts to opening energies.
 
         Args:
@@ -239,6 +258,7 @@ class GenomeAccessibilityService:
             window_size: -W parameter (default 80).
             max_span: -L parameter (default 40).
             unpaired_prob: -u parameter (default 30).
+            temperature: Folding temperature in °C (default 37.0).
 
         Returns:
             2D numpy array [seq_len, unpaired_prob] of opening energies.
@@ -256,16 +276,28 @@ class GenomeAccessibilityService:
         if seq_len == 0:
             return np.array([], dtype=np.float32)
 
+        rna_seq = sequence.upper().replace("T", "U")
         w = min(window_size, seq_len)
         max_span_adj = min(max_span, seq_len)
-        RT = 0.616  # kcal/mol at 37°C
+        RT = _GAS_CONSTANT * (temperature + 273.15)
 
         profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
 
         try:
-            probs_matrix = RNA.pfl_fold_up(sequence, unpaired_prob, w, max_span_adj)
+            md = RNA.md()
+            md.temperature = temperature
+            md.window_size = w
+            md.max_bp_span = max_span_adj
+            fc = RNA.fold_compound(rna_seq, md, RNA.OPTION_WINDOW)
+            probs_matrix = [None] * (seq_len + 2)
+
+            def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
+                if (what & RNA.PROBS_WINDOW_UP) and v is not None:
+                    _pm[i] = list(v)
+
+            fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, _cb)
             for i in range(1, seq_len + 1):
-                if i < len(probs_matrix):
+                if i < len(probs_matrix) and probs_matrix[i] is not None:
                     for u in range(1, unpaired_prob + 1):
                         if u < len(probs_matrix[i]):
                             p = probs_matrix[i][u]
