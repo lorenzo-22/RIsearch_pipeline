@@ -181,6 +181,48 @@ class TestAccessibility(unittest.TestCase):
         val = service.query_single("chr1", 2, 4, "+")
         self.assertAlmostEqual(val, 0.4, places=1)
 
+    def test_compute_genome_accessibility_temp37_matches_default(self):
+        """Passing temperature=37.0 must give identical output to the default (no temp arg)."""
+        service_default = GenomeAccessibilityService(self.test_dir / "default")
+        service_t37    = GenomeAccessibilityService(self.test_dir / "t37")
+
+        results_default = service_default.compute_genome_accessibility(
+            self.fasta_path, window_size=10, max_span=5, unpaired_prob=3
+        )
+        results_t37 = service_t37.compute_genome_accessibility(
+            self.fasta_path, window_size=10, max_span=5, unpaired_prob=3,
+            temperature=37.0,
+        )
+
+        for chrom in results_default:
+            df_default = pl.read_parquet(results_default[chrom])
+            df_t37     = pl.read_parquet(results_t37[chrom])
+            self.assertEqual(df_default.shape, df_t37.shape)
+            for col in df_default.columns:
+                np.testing.assert_array_equal(
+                    df_default[col].to_numpy(),
+                    df_t37[col].to_numpy(),
+                    err_msg=f"Column {col!r} of {chrom} differs at temperature=37",
+                )
+
+    def test_compute_sequence_accessibility_temp37_matches_default(self):
+        """Passing temperature=37.0 to compute_sequence_accessibility must match default."""
+        service = GenomeAccessibilityService(self.test_dir)
+        seq = "ACGUACGUACGU"
+
+        profile_default = service.compute_sequence_accessibility(
+            seq, window_size=10, max_span=5, unpaired_prob=3
+        )
+        profile_t37 = service.compute_sequence_accessibility(
+            seq, window_size=10, max_span=5, unpaired_prob=3,
+            temperature=37.0,
+        )
+
+        np.testing.assert_array_equal(
+            profile_default, profile_t37,
+            err_msg="Profiles differ at temperature=37 vs default",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
