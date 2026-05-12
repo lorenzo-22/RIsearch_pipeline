@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-risearch = ["risearch @ file:///dev/shm/src/RIsearch_pipeline/risearch/risearch-python"]
+risearch = ["risearch @ git+ssh://git@github.com/saiden89/risearch.git#subdirectory=risearch-python"]
 
 [project.scripts]
 gw = "RIsearch_pipeline.cli:entrypoint"

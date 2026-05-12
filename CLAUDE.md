@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv venv && source .venv/bin/activate
 uv sync
 ```
-Requires Python ≥3.14 and ViennaRNA 2.7.2 (installed via `uv sync`). The `risearch` Python package is a local file dependency pinned to `file:///dev/shm/src/risearch/risearch-python` (PyO3 bindings built from the `risearch/` git submodule).
+Requires Python ≥3.14 and ViennaRNA 2.7.2 (installed via `uv sync`). The `risearch` Python package is a git dependency pinned to `git+ssh://git@github.com/saiden89/risearch.git#subdirectory=risearch-python` (PyO3 bindings).
 
 ### Run the pipeline
 ```bash
