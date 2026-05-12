@@ -15,7 +15,7 @@ from RIsearch_pipeline.services.risearch_service import RIsearchService
 
 # Gas constant in kcal/mol*K
 R = 0.001987
-# Temperature in Kelvin (37 C)
+# Default temperature in Kelvin (37 C) — kept for backward compatibility
 T = 310.15
 RT = R * T
 
@@ -27,9 +27,12 @@ class ProbabilityService:
         self,
         accessibility_service: Optional[GenomeAccessibilityService] = None,
         precomputed_accessibility: Optional[pl.DataFrame] = None,
+        temperature: float = 37.0,
     ):
         self.accessibility_service = accessibility_service
         self.precomputed_accessibility = precomputed_accessibility
+        self._temperature = temperature
+        self._RT = R * (temperature + 273.15)
 
     def calculate_probabilities(
         self,
@@ -61,7 +64,7 @@ class ProbabilityService:
             logger.info("No expression value found; assuming uniform expression=1.0 for Off-Targets")
             expr_val = pl.lit(1.0)
 
-        df = df.with_columns((expr_val * ((-pl.col("dG_total") / RT).exp())).alias("boltzmann_weight"))
+        df = df.with_columns((expr_val * ((-pl.col("dG_total") / self._RT).exp())).alias("boltzmann_weight"))
         z_partial = df["boltzmann_weight"].sum()
 
         w_on = 0.0
@@ -75,7 +78,7 @@ class ProbabilityService:
                 on_target_path, query_path, on_target_accessibility_path, on_target_risearch_path,
             )
             dG_total_on = dG_hyb_on + dG_open_on
-            w_on = on_target_expression * np.exp(-dG_total_on / RT)
+            w_on = on_target_expression * np.exp(-dG_total_on / self._RT)
             logger.info(f"On-Target dG_total={dG_total_on:.2f}, Weight={w_on:.2e}")
 
         z_total = z_partial + w_on
@@ -301,8 +304,8 @@ class ProbabilityService:
             weight_col = f"boltzmann_weight{suffix}"
             weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
             all_weight_exprs.extend([
-                (pl.col("exp_value") * ((-pl.col(dG_col) / RT).exp())).alias(weight_col),
-                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / RT).exp())).alias(weight_noacc_col),
+                (pl.col("exp_value") * ((-pl.col(dG_col) / self._RT).exp())).alias(weight_col),
+                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / self._RT).exp())).alias(weight_noacc_col),
             ])
             z_col = f"Z_sirna{suffix}"
             z_noacc_col = f"Z_sirna_noacc{suffix}"
@@ -363,8 +366,8 @@ class ProbabilityService:
                         assigned_e = orig_energy + orig_open
                         assigned_e_noacc = orig_energy
 
-                    w_on = on_target_expression * np.exp(-assigned_e / RT)
-                    w_on_noacc = on_target_expression * np.exp(-assigned_e_noacc / RT)
+                    w_on = on_target_expression * np.exp(-assigned_e / self._RT)
+                    w_on_noacc = on_target_expression * np.exp(-assigned_e_noacc / self._RT)
                     on_target_w[sirna_id] = w_on
                     on_target_w_noacc[sirna_id] = w_on_noacc
 
@@ -517,8 +520,8 @@ class ProbabilityService:
             ])
 
             df_scaled = df_scaled.with_columns([
-                (pl.col("exp_value") * ((-pl.col("dG_scaled") / RT).exp())).alias("W"),
-                (pl.col("exp_value") * ((-pl.col("dG_scaled_noacc") / RT).exp())).alias("W_noacc"),
+                (pl.col("exp_value") * ((-pl.col("dG_scaled") / self._RT).exp())).alias("W"),
+                (pl.col("exp_value") * ((-pl.col("dG_scaled_noacc") / self._RT).exp())).alias("W_noacc"),
             ])
 
             df_agg = df_scaled.group_by(["chrom", "transcript_id"]).agg([
@@ -536,8 +539,8 @@ class ProbabilityService:
                 dG_total_on = dG_hyb_on + dG_open_on
                 dG_on_noacc = dG_hyb_on
 
-            w_on = on_target_expression * np.exp(-dG_total_on / RT)
-            w_on_noacc = on_target_expression * np.exp(-dG_on_noacc / RT)
+            w_on = on_target_expression * np.exp(-dG_total_on / self._RT)
+            w_on_noacc = on_target_expression * np.exp(-dG_on_noacc / self._RT)
 
             z_total = z_off + w_on
             z_total_noacc = z_off_noacc + w_on_noacc
@@ -730,7 +733,7 @@ class ProbabilityService:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         temp_service = GenomeAccessibilityService(Path(tmpdir))
                         profile = temp_service.compute_sequence_accessibility(
-                            sequence
+                            sequence, temperature=self._temperature
                         )
 
                         start0 = t_start - 1

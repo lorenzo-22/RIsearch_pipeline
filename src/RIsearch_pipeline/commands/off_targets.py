@@ -55,6 +55,7 @@ def _init_worker(
     polars_max_threads: int,
     on_target_map: dict,
     self_hyb_emin: dict,
+    temperature: float = 37.0,
 ) -> None:
     """Initialise per-worker state.  Called once per spawned worker process.
 
@@ -77,7 +78,7 @@ def _init_worker(
         from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
         acc_service = GenomeAccessibilityService(Path(accessibility_dir), max_cached=4)
 
-    _WORKER_PROB_SERVICE = ProbabilityService(acc_service)
+    _WORKER_PROB_SERVICE = ProbabilityService(acc_service, temperature=temperature)
 
     # Store per-run constants so they don't need to be pickled per task.
     _WORKER_ON_TARGET_MAP = on_target_map
@@ -306,6 +307,9 @@ def run(
     unpaired_prob: int = typer.Option(
         30, "--unpaired", "-u", help="Unpaired probability length (u)"
     ),
+    temperature: float = typer.Option(
+        37.0, "--temperature", "-T", help="Folding temperature in °C (default 37.0). Affects both accessibility and partition function."
+    ),
     on_target_file: Path = typer.Option(
         None,
         "-on",
@@ -521,7 +525,7 @@ def run(
                 acc_service = GenomeAccessibilityService(
                     accessibility_dir, max_cached=4
                 )
-            prob_service = ProbabilityService(acc_service)
+            prob_service = ProbabilityService(acc_service, temperature=temperature)
 
             # Prepare transcriptome if provided
             df_trans = None
@@ -641,6 +645,7 @@ def run(
                     polars_threads_per_worker,
                     on_target_map,
                     self_hyb_emin,
+                    temperature,
                 )
 
                 with Progress(
@@ -817,7 +822,7 @@ def run(
                     acc_service = GenomeAccessibilityService(
                         accessibility_dir, max_cached=4
                     )
-                prob_service = ProbabilityService(acc_service)
+                prob_service = ProbabilityService(acc_service, temperature=temperature)
 
                 # Prepare transcriptome if provided
                 df_trans = None
@@ -1070,7 +1075,7 @@ def run(
                 f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
             )
             acc_service = GenomeAccessibilityService(accessibility_dir, max_cached=4)
-            prob_service = ProbabilityService(acc_service)
+            prob_service = ProbabilityService(acc_service, temperature=temperature)
 
         elif genome_file:
             console.print(
@@ -1104,15 +1109,16 @@ def run(
                     max_span=max_span,
                     unpaired_prob=unpaired_prob,
                     progress_callback=progress_callback,
+                    temperature=temperature,
                 )
 
-            prob_service = ProbabilityService(acc_service)
+            prob_service = ProbabilityService(acc_service, temperature=temperature)
 
         else:
             console.print(
                 "[yellow]Warning:[/yellow] No accessibility data provided. P(OT) based on energy only."
             )
-            prob_service = ProbabilityService(None)
+            prob_service = ProbabilityService(None, temperature=temperature)
 
         # Calculate P(OT)
         # Calculate P(OT)

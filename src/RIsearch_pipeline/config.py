@@ -30,6 +30,7 @@ class OffTargetsConfig:
     query: Optional[str] = None
     on_target_expression: float = 1000.0
     on_target_accessibility: Optional[str] = None
+    temperature: float = 37.0
     alpha: str = "1.0"
     gamma: str = "1.0"
     theta: str = ""
