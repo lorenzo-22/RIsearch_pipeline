@@ -155,7 +155,6 @@ off_targets:
   # --target-index / -idx    Pre-built RIsearch index (speeds up repeated runs)
   # --on-target-ids / -oi    TSV mapping siRNA IDs to on-target transcript IDs (sirna_id\ttranscript_id)
   # --workers / -j           Number of parallel worker processes (default: CPU count)
-  # --scratch-dir            Directory for temporary Arrow IPC files (default: system temp)
   # --output-format          Output format: "tsv" | "csv" | "parquet" (default: tsv)
   # --summary-only           Write only .summary files; skip per-prediction output
   # --profile                Print per-stage timing/memory table at run end

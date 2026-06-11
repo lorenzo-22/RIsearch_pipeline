@@ -22,7 +22,7 @@
     in `config.py` and the `config_to_kwargs` mapping.
   - Run `pytest tests/` to verify nothing is broken after removal.
 
-- [ ] **Step 3: Remove Useless Flags**
+- [x] **Step 3: Remove Useless Flags**
   - After Step 2, audit remaining CLI flags for anything now dead:
     - `--profile` — check if used / tested; remove if only wiring is the flag itself.
     - `--output-format` — still live (tsv/csv/parquet in dir mode), keep.

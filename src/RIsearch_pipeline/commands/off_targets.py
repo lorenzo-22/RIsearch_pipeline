@@ -391,11 +391,6 @@ def run(
         "--profile",
         help="Print a per-stage timing and memory profile table at the end of the run.",
     ),
-    scratch_dir: Optional[Path] = typer.Option(
-        None,
-        "--scratch-dir",
-        help="Directory for intermediate Arrow IPC files. Defaults to system temp.",
-    ),
     output_format: str = typer.Option(
         "tsv",
         "--output-format",

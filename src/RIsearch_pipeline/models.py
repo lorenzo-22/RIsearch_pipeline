@@ -45,6 +45,3 @@ GTF_SCHEMA = {
     "frame": pl.Utf8,
     "attributes": pl.Utf8,
 }
-
-# Backward-compatibility alias — remove after all callers migrated
-TRANSCRIPTOME_SCHEMA = GTF_SCHEMA
