@@ -30,7 +30,7 @@
     - Any `input_dir` YAML config keys in `config/` example files — clean those up.
   - Clean up associated dead code paths in `config.py` and `off_targets.py`.
 
-- [ ] **Step 4: General Code Polish**
+- [x] **Step 4: General Code Polish**
   - Simplify the `_init_worker` / `_process_one_sirna` module-level global pattern:
     use a proper dataclass or namedtuple for worker state instead of bare globals.
   - Deduplicate the alpha-gamma pair construction logic (copy-pasted in 2 places now).

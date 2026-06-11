@@ -179,6 +179,27 @@ def _process_one_sirna(
     return arrow, meta
 
 
+def _build_alpha_gamma_pairs(alpha: str, gamma: str) -> list[tuple[float, float]]:
+    """Parse semicolon-separated alpha/gamma strings into (alpha, gamma) pairs.
+
+    Always includes the baseline (1.0, 1.0). Enforces alpha ≤ gamma. Deduplicates.
+    """
+    alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
+    gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
+    pairs: list[tuple[float, float]] = [(1.0, 1.0)]
+    for a in alpha_vals:
+        for g in gamma_vals:
+            if a == 1.0 and g == 1.0:
+                continue
+            if a <= g:
+                pairs.append((a, g))
+    return list(dict.fromkeys(pairs))
+
+
+def _parse_theta(theta: str) -> list[float]:
+    return [float(x) for x in theta.split(";") if x.strip()]
+
+
 def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
     """Downcast columns to minimize Arrow IPC file size.
 
@@ -456,7 +477,7 @@ def run(
                 raise typer.Exit(code=1)
 
             # Index target (or reuse existing index)
-            with console.status("[bold green]Indexing target...") as status:
+            with console.status("[bold green]Indexing target..."):
                 if target_index is not None:
                     index_path = target_index
                     console.print(
@@ -559,19 +580,8 @@ def run(
                     f"  [dim]Self-hyb E_min computed for {len(self_hyb_emin)} siRNA(s)[/dim]"
                 )
 
-            # Parse parameter lists
-            alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
-            gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
-            theta_vals = [float(x) for x in theta.split(";") if x.strip()]
-
-            alpha_gamma_pairs = [(1.0, 1.0)]
-            for a in alpha_vals:
-                for g in gamma_vals:
-                    if a == 1.0 and g == 1.0:
-                        continue
-                    if a <= g:
-                        alpha_gamma_pairs.append((a, g))
-            alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
+            alpha_gamma_pairs = _build_alpha_gamma_pairs(alpha, gamma)
+            theta_vals = _parse_theta(theta)
 
             total_rows = 0
             n_proc = min(n_workers, len(all_files))
@@ -633,7 +643,7 @@ def run(
                     console=console,
                 ) as progress:
                     task = progress.add_task(
-                        f"Processing siRNAs...", total=len(all_files)
+                        "Processing siRNAs...", total=len(all_files)
                     )
 
                     with ProcessPoolExecutor(
@@ -913,25 +923,8 @@ def run(
                 "  └─ [yellow]Skipping accessibility annotation (energy only)[/yellow]"
             )
 
-        # Parse parameter lists
-        alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
-        gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
-        theta_vals = [float(x) for x in theta.split(";") if x.strip()]
-
-        # Construct alpha-gamma pairs (Cartesian product with a <= g constraint)
-        alpha_gamma_pairs = []
-        # Always include baseline (1.0, 1.0) first
-        alpha_gamma_pairs.append((1.0, 1.0))
-
-        for a in alpha_vals:
-            for g in gamma_vals:
-                if a == 1.0 and g == 1.0:
-                    continue
-                if a <= g:
-                    alpha_gamma_pairs.append((a, g))
-
-        # Remove duplicates while preserving order
-        alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
+        alpha_gamma_pairs = _build_alpha_gamma_pairs(alpha, gamma)
+        theta_vals = _parse_theta(theta)
 
         # Detect multi-siRNA mode OR if custom parameters are used (forcing vectorized path)
         unique_sirnas = df["sirna_id"].unique() if "sirna_id" in df.columns else []

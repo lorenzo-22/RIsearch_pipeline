@@ -8,7 +8,6 @@ from loguru import logger
 
 from RIsearch_pipeline.services.accessibility import (
     GenomeAccessibilityService,
-    AccessibilityError,
 )
 from RIsearch_pipeline.services.helpers import read_fasta
 from RIsearch_pipeline.services.risearch_service import RIsearchService

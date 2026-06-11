@@ -18,10 +18,9 @@ Usage::
 
 import contextlib
 import time
-from dataclasses import dataclass, field
-from typing import Generator, Optional
+from dataclasses import dataclass
+from typing import Generator
 
-from rich.panel import Panel
 from rich.table import Table
 
 
