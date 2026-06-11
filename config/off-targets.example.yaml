@@ -24,17 +24,12 @@ verbose: false
 off_targets:
 
   # ---------------------------------------------------------------------------
-  # Input — choose ONE of the three mutually exclusive input modes
+  # Input — choose ONE of the two mutually exclusive input modes
   # ---------------------------------------------------------------------------
 
-  # [REQUIRED unless using input_dir] Pre-computed RIsearch2 output (.tsv / .out.gz / directory of .parquet).
-  # If a directory is passed, it is treated as input_dir automatically.
+  # [REQUIRED] Pre-computed RIsearch2 output: a single .tsv/.out.gz file, or a
+  # directory of per-siRNA .parquet files (auto-detected; enables parallel mode).
   risearch_file: ../tests/off-targets/single/input/risearch_siRNAID.out
-
-  # Directory of per-siRNA RIsearch output files (*.gz or *.tsv / *.parquet).
-  # Enables multi-process parallel mode (one worker per siRNA file).
-  # [CLI-ONLY when used with --sirna-fasta to run RIsearch inline]
-  input_dir: null
 
   # ---------------------------------------------------------------------------
   # Transcriptome annotation (optional)
@@ -148,13 +143,6 @@ off_targets:
   # ---------------------------------------------------------------------------
   # Performance
   # ---------------------------------------------------------------------------
-
-  # Process siRNAs in sequential batches from a single large file.
-  # Reduces peak RAM when risearch_file contains thousands of siRNAs. Default: false
-  chunk_mode: false
-
-  # siRNAs per batch in chunk_mode. Default: 50
-  batch_size: 50
 
   # Verbose output: print sample DataFrames and extra stats. Default: false
   verbose: false

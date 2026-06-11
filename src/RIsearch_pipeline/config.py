@@ -14,7 +14,6 @@ class OffTargetsConfig:
     """Schema for off-targets command configuration."""
 
     risearch_file: str = MISSING  # Required
-    input_dir: Optional[str] = None
     transcriptome: Optional[str] = None
     transcriptome_format: str = "auto"
     feature: str = "exon"
@@ -39,8 +38,6 @@ class OffTargetsConfig:
     sense_only: bool = False
     type: str = PredictionsMode.GW
     verbose: bool = False
-    chunk_mode: bool = False
-    batch_size: int = 50
 
 
 @dataclass

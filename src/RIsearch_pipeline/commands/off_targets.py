@@ -219,19 +219,11 @@ def run(
         readable=True,
         dir_okay=True,
     ),
-    input_dir: Optional[Path] = typer.Option(
-        None,
-        "-d",
-        "--input-dir",
-        help="Directory containing per-siRNA RIsearch output files (*.gz or *.tsv).",
-        exists=True,
-        file_okay=False,
-    ),
     sirna_fasta: Optional[Path] = typer.Option(
         None,
         "-s",
         "--sirna-fasta",
-        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch internally when used alone; also used in directory mode to compute self-hybridisation E_min.",
+        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch in-process via PyO3 bindings; also used to compute self-hybridisation E_min for directory inputs.",
         exists=True,
         readable=True,
     ),
@@ -399,17 +391,6 @@ def run(
         "--profile",
         help="Print a per-stage timing and memory profile table at the end of the run.",
     ),
-    chunk_mode: bool = typer.Option(
-        False,
-        "--chunk-mode",
-        help="Process siRNAs in batches for large files (reduces memory usage).",
-    ),
-    batch_size: int = typer.Option(
-        50,
-        "--batch-size",
-        "-b",
-        help="Number of siRNAs to process per batch in chunk mode (default: 50).",
-    ),
     scratch_dir: Optional[Path] = typer.Option(
         None,
         "--scratch-dir",
@@ -441,15 +422,15 @@ def run(
     n_workers: int = workers if workers is not None else os.cpu_count() or 1
 
     try:
-        # Validate input options
-        # Handle the case where the user passes a directory to --risearch-file
+        # Resolve input: a directory passed to --risearch-file triggers per-siRNA parallel mode.
+        input_dir: Optional[Path] = None
         if risearch_file is not None and risearch_file.is_dir():
             input_dir = risearch_file
             risearch_file = None
 
         if risearch_file is None and sirna_fasta is None and input_dir is None:
             console.print(
-                "[bold red]Error:[/bold red] Must provide either --risearch-file, --input-dir, OR --sirna-fasta"
+                "[bold red]Error:[/bold red] Must provide either --risearch-file (file or directory) OR --sirna-fasta"
             )
             raise typer.Exit(code=1)
 
@@ -797,209 +778,12 @@ def run(
             profiler.print_summary(console)
             return  # Exit after directory mode processing
 
-        # Mode 2: Pre-computed RIsearch file
+        # Mode 2: Pre-computed RIsearch file (single TSV/.out.gz)
         elif risearch_file is not None:
             if not isinstance(risearch_file, Path):
                 risearch_file = Path(risearch_file)
 
-            # CHUNK MODE: Process siRNAs one at a time for large files
-            if chunk_mode:
-                console.print(
-                    "[bold cyan]Chunk mode enabled[/bold cyan] - processing siRNAs individually"
-                )
-
-                # Step 1: Stream-scan to get unique siRNA IDs (low memory)
-                with console.status("[bold green]Scanning for siRNA IDs..."):
-                    sirna_ids = risearch_parser.scan_sirna_ids(risearch_file)
-
-                console.print(
-                    f"[green]✓[/green] Found [bold]{len(sirna_ids)}[/bold] unique siRNAs to process"
-                )
-
-                # Prepare services
-                acc_service = None
-                if accessibility_dir:
-                    acc_service = GenomeAccessibilityService(
-                        accessibility_dir, max_cached=4
-                    )
-                prob_service = ProbabilityService(acc_service, temperature=temperature)
-
-                # Prepare transcriptome if provided
-                df_trans = None
-                if gtf_file:
-                    if not isinstance(gtf_file, Path):
-                        gtf_file = Path(gtf_file)
-
-                    trans_parser = AnnotationParser()
-                    with profiler.stage("Load transcriptome") as _s:
-                        df_trans = trans_parser.load_gtf(
-                            gtf_file,
-                            feature=feature_type,
-                            score_col=expression_metric,
-                            format=transcriptome_format,
-                        )
-                        _s.rows_out = df_trans.height
-                    intersector = IntersectionService()
-                    console.print(
-                        f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
-                    )
-
-                # Parse on-target IDs map
-                on_target_map = {}
-                if on_target_ids_file is not None:
-                    with open(on_target_ids_file, "r") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line and not line.startswith("#"):
-                                parts = line.split("\t")
-                                if len(parts) >= 2:
-                                    on_target_map[parts[0]] = parts[1]
-
-                # Parse parameter lists
-                alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
-                gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
-                theta_vals = [float(x) for x in theta.split(";") if x.strip()]
-
-                alpha_gamma_pairs = [(1.0, 1.0)]
-                for a in alpha_vals:
-                    for g in gamma_vals:
-                        if a == 1.0 and g == 1.0:
-                            continue
-                        if a <= g:
-                            alpha_gamma_pairs.append((a, g))
-                alpha_gamma_pairs = list(dict.fromkeys(alpha_gamma_pairs))
-
-                # Storage for global metadata
-                global_z_stats = {}
-                global_on_w_stats = {}
-
-                # Step 2: Process siRNAs in batches
-                all_results = []
-                num_batches = (
-                    len(sirna_ids) + batch_size - 1
-                ) // batch_size  # Ceiling division
-
-                console.print(
-                    f"  └─ Processing {len(sirna_ids)} siRNAs in {num_batches} batches of up to {batch_size}"
-                )
-
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    TextColumn("[progress.percentage]{task.completed}/{task.total}"),
-                    TimeElapsedColumn(),
-                    console=console,
-                ) as progress:
-                    task = progress.add_task("Processing batches...", total=num_batches)
-
-                    for batch_idx in range(num_batches):
-                        # Get siRNAs for this batch
-                        start_idx = batch_idx * batch_size
-                        end_idx = min(start_idx + batch_size, len(sirna_ids))
-                        batch_sirnas = sirna_ids[start_idx:end_idx]
-
-                        # Load entire batch at once (enables Polars/Rayon parallelization)
-                        with profiler.stage(f"[chunk] Load batch {batch_idx + 1}") as _s:
-                            df_chunk = risearch_parser.load_by_sirna_batch(
-                                risearch_file, batch_sirnas
-                            )
-                            if sense_only:
-                                df_chunk = df_chunk.filter(pl.col("strand") == "+")
-                            _s.rows_out = df_chunk.height
-
-                        if df_chunk.height == 0:
-                            progress.update(
-                                task,
-                                advance=1,
-                                description=f"Batch {batch_idx + 1}: empty",
-                            )
-                            continue
-
-                        # Intersect with transcriptome - Polars parallelizes this
-                        if df_trans is not None:
-                            with profiler.stage(f"[chunk] Intersect batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
-                                df_chunk = intersector.intersect(
-                                    df_chunk, df_trans, mode=predictions_type, workers=n_workers
-                                )
-                                _s.rows_out = df_chunk.height
-
-                        # Build on-target map for all siRNAs in this batch
-                        batch_map = None
-                        if on_target_map:
-                            batch_map = {
-                                sid: on_target_map.get(sid)
-                                for sid in batch_sirnas
-                                if sid in on_target_map
-                            }
-
-                        # Calculate probabilities - Polars parallelizes across all rows
-                        with profiler.stage(f"[chunk] Probabilities batch {batch_idx + 1}", rows_in=df_chunk.height) as _s:
-                            df_chunk, batch_metadata = (
-                                prob_service.calculate_probabilities_per_sirna(
-                                    df_chunk,
-                                    alpha_gamma_pairs=alpha_gamma_pairs,
-                                    theta_values=theta_vals,
-                                    on_target_map=batch_map if batch_map else None,
-                                    on_target_expression=on_target_expression,
-                                )
-                            )
-                            _s.rows_out = df_chunk.height
-
-                        # Accumulate metadata
-                        for sid, z_dict in batch_metadata["z_per_sirna"].items():
-                            global_z_stats[sid] = z_dict
-                        for sid, w_dict in batch_metadata["on_target_weights"].items():
-                            global_on_w_stats[sid] = w_dict
-
-                        all_results.append(df_chunk)
-                        progress.update(
-                            task,
-                            advance=1,
-                            description=f"Batch {batch_idx + 1}/{num_batches}",
-                        )
-
-                # Step 3: Combine all results
-                if all_results:
-                    df = pl.concat(all_results, how="diagonal")
-                    console.print(
-                        f"[green]✓[/green] Processed [bold]{df.height}[/bold] total predictions"
-                    )
-                else:
-                    console.print("[yellow]Warning:[/yellow] No predictions to process")
-                    return
-
-                # Save output
-                if output_file:
-                    df.write_csv(output_file, separator="\t")
-                    console.print(
-                        f"[green]✓[/green] Results saved to [bold]{output_file}[/bold]"
-                    )
-
-                    # Write .summary files
-                    out_dir = output_file.parent
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    for sid in global_z_stats:
-                        summary_text = prob_service.format_legacy_summary(
-                            sid,
-                            global_z_stats[sid],
-                            global_on_w_stats.get(sid, {}),
-                            alpha_gamma_pairs,
-                            theta_vals,
-                        )
-                        summary_file = out_dir / f"{sid}.summary"
-                        summary_file.write_text(summary_text)
-
-                    console.print(
-                        f"[green]✓[/green] Wrote {len(global_z_stats)} .summary files to [bold]{out_dir}[/bold]"
-                    )
-                else:
-                    console.print(df.head(10))
-
-                profiler.print_summary(console)
-                return  # Exit after chunk mode processing
-
-            # Standard mode: Load entire file
+            # Load entire file
             with profiler.stage("Load predictions") as _s:
                 df = risearch_parser.load(risearch_file)
                 _s.rows_out = df.height

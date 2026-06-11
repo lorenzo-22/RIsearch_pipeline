@@ -11,7 +11,7 @@
   - Update `CLAUDE.md` architecture section
   - Update `README.md` mermaid diagram
 
-- [ ] **Step 2: Unify Execution Modes — remove `--input-dir` and `--chunk-mode`**
+- [x] **Step 2: Unify Execution Modes — remove `--input-dir` and `--chunk-mode`**
   - Remove `--input-dir` / `-d` CLI flag from `off_targets.py`. The existing redirect
     (lines 446-448) already handles directories passed to `--risearch-file`; this just
     deletes the redundant separate flag and its code branch.
