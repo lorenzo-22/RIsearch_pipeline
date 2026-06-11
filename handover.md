@@ -39,7 +39,7 @@
   - Remove unused imports revealed by `ruff check`.
   - Ensure `ruff format` and `ty check`/`pyrefly check` pass clean.
 
-- [ ] **Step 5: Update the README**
+- [x] **Step 5: Update the README**
   - Update mermaid diagram: `TranscriptomeParser` → `AnnotationParser`.
   - Update key-options table: remove `--input-dir`, `--chunk-mode`, `--batch-size`.
   - Update any prose referencing "directory mode" or "chunk mode".

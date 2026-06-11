@@ -44,22 +44,22 @@ flowchart TD
 
 ### `off-targets` — Core Analysis
 
-Loads RIsearch predictions, intersects them with a transcriptome, annotates RNA accessibility, and computes per-site off-target probabilities.
+Loads RIsearch predictions, intersects them with a GTF/BED annotation, annotates RNA accessibility, and computes per-site off-target probabilities.
 
 ```bash
 # From pre-computed predictions file
 risearch-pipeline off-targets \
   -r predictions.tsv \
-  -t transcriptome.gtf \
+  -t annotation.gtf \
   -a accessibility_profiles/ \
-  --on-target-id-map on_target_map.tsv \
+  --on-target-ids on_target_map.tsv \
   -o results.tsv
 
 # Run RIsearch in-process (siRNA + target FASTA)
 risearch-pipeline off-targets \
   -s sirna.fa \
   --target-fasta genome.fa \
-  -t transcriptome.gtf \
+  -t annotation.gtf \
   -a accessibility_profiles/ \
   -o results.tsv
 
@@ -71,14 +71,14 @@ risearch-pipeline -c config/off-targets.example.yaml
 
 | Flag | Description |
 |------|-------------|
-| `-r / --risearch-file` | Pre-computed predictions (TSV, `.out.gz`, or directory of Parquet) |
+| `-r / --risearch-file` | Pre-computed predictions (TSV, `.out.gz`, or directory of Parquet files — directory triggers parallel per-siRNA mode) |
 | `-s / --sirna-fasta` | siRNA FASTA — runs RIsearch in-process via PyO3 bindings |
-| `-t / --transcriptome` | GTF or BED annotation file |
+| `-t / --transcriptome` | GTF/GFF3 or BED annotation file (parsed by `AnnotationParser`) |
 | `-a / --accessibility-dir` | Directory of per-chromosome accessibility Parquet files |
 | `--expression-metric` | GTF attribute for expression weighting (default: `RPKM`) |
-| `--mode` | `gw` (genome-wide) or `tw` (transcriptome-wide) |
+| `--type` | `gw` (genome-wide) or `tw` (transcriptome-wide, default: `gw`) |
 | `--alpha / --gamma / --theta` | Parameter sweep values (semicolon-separated) |
-| `--on-target-id-map / -oi` | TSV mapping `sirna_id → gene_id` for on-target normalization |
+| `--on-target-ids / -oi` | TSV mapping `sirna_id → transcript_id` for on-target normalization |
 | `-j / --workers` | Parallel worker processes (default: CPU count) |
 
 ### `accessibility` — Pre-compute Profiles
@@ -150,7 +150,7 @@ P(off-target_i | siRNA_s) = W_i / Z_s
 
 - **ΔG_hybridization**: RNA-RNA interaction energy from RIsearch (Turner 2004 parameters).
 - **ΔG_opening**: Accessibility penalty — cost to unfold the target region, retrieved from pre-computed `RNA.pfl_fold_up` profiles.
-- **Expression weighting**: GTF-derived RPKM/TPM values scale each site's contribution.
+- **Expression weighting**: annotation-derived RPKM/TPM values scale each site's contribution.
 - **Per-siRNA normalization**: Partition functions are computed independently per siRNA; mixing them is biologically incorrect.
 
 ### Parameter sweeps
