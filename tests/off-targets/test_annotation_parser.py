@@ -1,17 +1,17 @@
-"""Tests for the Transcriptome parser service."""
+"""Tests for the annotation parser service."""
 
 from pathlib import Path
 
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
+from RIsearch_pipeline.services.annotation_parser import AnnotationParser
 
 
 @pytest.fixture
-def parser() -> TranscriptomeParser:
+def parser() -> AnnotationParser:
     """Create a parser instance."""
-    return TranscriptomeParser()
+    return AnnotationParser()
 
 
 @pytest.fixture
@@ -20,18 +20,18 @@ def test_gtf_path() -> Path:
     return Path(__file__).parent / "data" / "expression_data.gtf"
 
 
-class TestTranscriptomeParser:
+class TestAnnotationParser:
     """Tests for loading GTF files."""
 
     def test_load_gtf_returns_dataframe(
-        self, parser: TranscriptomeParser, test_gtf_path: Path
+        self, parser: AnnotationParser, test_gtf_path: Path
     ) -> None:
         """Parser returns a Polars DataFrame."""
         df = parser.load_gtf(test_gtf_path)
         assert isinstance(df, pl.DataFrame)
 
     def test_load_gtf_filters_exons(
-        self, parser: TranscriptomeParser, test_gtf_path: Path
+        self, parser: AnnotationParser, test_gtf_path: Path
     ) -> None:
         """Parser filters annotations by feature type (default 'exon')."""
         # The test file has transcripts and exons. We expect only exons.
@@ -45,7 +45,7 @@ class TestTranscriptomeParser:
         assert df.height < 119
 
     def test_load_gtf_extracts_attributes(
-        self, parser: TranscriptomeParser, test_gtf_path: Path
+        self, parser: AnnotationParser, test_gtf_path: Path
     ) -> None:
         """Parser correctly extracts gene_id, transcript_id, and score."""
         df = parser.load_gtf(test_gtf_path)
@@ -60,7 +60,7 @@ class TestTranscriptomeParser:
         assert row["exp_value"] == 1000.0
 
     def test_load_gtf_custom_score_column(
-        self, parser: TranscriptomeParser, test_gtf_path: Path
+        self, parser: AnnotationParser, test_gtf_path: Path
     ) -> None:
         """Parser can use a different attribute for score."""
         # Using RPKM as default, which works.
@@ -68,7 +68,7 @@ class TestTranscriptomeParser:
         df = parser.load_gtf(test_gtf_path, score_col="NONEXISTENT")
         assert (df["exp_value"] == 0.0).all()
 
-    def test_load_gtf_missing_file(self, parser: TranscriptomeParser) -> None:
+    def test_load_gtf_missing_file(self, parser: AnnotationParser) -> None:
         """Parser raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
             parser.load_gtf(Path("/nonexistent/file.gtf"))

@@ -14,7 +14,7 @@ flowchart TD
     D --> E[RIsearchParser]
 
     E --> F[Predictions DataFrame]
-    G([Transcriptome\nGTF / BED]) --> H[TranscriptomeParser]
+    G([Annotation\nGTF / BED]) --> H[AnnotationParser]
     H --> I[Annotations + Expression]
 
     F --> J[IntersectionService\ngw: chrom join · tw: transcript_id match]

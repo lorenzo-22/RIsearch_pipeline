@@ -1,15 +1,15 @@
-"""Service for parsing transcriptome annotation files (GTF/GFF/BED)."""
+"""Service for parsing annotation files (GTF/GFF/BED) into genomic feature DataFrames."""
 
 import gzip
 from pathlib import Path
 
 import polars as pl
 
-from RIsearch_pipeline.models import TRANSCRIPTOME_SCHEMA
+from RIsearch_pipeline.models import GTF_SCHEMA
 
 
-class TranscriptomeParser:
-    """Parser for transcriptome files to extract gene/transcript locations and expression."""
+class AnnotationParser:
+    """Parser for annotation files (GTF/GFF/BED) — extracts gene/transcript locations and expression."""
 
     def load_gtf(
         self,
@@ -96,8 +96,8 @@ class TranscriptomeParser:
             separator="\t",
             has_header=False,
             comment_prefix="#",
-            new_columns=list(TRANSCRIPTOME_SCHEMA.keys()),
-            schema_overrides=TRANSCRIPTOME_SCHEMA,
+            new_columns=list(GTF_SCHEMA.keys()),
+            schema_overrides=GTF_SCHEMA,
             truncate_ragged_lines=True,
         )
 

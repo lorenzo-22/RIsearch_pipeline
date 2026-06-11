@@ -34,7 +34,7 @@ RISEARCH_SCHEMA = {
     "energy": pl.Float32,
 }
 
-TRANSCRIPTOME_SCHEMA = {
+GTF_SCHEMA = {
     "chrom": pl.Utf8,
     "source": pl.Utf8,
     "feature": pl.Utf8,
@@ -45,3 +45,6 @@ TRANSCRIPTOME_SCHEMA = {
     "frame": pl.Utf8,
     "attributes": pl.Utf8,
 }
+
+# Backward-compatibility alias — remove after all callers migrated
+TRANSCRIPTOME_SCHEMA = GTF_SCHEMA

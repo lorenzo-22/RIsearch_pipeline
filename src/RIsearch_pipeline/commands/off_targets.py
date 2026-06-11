@@ -31,7 +31,7 @@ from RIsearch_pipeline.services.probability import ProbabilityService
 from RIsearch_pipeline.services.profiling import PipelineProfiler
 from RIsearch_pipeline.services.risearch_parser import RIsearchParser
 from RIsearch_pipeline.services.risearch_service import RIsearchService
-from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
+from RIsearch_pipeline.services.annotation_parser import AnnotationParser
 
 console = Console()
 
@@ -534,7 +534,7 @@ def run(
                 if not isinstance(gtf_file, Path):
                     gtf_file = Path(gtf_file)
 
-                trans_parser = TranscriptomeParser()
+                trans_parser = AnnotationParser()
                 with profiler.stage("Load transcriptome") as _s:
                     df_trans = trans_parser.load_gtf(
                         gtf_file,
@@ -830,7 +830,7 @@ def run(
                     if not isinstance(gtf_file, Path):
                         gtf_file = Path(gtf_file)
 
-                    trans_parser = TranscriptomeParser()
+                    trans_parser = AnnotationParser()
                     with profiler.stage("Load transcriptome") as _s:
                         df_trans = trans_parser.load_gtf(
                             gtf_file,
@@ -1032,7 +1032,7 @@ def run(
             if not isinstance(gtf_file, Path):
                 gtf_file = Path(gtf_file)
 
-            trans_parser = TranscriptomeParser()
+            trans_parser = AnnotationParser()
             with profiler.stage("Load transcriptome") as _s:
                 df_trans = trans_parser.load_gtf(
                     gtf_file,

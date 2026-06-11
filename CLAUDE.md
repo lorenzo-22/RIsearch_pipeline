@@ -62,7 +62,7 @@ commands/{off_targets,accessibility}.py  ← one module per subcommand
 services/                       ← stateless processing units
   risearch_service.py           ← wraps risearch PyO3 bindings (index + search, in-process)
   risearch_parser.py            ← parses RIsearch TSV/parquet output into Polars DataFrames
-  transcriptome_parser.py       ← GTF/GFF/BED → Polars DataFrame with exp_value
+  annotation_parser.py          ← GTF/GFF/BED → Polars DataFrame with exp_value
   intersection_service.py       ← joins predictions to annotations (gw or tw mode)
   accessibility.py              ← RNAplfold wrapper + memmap binary profile lookup
   probability.py                ← partition-function probability calculation
@@ -78,7 +78,7 @@ config.py                       ← OmegaConf schema + YAML loading + path resol
 ### Data flow for `off-targets`
 
 1. `RIsearchParser.load()` → Polars DataFrame of predictions
-2. `TranscriptomeParser` → DataFrame with `transcript_id` + `exp_value`
+2. `AnnotationParser` → DataFrame with `transcript_id` + `exp_value`
 3. `IntersectionService.intersect()` → join on chromosome (gw) or transcript ID (tw)
 4. `AccessibilityService._annotate_opening_energy()` → add `opening_energy` via memmap lookup
 5. `ProbabilityService.calculate_probabilities_per_sirna()` → add `P_off_target` columns

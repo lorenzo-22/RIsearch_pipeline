@@ -1,4 +1,4 @@
-"""Tests for TranscriptomeParser format flag logic."""
+"""Tests for AnnotationParser format flag logic."""
 
 import tempfile
 from pathlib import Path
@@ -6,12 +6,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.transcriptome_parser import TranscriptomeParser
+from RIsearch_pipeline.services.annotation_parser import AnnotationParser
 
 
 @pytest.fixture
 def parser():
-    return TranscriptomeParser()
+    return AnnotationParser()
 
 
 def test_load_gtf_auto_detection(parser):
