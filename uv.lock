@@ -511,18 +511,9 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/91/74fc60d94488685a92ac9d49d7ec55f3e91fe9b77942a6235a5fa7f249c3/polars-1.40.1-py3-none-any.whl", hash = "sha256:c0f861219d1319cdea45c4ce4d30355a47176b8f98dcedf95ea8269f131b8abd", size = 828723, upload-time = "2026-04-22T19:14:25.452Z" },
 ]
 
-[[package]]
-name = "polars-lts-cpu"
-version = "1.32.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f2/5f/e7cf1fa2c4f29985161364cd879b6137dcf448e04c19b1a6948759230c79/polars_lts_cpu-1.32.3.tar.gz", hash = "sha256:02749e5788c686040390544a0282308f2e3350901583fd2b0d4bd1da3e18cf67", size = 4838838, upload-time = "2025-08-14T17:28:12.725Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/f5/d460d06185558a307dd931868bfae924706ebb9ecb5c67e11af1f25bfcdf/polars_lts_cpu-1.32.3-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:4ffd1231cbca1c0fc947ac0057122f5954daf3681ae00b5eb569877be8436ae8", size = 37644429, upload-time = "2025-08-14T17:27:24.993Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/73/769167e07ea97347b9b074abfb4179f33bc3490f3958ecf374288fd0cc0e/polars_lts_cpu-1.32.3-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:a81979937bc9f0f593b0f6c9939c92245060febddd195cd73b4e50604346b3dd", size = 34621214, upload-time = "2025-08-14T17:27:29.125Z" },
-    { url = "https://files.pythonhosted.org/packages/23/d5/1e3c30d737192124d15fbe064ab19e0a4598a94a669575e74a6cf32e0992/polars_lts_cpu-1.32.3-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9bcb52fcba7cabe76a5a511ef2c98054951cd68833071ecc8e7a57c54dff4ec3", size = 38226147, upload-time = "2025-08-14T17:27:33.17Z" },
-    { url = "https://files.pythonhosted.org/packages/33/c1/886719b41ee0fad129cf0bd77d6ab4572b7e5421500570e8aa76aa5d5413/polars_lts_cpu-1.32.3-cp39-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:57b20b0c6aaae8d4cf31037f868cbf7085d084554dcef05953b8182cffaed52d", size = 35639674, upload-time = "2025-08-14T17:27:37.055Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/d1/b976d4c9d917cce631702032968e0b98bf7e3148e46b1dd8ba03bc682c64/polars_lts_cpu-1.32.3-cp39-abi3-win_amd64.whl", hash = "sha256:2bf2c0edc079c6122ed1cc982f3da771c8013ee9f47516ab3942aa0e878d989f", size = 37795148, upload-time = "2025-08-14T17:27:41.175Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/12/69fc9472fbf2972d48f306127201ca5c8526b9bd46a5e8fcddf5dd987580/polars_lts_cpu-1.32.3-cp39-abi3-win_arm64.whl", hash = "sha256:92c29464c12c9ff217b0840f08900310c93dbc9e21c7b1baec0c47af2b23d41f", size = 34198998, upload-time = "2025-08-14T17:27:44.916Z" },
+[package.optional-dependencies]
+rtcompat = [
+    { name = "polars-runtime-compat" },
 ]
 
 [[package]]
@@ -539,6 +530,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/0b/b8d95fbed869fa4caabe9c400e4210374913b376e925e96fdcfa9be6416b/polars_runtime_32-1.40.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:992d14cf191dde043d36fbdbc98a65e43fbc7e9a5024cecd45f838ac4988c1ee", size = 54155564, upload-time = "2026-04-22T19:14:47.239Z" },
     { url = "https://files.pythonhosted.org/packages/06/d9/d091d8fb5cbed5e9536adfed955c4c89987a4cc3b8e73ae4532402b91c74/polars_runtime_32-1.40.1-cp310-abi3-win_amd64.whl", hash = "sha256:f78bb2abd00101cbb23cc0cb068f7e36e081057a15d2ec2dde3dda280709f030", size = 51829755, upload-time = "2026-04-22T19:14:50.85Z" },
     { url = "https://files.pythonhosted.org/packages/65/ad/b33c3022a394f3eb55c3310597cec615412a8a33880055eee191d154a628/polars_runtime_32-1.40.1-cp310-abi3-win_arm64.whl", hash = "sha256:b5cbfaf6b085b420b4bfcbe24e8f665076d1cccfdb80c0484c02a023ce205537", size = 45822104, upload-time = "2026-04-22T19:14:54.192Z" },
+]
+
+[[package]]
+name = "polars-runtime-compat"
+version = "1.40.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/60/f8340030f94a45231ad02abff171c8c10f45df0984e5a4fd0f39a48500f4/polars_runtime_compat-1.40.1.tar.gz", hash = "sha256:6149aa764439cec26a5f883fb9921a50f61a0f6c4549df51c735626701a73a18", size = 2935443, upload-time = "2026-04-22T19:16:00.906Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/c7/978481a2a2f5b50636d485bc176e16084fa1bb3b1d7e7e34f580cef240dc/polars_runtime_compat-1.40.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a683d287237f1dcc3dee95b5b2b6408cec318abbbb412ca49206492513be862f", size = 52016973, upload-time = "2026-04-22T19:15:25.228Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/c9/e308b0bbb331330a762f5f495597d34e9933c965ca6d4026a2eb481ef4ad/polars_runtime_compat-1.40.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:c83750f5593cec088134614fbf783fd10c5a92030d71b35f3dea0fff682d92c6", size = 46246682, upload-time = "2026-04-22T19:15:28.666Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/54/eaecb4747695e2e200ed6d13ce40dd7b0cdc7499d0b9af1e64e83af0e46d/polars_runtime_compat-1.40.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ffa15c4a8b7f67911412c849dc3d3aac313f682d834eb3f374d0f6cb7e080efc", size = 50123217, upload-time = "2026-04-22T19:15:32.321Z" },
+    { url = "https://files.pythonhosted.org/packages/20/87/0a881905d94341111d38e6a7ae94674511e6797cf3be2500998f06963edf/polars_runtime_compat-1.40.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e0373dabf942135d13b453d50be7a84b14420b495bd1242570545f58866396e7", size = 55869626, upload-time = "2026-04-22T19:15:37.15Z" },
+    { url = "https://files.pythonhosted.org/packages/be/6e/ac57e39bb94ebd63d6714895881ee0461e39039daa208916e5cad93174f9/polars_runtime_compat-1.40.1-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:bcdc488472d2c57dd3315a897456b47cdac222a1520fcf3d8d38410a5bf47ec1", size = 50287716, upload-time = "2026-04-22T19:15:40.829Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/f3/b75afc9f79cd4cadff52bdc4566119892b378f739a295573bf6bd0190a6c/polars_runtime_compat-1.40.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:34d03962169fc7c0ef6f6efd324d0a51350e7b5abf3b0cd118eb7a32e4d947ec", size = 53796312, upload-time = "2026-04-22T19:15:44.68Z" },
+    { url = "https://files.pythonhosted.org/packages/67/68/0df61011d894d1c94c915b39423c9aab79b3f7b18b836031ed32987227e0/polars_runtime_compat-1.40.1-cp310-abi3-win_amd64.whl", hash = "sha256:d9ccfe58eeb776567cf9556a83b980b9face9f0b1bb629bf2cd2334f4d9daf57", size = 51696665, upload-time = "2026-04-22T19:15:48.65Z" },
+    { url = "https://files.pythonhosted.org/packages/45/01/1bc7e868d3e4055b1ae756ad8ccc2a5d2bce57d7c88c3b4427babd43450b/polars_runtime_compat-1.40.1-cp310-abi3-win_arm64.whl", hash = "sha256:0c662e6acf5d4e3784eee8e8a1ec6eb185132ac90689cb84034132b5787903b1", size = 45701223, upload-time = "2026-04-22T19:15:52.189Z" },
 ]
 
 [[package]]
@@ -780,11 +787,6 @@ dependencies = [
     { name = "polars" },
 ]
 
-[package.optional-dependencies]
-polars-lts = [
-    { name = "polars-lts-cpu" },
-]
-
 [[package]]
 name = "risearch-pipeline"
 version = "0.1.0"
@@ -795,19 +797,13 @@ dependencies = [
     { name = "ncls" },
     { name = "numpy" },
     { name = "omegaconf" },
-    { name = "polars" },
+    { name = "polars", extra = ["rtcompat"] },
     { name = "pyarrow" },
     { name = "rich" },
     { name = "risearch" },
     { name = "seaborn" },
     { name = "typer" },
     { name = "viennarna" },
-]
-
-[package.optional-dependencies]
-lts = [
-    { name = "polars-lts-cpu" },
-    { name = "risearch", extra = ["polars-lts"] },
 ]
 
 [package.dev-dependencies]
@@ -827,17 +823,14 @@ requires-dist = [
     { name = "ncls", specifier = ">=0.0.63" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "omegaconf", specifier = ">=2.3.0" },
-    { name = "polars", specifier = ">=1.0" },
-    { name = "polars-lts-cpu", marker = "extra == 'lts'", specifier = ">=1.0" },
+    { name = "polars", extras = ["rtcompat"], specifier = ">=1.0" },
     { name = "pyarrow" },
     { name = "rich", specifier = ">=14.3.0" },
     { name = "risearch", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=feature%2Fpolars-lts-support" },
-    { name = "risearch", extras = ["polars-lts"], marker = "extra == 'lts'", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=feature%2Fpolars-lts-support" },
     { name = "seaborn", specifier = ">=0.12.0" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },
 ]
-provides-extras = ["lts"]
 
 [package.metadata.requires-dev]
 dev = [

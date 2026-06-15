@@ -29,7 +29,7 @@ off_targets:
 
   # [REQUIRED] Pre-computed RIsearch2 output: a single .tsv/.out.gz file, or a
   # directory of per-siRNA .parquet files (auto-detected; enables parallel mode).
-  risearch_file: ../tests/off-targets/single/input/risearch_siRNAID.out
+  risearch_file: ../tests/off-targets/data/risearch_siRNAID.out
 
   # ---------------------------------------------------------------------------
   # Transcriptome annotation (optional)
@@ -37,11 +37,11 @@ off_targets:
 
   # Transcriptome annotation file: GTF, GFF3, BED6, or BED7.
   # Join predictions to gene/transcript features and expression values.
-  transcriptome: ../tests/off-targets/single/input/expression_data.bed
+  transcriptome: ../tests/off-targets/data/expression_data.gtf
 
   # File format for the transcriptome file. Default: "auto" (detected by extension).
   # Options: "auto" | "gtf" | "bed6" | "bed7"
-  transcriptome_format: auto
+  transcriptome_format: gtf
 
   # Feature type to extract from GTF/GFF3 (ignored for BED). Default: "exon"
   feature: exon
@@ -55,11 +55,11 @@ off_targets:
 
   # Directory of per-chromosome accessibility Parquet files produced by the
   # "risearch-pipeline accessibility" command ({chrom}.accessibility.parquet).
-  accessibility_dir: ../tests/off-targets/single/input/accessibility
+  # accessibility_dir: ../tests/off-targets/data/accessibility
 
   # FASTA file for computing accessibility on-the-fly via ViennaRNA.
   # Slower than pre-computed profiles; uses window/span/unpaired parameters below.
-  # fasta: ../tests/off-targets/single/input/transcripts.fa
+  # fasta: ../tests/off-targets/data/genome.fa
 
   # ViennaRNA RNAplfold window size (W). Default: 80
   window: 80
@@ -76,16 +76,16 @@ off_targets:
   # ---------------------------------------------------------------------------
 
   # FASTA of on-target transcript sequence (triggers on-the-fly RIsearch search).
-  on_target: ../tests/off-targets/single/input/onTarget.fa
+  # on_target: ../tests/off-targets/data/onTarget.fa
 
   # siRNA FASTA (required when on_target is set for in-process RIsearch).
-  query: ../tests/off-targets/single/input/siRNA.fa
+  # query: ../tests/off-targets/data/sirna.fa
 
   # Expression level for the on-target gene. Default: 1000.0
   on_target_expression: 1000.0
 
   # Pre-computed RIsearch output for the on-target (skips on-the-fly search).
-  on_target_risearch_file: ../tests/off-targets/single/input/risearch_siRNAID_only.out
+  # on_target_risearch_file: ../tests/off-targets/data/risearch_siRNAID_only.out
 
   # Accessibility Parquet for the on-target transcript (same schema as the files
   # produced by the accessibility command: columns position, strand, u1..u30).
@@ -124,7 +124,7 @@ off_targets:
   # ---------------------------------------------------------------------------
 
   # Path for the main output file (TSV by default; extension depends on output_format).
-  output: ../tests/off-targets/single/output/results.tsv
+  output: /tmp/risearch_pipeline_test_output.tsv
 
   # Write in legacy .results format aggregated by transcript (old pipeline). Default: false
   legacy_format: false
@@ -171,10 +171,10 @@ accessibility:
 
   # [REQUIRED for full-genome and binding-site modes]
   # Path to genome or transcriptome FASTA file.
-  fasta: ../tests/off-targets/single/input/transcripts.fa
+  fasta: ../tests/off-targets/data/genome.fa
 
   # [REQUIRED] Output directory for accessibility profiles
-  output: ../tests/off-targets/single/output/accessibility
+  output: /tmp/risearch_accessibility_profiles
 
   # ViennaRNA RNAplfold window size (W). Default: 80
   window: 80

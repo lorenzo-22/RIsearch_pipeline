@@ -10,7 +10,7 @@ dependencies = [
   "ncls>=0.0.63",
   "numpy>=2.4.1",
   "omegaconf>=2.3.0",
-  "polars>=1.0",
+  "polars[rtcompat]>=1.0",
   "pyarrow",
   "rich>=14.3.0",
   # TODO: drop @feature/polars-lts-support ref after PR #4 merges into main
@@ -23,13 +23,6 @@ dependencies = [
 [project.scripts]
 gw = "RIsearch_pipeline.cli:entrypoint"
 risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
-
-[project.optional-dependencies]
-lts = [
-  "polars-lts-cpu>=1.0",
-  # TODO: same ref as default dep above — drop @feature/... after PR #4 merges
-  "risearch[polars-lts] @ git+ssh://git@github.com/saiden89/risearch.git@feature/polars-lts-support#subdirectory=risearch-python",
-]
 
 [dependency-groups]
 dev = [
