@@ -782,7 +782,7 @@ wheels = [
 [[package]]
 name = "risearch"
 version = "0.0.0a1"
-source = { git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=feature%2Fpolars-lts-support#69aa6d76ac162f16cf3b22283321b5b0f4128613" }
+source = { git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc#5242668c1ef48c6cd817bc5272233e60cc8c83bc" }
 dependencies = [
     { name = "polars" },
 ]
@@ -826,7 +826,7 @@ requires-dist = [
     { name = "polars", extras = ["rtcompat"], specifier = ">=1.0" },
     { name = "pyarrow" },
     { name = "rich", specifier = ">=14.3.0" },
-    { name = "risearch", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=feature%2Fpolars-lts-support" },
+    { name = "risearch", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc" },
     { name = "seaborn", specifier = ">=0.12.0" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },
