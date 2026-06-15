@@ -8,22 +8,28 @@ dependencies = [
   "biopython",
   "loguru",
   "ncls>=0.0.63",
-  "numpy==2.4.0",
+  "numpy>=2.4.1",
   "omegaconf>=2.3.0",
-  "polars",
+  "polars>=1.0",
   "pyarrow",
   "rich>=14.3.0",
+  # TODO: drop @feature/polars-lts-support ref after PR #4 merges into main
+  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@feature/polars-lts-support#subdirectory=risearch-python",
   "seaborn>=0.12.0",
   "typer",
   "viennaRNA==2.7.2",
 ]
 
-[project.optional-dependencies]
-risearch = ["risearch @ git+ssh://git@github.com/saiden89/risearch.git#subdirectory=risearch-python"]
-
 [project.scripts]
 gw = "RIsearch_pipeline.cli:entrypoint"
 risearch-pipeline = "RIsearch_pipeline.cli:entrypoint"
+
+[project.optional-dependencies]
+lts = [
+  "polars-lts-cpu>=1.0",
+  # TODO: same ref as default dep above — drop @feature/... after PR #4 merges
+  "risearch[polars-lts] @ git+ssh://git@github.com/saiden89/risearch.git@feature/polars-lts-support#subdirectory=risearch-python",
+]
 
 [dependency-groups]
 dev = [
