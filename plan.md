@@ -12,7 +12,7 @@
 - [x] 95/95 tests pass
 - [x] Commit and push Phase 1 changes
 
-## Phase 2 — Slurm Orchestrator [TODO]
+## Phase 2 — Slurm Orchestrator [DONE]
 
 Pipeline stages in dependency order:
 1. (optional) `risearch-pipeline index` — build RIsearch index
@@ -22,15 +22,15 @@ Pipeline stages in dependency order:
 
 Tasks:
 
-- [ ] Create `run_pipeline.py` orchestrator script with `--slurm` flag
+- [x] Create `run_pipeline.py` orchestrator script with `--slurm` flag
   - Local mode: run steps sequentially, capture stdout/stderr to structured log
   - Slurm mode: wrap each step in `sbatch --parsable`, chain deps via `--dependency=afterok:<job_id>`
-- [ ] Expose per-step Slurm resources at script top or via CLI flags:
+- [x] Expose per-step Slurm resources at script top or via CLI flags:
   - `--partition`, `--time`, `--mem`, `--cpus-per-task`, `--account`
-- [ ] Support `--dry-run`: print sbatch commands without submitting
-- [ ] Support `--config` passthrough to underlying pipeline commands
-- [ ] Generate structured logs: `logs/<timestamp>/{step}.log` for local; job IDs + status for Slurm
-- [ ] Test `--dry-run` output locally (no Slurm scheduler available on dev machine)
+- [x] Support `--dry-run`: print sbatch commands without submitting
+- [x] Support `--config` passthrough to underlying pipeline commands
+- [x] Generate structured logs: `logs/<timestamp>/{step}.log` for local; job IDs + status for Slurm
+- [x] Test `--dry-run` output locally (no Slurm scheduler available on dev machine)
 - [ ] Commit and push Phase 2 changes
 
 ## Phase 3 — Documentation [TODO]

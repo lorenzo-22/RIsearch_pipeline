@@ -1,0 +1,88 @@
+# =============================================================================
+# RIsearch Pipeline — Orchestrator Configuration
+# =============================================================================
+# Usage:
+#   python run_pipeline.py --config path/to/this/config.yaml          # local
+#   python run_pipeline.py --config path/to/this/config.yaml --slurm  # Slurm
+#   python run_pipeline.py --config path/to/this/config.yaml --dry-run
+#
+# All relative paths are resolved relative to this file's directory.
+# This example points at the bundled test data so it can be run directly.
+# =============================================================================
+
+# Steps to run in order.  index and convert are optional pre-processing steps.
+# Default when omitted: [accessibility, off-targets]
+steps:
+  - accessibility
+  - off-targets
+
+# Directory for log files. Default: logs/<timestamp>/ relative to CWD.
+# log_dir: logs
+
+# =============================================================================
+# Slurm resource settings  (used only with --slurm)
+# =============================================================================
+# Top-level keys (partition, account) apply to all steps.
+# Per-step sub-sections (snake_case) override the built-in resource defaults.
+# Built-in defaults: index 1h/8G/4cpu  convert 2h/16G/16cpu
+#                    accessibility 8h/32G/8cpu  off_targets 4h/64G/16cpu
+slurm:
+  partition: batch
+  account: myaccount
+  accessibility:
+    time: "08:00:00"
+    mem: 32G
+    cpus_per_task: 8
+  off_targets:
+    time: "04:00:00"
+    mem: 64G
+    cpus_per_task: 16
+
+# =============================================================================
+# Step: index  (optional — build RIsearch index from a target FASTA)
+# =============================================================================
+# index:
+#   target: ../data/genome.fa
+#   output: ../data/genome.idx   # default: <target>.idx
+
+# =============================================================================
+# Step: convert  (optional — convert .out.gz files to per-siRNA Parquet)
+# convert and accessibility are independent; Slurm submits them in parallel.
+# off-targets waits for both.
+# =============================================================================
+# convert:
+#   input_dir: ../data/raw_risearch/
+#   out_dir: ../data/parquet/          # default: same as input_dir
+#   ids_file: ../data/sirna_ids.txt    # optional: process only listed IDs
+#   workers: 32
+#   skip_existing: false
+
+# =============================================================================
+# Step: accessibility  (pre-compute per-chromosome accessibility profiles)
+# =============================================================================
+accessibility:
+  fasta: ../tests/off-targets/data/genome.fa
+  output: /tmp/risearch_pipeline_test_accessibility/
+  window: 80
+  span: 40
+  unpaired: 30
+  temperature: 37.0
+  workers: 1
+
+# =============================================================================
+# Step: off-targets  (main off-target analysis)
+# =============================================================================
+off_targets:
+  risearch_file: ../tests/off-targets/data/risearch_siRNAID.out
+  transcriptome: ../tests/off-targets/data/expression_data.gtf
+  transcriptome_format: gtf
+  feature: exon
+  expression_metric: RPKM
+  # accessibility_dir populated by the accessibility step above
+  accessibility_dir: /tmp/risearch_pipeline_test_accessibility/
+  output: /tmp/risearch_pipeline_test_output.tsv
+  type: gw
+  alpha: "1.0"
+  gamma: "1.0"
+  theta: ""
+  on_target_expression: 1000.0
