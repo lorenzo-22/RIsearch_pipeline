@@ -40,68 +40,35 @@ flowchart TD
 
 ---
 
-## Commands
+## CLI Reference
 
-### `off-targets` — Core Analysis
-
-Loads RIsearch predictions, intersects them with a GTF/BED annotation, annotates RNA accessibility, and computes per-site off-target probabilities.
-
-```bash
-# From pre-computed predictions file
-risearch-pipeline off-targets \
-  -r predictions.tsv \
-  -t annotation.gtf \
-  -a accessibility_profiles/ \
-  --on-target-ids on_target_map.tsv \
-  -o results.tsv
-
-# Run RIsearch in-process (siRNA + target FASTA)
-risearch-pipeline off-targets \
-  -s sirna.fa \
-  --target-fasta genome.fa \
-  -t annotation.gtf \
-  -a accessibility_profiles/ \
-  -o results.tsv
-
-# Via YAML config
-risearch-pipeline -c config/off-targets.example.yaml
-```
-
-**Key options:**
+### `off-targets`
 
 | Flag | Description |
 |------|-------------|
 | `-r / --risearch-file` | Pre-computed predictions (TSV, `.out.gz`, or directory of Parquet files — directory triggers parallel per-siRNA mode) |
 | `-s / --sirna-fasta` | siRNA FASTA — runs RIsearch in-process via PyO3 bindings |
-| `-t / --transcriptome` | GTF/GFF3 or BED annotation file (parsed by `AnnotationParser`) |
-| `-a / --accessibility-dir` | Directory of per-chromosome accessibility Parquet files |
+| `--target-fasta / --genome` | Target FASTA for in-process RIsearch |
+| `-t / --transcriptome` | GTF/GFF3 or BED annotation file |
+| `-a / --accessibility-dir` | Directory of per-chromosome accessibility Parquet files (from `accessibility` command) |
 | `--expression-metric` | GTF attribute for expression weighting (default: `RPKM`) |
 | `--type` | `gw` (genome-wide) or `tw` (transcriptome-wide, default: `gw`) |
-| `--alpha / --gamma / --theta` | Parameter sweep values (semicolon-separated) |
+| `--alpha / --gamma / --theta` | Parameter sweep values (semicolon-separated, e.g. `0.8;1.0`) |
 | `--on-target-ids / -oi` | TSV mapping `sirna_id → transcript_id` for on-target normalization |
 | `-j / --workers` | Parallel worker processes (default: CPU count) |
+| `-o / --output` | Output file path (TSV by default) |
 
-### `accessibility` — Pre-compute Profiles
+### `accessibility`
 
-Folds genome/transcriptome sequences with ViennaRNA (`RNA.pfl_fold_up`) and writes per-chromosome Parquet files for fast downstream lookup.
-
-```bash
-risearch-pipeline accessibility \
-  --fasta genome.fa \
-  --output profiles/ \
-  --window 80 \
-  --span 40 \
-  --unpaired 30
-```
-
-Can also convert existing binary `.open.acc.bin` profiles to Parquet:
-
-```bash
-risearch-pipeline accessibility \
-  --profiles-dir old_profiles/ \
-  --risearch-dir predictions/ \
-  --output profiles.parquet
-```
+| Flag | Description |
+|------|-------------|
+| `-f / --fasta` | Genome or transcriptome FASTA |
+| `-o / --output` | Output directory (one `{chrom}.accessibility.parquet` per chromosome) |
+| `-W / --window` | RNAplfold window size W (default: 80) |
+| `-L / --span` | Max base-pair span L (default: 40) |
+| `-u / --unpaired` | Unpaired probability length u (default: 30) |
+| `-T / --temperature` | Folding temperature °C (default: 37.0) |
+| `-j / --workers` | Parallel workers, one per chromosome (default: 1) |
 
 ---
 
@@ -110,19 +77,27 @@ risearch-pipeline accessibility \
 Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.
 
 ```bash
-# Clone with submodules (includes the Rust RIsearch core)
-git clone --recurse-submodules https://github.com/your-org/RIsearch_pipeline.git
+# Clone (SSH — the risearch PyO3 dep is fetched from a private repo via SSH)
+git clone git@github.com:your-org/RIsearch_pipeline.git
 cd RIsearch_pipeline
 
 # Create virtual environment and install all dependencies
 uv venv && source .venv/bin/activate
 uv sync
+```
 
+`uv sync` fetches and compiles the `risearch` PyO3 bindings from:
+
+```
+git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python
+```
+
+This commit is pinned because a later commit (`69aa6d7`) removed `from_fastas` from the Rust core without updating the Python bindings, breaking compilation. Update the pin only when upstream fixes the mismatch.
+
+```bash
 # Verify
 risearch-pipeline --help
 ```
-
-The `risearch` package is a local PyO3 binding built from the `risearch/` git submodule. `uv sync` compiles and installs it automatically.
 
 ### Optional: pre-build RIsearch binary
 
@@ -131,6 +106,107 @@ cargo install --path risearch/
 ```
 
 The binary at `~/.cargo/bin/RIsearch` is used only for the legacy CLI path; in-process search via PyO3 bindings does not require it.
+
+---
+
+## Running the Pipeline
+
+### Single-command mode (CLI)
+
+```bash
+# Pre-computed predictions file
+risearch-pipeline off-targets \
+  -r predictions.tsv \
+  -t annotation.gtf \
+  -a accessibility_profiles/ \
+  --on-target-ids on_target_map.tsv \
+  -o results.tsv
+
+# Via YAML config (paths relative to config file)
+risearch-pipeline -c config/off-targets.example.yaml
+```
+
+### Orchestrated multi-step mode (local)
+
+`run_pipeline.py` runs all pipeline stages in dependency order:
+
+| Step | Command | Notes |
+|------|---------|-------|
+| `index` | `risearch-pipeline index` | Optional — build RIsearch index |
+| `convert` | `convert_risearch_to_parquet.py` | Optional — `.out.gz` → Parquet |
+| `accessibility` | `risearch-pipeline accessibility` | Compute RNA accessibility profiles |
+| `off-targets` | `risearch-pipeline off-targets` | Main analysis |
+
+`index`, `convert`, and `accessibility` are independent and run in parallel on Slurm. `off-targets` waits for both `accessibility` and `convert`.
+
+```bash
+# Dry-run (print commands without executing)
+python run_pipeline.py --config config/run-pipeline.example.yaml --dry-run
+
+# Run locally (sequential, logs to logs/<timestamp>/)
+python run_pipeline.py --config config/run-pipeline.example.yaml
+
+# Run a subset of steps
+python run_pipeline.py --config config/run-pipeline.example.yaml --steps accessibility,off-targets
+```
+
+### Cluster mode (Slurm)
+
+```bash
+# Dry-run — shows full sbatch commands with dependency chain
+python run_pipeline.py --config config/run-pipeline.example.yaml --slurm --dry-run
+
+# Submit to Slurm
+python run_pipeline.py --config config/run-pipeline.example.yaml --slurm
+
+# Override resources for all steps
+python run_pipeline.py --config config/run-pipeline.example.yaml --slurm \
+  --partition gpu --mem 128G --cpus-per-task 32 --account mylab
+```
+
+Slurm resources are controlled from the YAML config under the `slurm:` key:
+
+```yaml
+slurm:
+  partition: batch
+  account: mylab
+  accessibility:          # per-step overrides
+    time: "08:00:00"
+    mem: 32G
+    cpus_per_task: 8
+  off_targets:
+    time: "04:00:00"
+    mem: 128G
+    cpus_per_task: 16
+```
+
+Each step gets its own `--output`/`--error` log under `logs/<timestamp>/`. CLI flags (`--partition`, `--time`, `--mem`, `--cpus-per-task`, `--account`) override YAML for all steps.
+
+### Orchestrator config format
+
+See `config/run-pipeline.example.yaml` for the full reference. All paths resolve relative to the config file's directory.
+
+```yaml
+steps: [accessibility, off-targets]   # default; add index/convert to enable
+
+slurm:
+  partition: batch
+  account: mylab
+
+accessibility:
+  fasta: ../data/genome.fa
+  output: ../data/accessibility/
+  workers: 8
+
+off_targets:
+  risearch_file: ../data/parquet/
+  transcriptome: ../data/annotations.gtf
+  accessibility_dir: ../data/accessibility/
+  output: ../results/off_targets.tsv
+  type: gw
+  alpha: "0.8;1.0"
+  gamma: "1.0"
+```
 
 ---
 
