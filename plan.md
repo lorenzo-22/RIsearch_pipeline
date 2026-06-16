@@ -33,14 +33,14 @@ Tasks:
 - [x] Test `--dry-run` output locally (no Slurm scheduler available on dev machine)
 - [ ] Commit and push Phase 2 changes
 
-## Phase 3 — Documentation [TODO]
+## Phase 3 — Documentation [DONE]
 
-- [ ] Update `README.md`:
+- [x] Update `README.md`:
   - Local run instructions (CLI and config modes)
   - Cluster run instructions (`run_pipeline.py --slurm`)
   - Environment setup (`uv venv && uv sync`)
   - Note on risearch git dep and pinned commit
-- [ ] Commit and push Phase 3 changes
+- [x] Commit and push Phase 3 changes
 
 ---
 
