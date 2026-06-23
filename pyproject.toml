@@ -1,9 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "risearch-pipeline"
 version = "0.1.0"
 description = "Pipeline for the analysis of the results of the RIsearch project"
 readme = "README.md"
 requires-python = ">=3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "Lorenzo Favaro", email = "lorenzo@rth.dk" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Intended Audience :: Science/Research",
+]
 dependencies = [
   "biopython",
   "loguru",
@@ -13,13 +27,18 @@ dependencies = [
   "polars[rtcompat]>=1.0",
   "pyarrow",
   "rich>=14.3.0",
+  # NOTE: blocks PyPI upload — PyPI rejects direct git/URL deps. Swap to a normal
+  # version pin (e.g. "risearch>=X.Y") once risearch is published to PyPI.
   # Pin to last buildable commit on feature/polars-lts-support; 69aa6d7 removed from_fastas from core
   # without updating risearch-python/src/lib.rs (compilation bug). Update when upstream fixes.
   "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
-  "seaborn>=0.12.0",
   "typer",
   "viennaRNA==2.7.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/lorenzo-22/RIsearch_pipeline"
+Repository = "https://github.com/lorenzo-22/RIsearch_pipeline"
 
 [project.scripts]
 gw = "RIsearch_pipeline.cli:entrypoint"
@@ -35,9 +54,18 @@ dev = [
   "ty",
 ]
 
-[tool.pytest]
+[tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/RIsearch_pipeline"]
+
+# Allows the local `uv build` to succeed while `risearch` is a git+ssh direct
+# reference. PyPI still rejects direct refs on upload — remove this (and swap the
+# dep for a PyPI version pin) once risearch is published.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv]
 package = true

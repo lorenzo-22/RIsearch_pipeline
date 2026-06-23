@@ -45,7 +45,7 @@ class ProbabilityService:
         """Z = Σ(Expr_i × exp(-dG_total_i / RT)); P(t) = W_t / Z."""
         if "energy" not in df.columns:
             logger.warning("No 'energy' column found. Cannot calculate probabilities.")
-            return df
+            return df, {}
 
         if self.accessibility_service:
             df = self._annotate_opening_energy(df)

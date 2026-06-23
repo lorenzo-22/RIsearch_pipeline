@@ -77,35 +77,42 @@ flowchart TD
 Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.
 
 ```bash
-# Clone (SSH — the risearch PyO3 dep is fetched from a private repo via SSH)
-git clone git@github.com:your-org/RIsearch_pipeline.git
+git clone git@github.com:lorenzo-22/RIsearch_pipeline.git
 cd RIsearch_pipeline
 
-# Create virtual environment and install all dependencies
+# Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
 uv sync
 ```
 
-`uv sync` fetches and compiles the `risearch` PyO3 bindings from:
+### The `risearch` dependency
+
+The `risearch` PyO3 bindings are only required for the **in-process `index` and
+`search`** commands (computing RNA-RNA interaction predictions in-process). The
+core off-target analysis — `off-targets` and `accessibility` running on
+**pre-computed** RIsearch output (TSV / `.out.gz` / Parquet) — works **without**
+`risearch` installed; it is imported lazily.
+
+`risearch` is currently fetched from a **private** repository over SSH and is
+**not yet on PyPI**, so `uv sync` requires SSH access to that repo:
 
 ```
 git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python
 ```
 
-This commit is pinned because a later commit (`69aa6d7`) removed `from_fastas` from the Rust core without updating the Python bindings, breaking compilation. Update the pin only when upstream fixes the mismatch.
+The commit is pinned because a later commit (`69aa6d7`) removed `from_fastas`
+from the Rust core without updating the Python bindings, breaking compilation.
+Update the pin only when upstream fixes the mismatch.
+
+> **PyPI:** Because this `git+ssh` dependency is a direct URL, the package
+> cannot be published to PyPI as-is. Once `risearch` is released to PyPI, swap
+> the dependency in `pyproject.toml` for a normal version pin and the package
+> becomes publishable / `pip`-installable.
 
 ```bash
 # Verify
 risearch-pipeline --help
 ```
-
-### Optional: pre-build RIsearch binary
-
-```bash
-cargo install --path risearch/
-```
-
-The binary at `~/.cargo/bin/RIsearch` is used only for the legacy CLI path; in-process search via PyO3 bindings does not require it.
 
 ---
 
@@ -127,6 +134,10 @@ risearch-pipeline -c config/off-targets.example.yaml
 ```
 
 ### Orchestrated multi-step mode (local)
+
+> `run_pipeline.py` and `convert_risearch_to_parquet.py` live at the repo root —
+> they are available when you **clone** the repo, but are **not** installed by
+> `pip`/`uv` as console scripts. Run them with `python <script>.py` from a clone.
 
 `run_pipeline.py` runs all pipeline stages in dependency order:
 
@@ -296,7 +307,10 @@ Key optimizations:
 
 ## Related: Rust RIsearch Core
 
-`risearch/` is a git submodule containing the Rust RIsearch binary and its PyO3 Python bindings. The pipeline calls the bindings **in-process** — no subprocess, no intermediate TSV. Features:
+`risearch` is a separate Rust project providing the RIsearch core and its PyO3
+Python bindings, installed as the `risearch` dependency (see
+[Installation](#installation)). The pipeline calls the bindings **in-process** —
+no subprocess, no intermediate TSV. Features:
 
 - Suffix-array based seed-and-extend search
 - Turner 2004 thermodynamic parameters

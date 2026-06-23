@@ -214,3 +214,9 @@ __marimo__/
 *.gz
 *.npy
 
+# Pipeline run logs
+logs/
+
+# Editor / assistant config
+.claude/
+

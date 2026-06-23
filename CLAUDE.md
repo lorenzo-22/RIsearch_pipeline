@@ -71,9 +71,9 @@ models.py                       ← shared dataclasses / typed structs
 config.py                       ← OmegaConf schema + YAML loading + path resolution
 ```
 
-### The `risearch` submodule
+### The `risearch` dependency
 
-`risearch/` is a git submodule containing the Rust RIsearch binary **and** its PyO3 Python bindings (`risearch-python/`). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. The binary at `~/.cargo/bin/RIsearch` is only needed for the legacy CLI path.
+`risearch` is a separate Rust project (the RIsearch core **and** its PyO3 Python bindings, `risearch-python/`), installed as a dependency — `git+ssh` from a private repo, pinned in `pyproject.toml`. It is **not vendored** in this repo (no `risearch/` directory, no submodule). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. `import risearch` is lazy, so the off-target analysis on pre-computed output runs without it; only the in-process `index`/`search` commands need it.
 
 ### Data flow for `off-targets`
 
