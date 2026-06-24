@@ -167,14 +167,6 @@ class GenomeAccessibilityService:
         Returns:
             Dictionary mapping 'chrom' to the output Parquet path.
         """
-        try:
-            import RNA  # noqa: F401
-        except ImportError:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Install ViennaRNA with Python bindings."
-            )
-
         from concurrent.futures import ProcessPoolExecutor, as_completed
         from riot.services.helpers import read_fasta
 
@@ -261,14 +253,6 @@ class GenomeAccessibilityService:
             2D numpy array [seq_len, unpaired_prob] of opening energies.
             Use result[pos, u-1] to get opening energy for length u at position pos.
         """
-        try:
-            import RNA
-        except ImportError:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Install ViennaRNA with Python bindings."
-            )
-
         seq_len = len(sequence)
         if seq_len == 0:
             return np.array([], dtype=np.float32)
@@ -339,8 +323,6 @@ class GenomeAccessibilityService:
                 f"Profile for {chrom} not found in {self.data_dir}. "
                 f"Expected {self.data_dir / f'{chrom}.accessibility.parquet'}."
             )
-
-        import polars as pl
 
         df = (
             pl.read_parquet(path)

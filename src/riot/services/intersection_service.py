@@ -166,31 +166,18 @@ class IntersectionService:
         starts = trans_sorted["start"].to_numpy().astype(np.int64, copy=False)
         ends = trans_sorted["end"].to_numpy().astype(np.int64, copy=False)
 
+        interval_ids = np.arange(len(starts), dtype=np.int64)
         index = {
-            "starts": starts,
-            "ends": ends,
             "gene_ids": trans_sorted["gene_id"].to_list(),
             "transcript_ids": trans_sorted["transcript_id"].to_list(),
             "exp_values": trans_sorted["exp_value"].to_numpy(),
             "trans_df": trans_sorted,
+            "ncls": NCLS(starts, ends, interval_ids),
         }
-
-        if NCLS is not None and len(starts) > 0:
-            interval_ids = np.arange(len(starts), dtype=np.int64)
-            index["ncls"] = NCLS(starts, ends, interval_ids)
 
         return index
 
     def _process_batch(
-        self,
-        preds: pl.DataFrame,
-        trans_index: dict,
-    ) -> Optional[pl.DataFrame]:
-        if trans_index.get("ncls") is not None:
-            return self._process_batch_ncls(preds, trans_index)
-        return self._process_batch_numpy(preds, trans_index)
-
-    def _process_batch_ncls(
         self,
         preds: pl.DataFrame,
         trans_index: dict,
@@ -209,63 +196,6 @@ class IntersectionService:
 
         if len(pred_idx) == 0:
             return None
-
-        preds_sel = preds[pred_idx]
-        trans_sel = trans_df[trans_idx].select([
-            pl.col("start").alias("trans_start"),
-            pl.col("end").alias("trans_end"),
-            pl.col("gene_id"),
-            pl.col("transcript_id"),
-            pl.col("exp_value"),
-        ])
-
-        return preds_sel.hstack(trans_sel)
-
-    def _process_batch_numpy(
-        self,
-        preds: pl.DataFrame,
-        trans_index: dict,
-    ) -> Optional[pl.DataFrame]:
-        if preds.height == 0:
-            return None
-
-        trans_df = trans_index["trans_df"]
-        trans_starts = trans_index["starts"]
-        trans_ends = trans_index["ends"]
-
-        pred_starts = preds["start"].to_numpy().astype(np.int64, copy=False)
-        pred_ends = preds["end"].to_numpy().astype(np.int64, copy=False)
-
-        order = np.argsort(pred_starts, kind="mergesort")
-        pred_starts_sorted = pred_starts[order]
-        pred_ends_sorted = pred_ends[order]
-
-        pred_match_idx_list = []
-        trans_match_idx_list = []
-
-        for t_idx in range(len(trans_starts)):
-            t_start = trans_starts[t_idx]
-            t_end = trans_ends[t_idx]
-
-            # Any-overlap: pred_start < t_end AND pred_end > t_start.
-            right = np.searchsorted(pred_starts_sorted, t_end, side="left")
-            if right == 0:
-                continue
-
-            ends_slice = pred_ends_sorted[:right]
-            mask = ends_slice > t_start
-            if not np.any(mask):
-                continue
-
-            pred_match_idx = order[:right][mask]
-            pred_match_idx_list.append(pred_match_idx)
-            trans_match_idx_list.append(np.full(pred_match_idx.shape[0], t_idx, dtype=np.int64))
-
-        if not pred_match_idx_list:
-            return None
-
-        pred_idx = np.concatenate(pred_match_idx_list)
-        trans_idx = np.concatenate(trans_match_idx_list)
 
         preds_sel = preds[pred_idx]
         trans_sel = trans_df[trans_idx].select([

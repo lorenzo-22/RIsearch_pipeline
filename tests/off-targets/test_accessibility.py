@@ -1,12 +1,10 @@
 import shutil
-import sys
 import unittest
 from pathlib import Path
 import numpy as np
 import polars as pl
 from riot.services.accessibility import (
     GenomeAccessibilityService,
-    AccessibilityError,
 )
 from riot.services.helpers import read_fasta
 
@@ -88,22 +86,6 @@ class TestAccessibility(unittest.TestCase):
             any(v != 25.5 for v in u1_vals),
             "Should have non-default accessibility values",
         )
-
-    def test_missing_bindings_raises(self):
-        """Test that missing ViennaRNA raises AccessibilityError."""
-        # Temporarily hide RNA from sys.modules to simulate missing bindings
-        saved = sys.modules.get("RNA", None)
-        sys.modules["RNA"] = None  # type: ignore[assignment]
-        try:
-            service = GenomeAccessibilityService(self.test_dir)
-            with self.assertRaises((AccessibilityError, ImportError)):
-                service.compute_genome_accessibility(self.fasta_path)
-        finally:
-            if saved is None:
-                sys.modules.pop("RNA", None)
-            else:
-                sys.modules["RNA"] = saved
-
 
     def test_query_service(self):
         """Test querying a pre-computed profile."""

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
+import risearch
 from Bio import SeqIO
 from loguru import logger
 
@@ -52,8 +53,6 @@ class RIsearchService:
         Registers target_path so run_search() can resolve sequence names.
         Reuses an existing index if it is newer than the target.
         """
-        import risearch
-
         if not target_path.exists():
             raise FileNotFoundError(f"Target FASTA not found: {target_path}")
 
@@ -89,7 +88,6 @@ class RIsearchService:
         target_fasta is required when the index was not built in this session
         via index_target() — needed to resolve integer target indices to names.
         """
-        import risearch
 
         if not query_path.exists():
             raise FileNotFoundError(f"Query FASTA not found: {query_path}")

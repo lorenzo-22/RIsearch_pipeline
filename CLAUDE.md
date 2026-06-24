@@ -73,7 +73,7 @@ config.py                       ← OmegaConf schema + YAML loading + path resol
 
 ### The `risearch` dependency
 
-`risearch` is a separate Rust project (the RIsearch core **and** its PyO3 Python bindings, `risearch-python/`), installed as a dependency — `git+ssh` from a private repo, pinned in `pyproject.toml`. It is **not vendored** in this repo (no `risearch/` directory, no submodule). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. `import risearch` is lazy, so the off-target analysis on pre-computed output runs without it; only the in-process `index`/`search` commands need it.
+`risearch` is a separate Rust project (the RIsearch core **and** its PyO3 Python bindings, `risearch-python/`), installed as a dependency — `git+ssh` from a private repo, pinned in `pyproject.toml`. It is **not vendored** in this repo (no `risearch/` directory, no submodule). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. `risearch` is imported at module top in `risearch_service.py`, so it is a hard dependency required for any `riot` invocation that loads that module (effectively all of them).
 
 ### Data flow for `off-targets`
 

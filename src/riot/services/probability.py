@@ -682,8 +682,6 @@ class ProbabilityService:
         if accessibility_path and accessibility_path.exists() and t_end > 0:
             # Use pre-computed accessibility Parquet file
             try:
-                import polars as pl
-
                 df_acc = (
                     pl.read_parquet(accessibility_path)
                     .filter(pl.col("strand") == strand)
