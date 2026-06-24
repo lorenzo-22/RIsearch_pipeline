@@ -74,6 +74,34 @@ flowchart TD
 
 ---
 
+## Python API
+
+RIOT can be used as a library — `import riot`, then call the commands as plain functions; they return their results in-memory.
+
+```python
+import riot
+
+# Off-target analysis on a pre-computed predictions file → polars.DataFrame
+df = riot.off_targets(risearch_file="predictions.tsv", gtf_file="annotations.gtf")
+
+# Pre-compute per-chromosome accessibility profiles → dict[chrom -> Path]
+profiles = riot.accessibility(genome="genome.fa", output="acc_dir/")
+
+# Build a RIsearch index → Path (needs the external 'risearch' package)
+idx = riot.index("target.fa")
+
+# Run a RIsearch search → polars.DataFrame (needs the external 'risearch' package)
+hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
+```
+
+**Notes**
+
+- `riot.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it streams results to disk and returns a summary `dict` (output paths + row/summary counts) instead.
+- On error the underlying command raises `typer.Exit` (a Click exception).
+- `riot.index` / `riot.search` require the external `risearch` package — the same dependency the CLI's `index`/`search` commands need.
+
+---
+
 ## Installation
 
 Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.

@@ -1,6 +1,6 @@
 from loguru import logger
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
@@ -26,30 +26,42 @@ def _make_progress(console):
 
 
 def run(
-    genome: Optional[Path] = typer.Option(None, "--fasta", "-f", help="Path to genome or transcriptome FASTA file"),
-    output: Path = typer.Option(
-        ...,
-        "--output",
-        "-o",
-        help="Output directory — one {chrom}.accessibility.parquet per chromosome is written here",
-    ),
-    window_size: int = typer.Option(80, "--window", "-W", help="Window size (W)"),
-    max_span: int = typer.Option(40, "--span", "-L", help="Max base pair span (L)"),
-    unpaired_prob: int = typer.Option(
-        30, "--unpaired", "-u", help="Unpaired probability length (u)"
-    ),
-    temperature: float = typer.Option(
-        37.0, "--temperature", "-T", help="Folding temperature in °C (default 37.0)."
-    ),
-    workers: int = typer.Option(
-        1,
-        "--workers",
-        "-j",
-        help="Number of parallel workers (one per chromosome).",
-    ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Show detailed progress information."
-    ),
+    genome: Annotated[
+        Optional[Path],
+        typer.Option("--fasta", "-f", help="Path to genome or transcriptome FASTA file"),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output directory — one {chrom}.accessibility.parquet per chromosome is written here",
+        ),
+    ] = ...,  # ty: ignore[invalid-parameter-default]  # Typer required-option idiom (Ellipsis); kept required, must follow defaulted `genome`
+    window_size: Annotated[
+        int, typer.Option("--window", "-W", help="Window size (W)")
+    ] = 80,
+    max_span: Annotated[
+        int, typer.Option("--span", "-L", help="Max base pair span (L)")
+    ] = 40,
+    unpaired_prob: Annotated[
+        int, typer.Option("--unpaired", "-u", help="Unpaired probability length (u)")
+    ] = 30,
+    temperature: Annotated[
+        float,
+        typer.Option("--temperature", "-T", help="Folding temperature in °C (default 37.0)."),
+    ] = 37.0,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            "-j",
+            help="Number of parallel workers (one per chromosome).",
+        ),
+    ] = 1,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Show detailed progress information.")
+    ] = False,
 ):
     """
     Pre-compute per-chromosome accessibility profiles.
@@ -62,6 +74,10 @@ def run(
     --accessibility-dir.
     """
     console = Console(stderr=True)
+
+    # Accept str paths (Python API) as well as Path objects.
+    genome = Path(genome) if isinstance(genome, str) else genome
+    output = Path(output) if isinstance(output, str) else output
 
     if genome is None:
         console.print("[red]Error: --fasta is required[/red]")
@@ -95,6 +111,8 @@ def run(
         )
         for chrom, path in results.items():
             console.print(f"  {chrom}: [cyan]{path}[/cyan]")
+
+        return results
 
     except Exception as e:
         logger.exception("Failed to compute accessibility")

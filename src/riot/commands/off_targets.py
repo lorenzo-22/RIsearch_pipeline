@@ -8,7 +8,7 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -200,6 +200,11 @@ def _parse_theta(theta: str) -> list[float]:
     return [float(x) for x in theta.split(";") if x.strip()]
 
 
+def _as_path(value: Optional[Path | str]) -> Optional[Path]:
+    """Coerce a str (e.g. from the Python API) to Path; pass Path/None through."""
+    return Path(value) if isinstance(value, str) else value
+
+
 def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
     """Downcast columns to minimize Arrow IPC file size.
 
@@ -231,207 +236,287 @@ def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def run(
-    risearch_file: Optional[Path] = typer.Option(
-        None,
-        "-r",
-        "--risearch-file",
-        help="Path to pre-computed RIsearch output file or directory of files.",
-        exists=True,
-        readable=True,
-        dir_okay=True,
-    ),
-    sirna_fasta: Optional[Path] = typer.Option(
-        None,
-        "-s",
-        "--sirna-fasta",
-        help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch in-process via PyO3 bindings; also used to compute self-hybridisation E_min for directory inputs.",
-        exists=True,
-        readable=True,
-    ),
-    target_fasta: Optional[Path] = typer.Option(
-        None,
-        "--target-fasta",
-        "--genome",
-        help="Path to target FASTA (genome or transcriptome) for RIsearch.",
-        exists=True,
-        readable=True,
-    ),
-    target_index: Optional[Path] = typer.Option(
-        None,
-        "-idx",
-        "--target-index",
-        help="Pre-built RIsearch index (optional, speeds up repeated runs).",
-        exists=True,
-        readable=True,
-    ),
-    workers: Optional[int] = typer.Option(
-        None,
-        "-j",
-        "--workers",
-        help="Number of parallel threads for intersection (default: CPU count).",
-    ),
-    gtf_file: Path = typer.Option(
-        None,
-        "-t",
-        "--transcriptome",
-        help="Path to transcriptome annotation file (.gtf) or .bed file.",
-        exists=True,
-        readable=True,
-    ),
-    feature_type: str = typer.Option(
-        "exon",
-        "--feature",
-        help="Feature type to select from GTF (default: exon).",
-    ),
-    expression_metric: str = typer.Option(
-        "RPKM",
-        "--expression-metric",
-        help="Attribute to use for expression score (default: RPKM).",
-    ),
-    transcriptome_format: str = typer.Option(
-        "auto",
-        "--transcriptome-format",
-        help="Transcriptome file format: auto, bed6, bed7, or gtf (default: auto-detect).",
-    ),
-    accessibility_dir: Path = typer.Option(
-        None,
-        "-a",
-        "--accessibility-dir",
-        help="Directory of per-chromosome accessibility Parquet files (from 'riot accessibility').",
-        exists=True,
-        file_okay=False,
-    ),
-    output_file: Path = typer.Option(
-        None,
-        "-o",
-        "--output",
-        help="Path to save the analysis results (TSV).",
-    ),
-    genome_file: Path = typer.Option(
-        None,
-        "-f",
-        "--fasta",
-        help="Path to genome FASTA file (computes accessibility on-the-fly).",
-        exists=True,
-        readable=True,
-    ),
-    window_size: int = typer.Option(80, "--window", "-W", help="Window size (W)"),
-    max_span: int = typer.Option(40, "--span", "-L", help="Max base pair span (L)"),
-    unpaired_prob: int = typer.Option(
-        30, "--unpaired", "-u", help="Unpaired probability length (u)"
-    ),
-    temperature: float = typer.Option(
-        37.0, "--temperature", "-T", help="Folding temperature in °C (default 37.0). Affects both accessibility and partition function."
-    ),
-    on_target_file: Path = typer.Option(
-        None,
-        "-on",
-        "--on-target",
-        help="Path to On-Target sequence FASTA (for Partition Function).",
-        exists=True,
-        readable=True,
-    ),
-    on_target_risearch_file: Optional[Path] = typer.Option(
-        None,
-        "--on-target-risearch-file",
-        "-on-ris",
-        help="Path to pre-computed RIsearch output file for On-Target (skips on-the-fly calculation).",
-        exists=True,
-        readable=True,
-    ),
-    query_file: Path = typer.Option(
-        None,
-        "-q",
-        "--query",
-        help="Path to siRNA query FASTA (required if --on-target is used).",
-        exists=True,
-        readable=True,
-    ),
-    on_target_expression: float = typer.Option(
-        1000.0,
-        "--on-target-expression",
-        "-oexp",
-        help="Expression level for On-Target (default: 1000.0).",
-    ),
-    on_target_accessibility: Optional[Path] = typer.Option(
-        None,
-        "--on-target-accessibility",
-        help="Accessibility Parquet for the on-target (same schema as accessibility command output). Falls back to on-the-fly computation if omitted.",
-    ),
-    on_target_ids_file: Optional[Path] = typer.Option(
-        None,
-        "-oi",
-        "--on-target-ids",
-        help="TSV file mapping siRNA IDs to on-target transcript IDs (sirna_id \\t transcript_id).",
-        exists=True,
-        readable=True,
-    ),
-    alpha: str = typer.Option(
-        "1.0",
-        "--alpha",
-        help="Alpha clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
-    ),
-    gamma: str = typer.Option(
-        "1.0",
-        "--gamma",
-        help="Gamma clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
-    ),
-    theta: str = typer.Option(
-        "",
-        "--theta",
-        help="Theta scaling parameter(s). Separate multiple values with ';' (e.g., '0.5;0.7').",
-    ),
-    legacy_format: bool = typer.Option(
-        False,
-        "--legacy-format",
-        help="Output in legacy format (gw.results style, aggregated by transcript).",
-    ),
-    detailed_report: bool = typer.Option(
-        False,
-        "--detailed-report",
-        help="Report off-target probabilities for individual transcripts (Legacy Format).",
-    ),
-    sense_only: bool = typer.Option(
-        False,
-        "--sense-only",
-        help="Limit RIsearch2 predictions to sense strand (+), ignore antisense.",
-    ),
-    predictions_type: str = typer.Option(
-        "gw",
-        "--type",
-        help="Type of RIsearch2 predictions. gw for genome-wide and tw for transcriptome-wide.",
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Show detailed output (tables, stats).",
-    ),
-    profile: bool = typer.Option(
-        False,
-        "--profile",
-        help="Print a per-stage timing and memory profile table at the end of the run.",
-    ),
-    output_format: str = typer.Option(
-        "tsv",
-        "--output-format",
-        help="Final output format: 'tsv', 'csv', or 'parquet'.",
-    ),
-    summary_only: bool = typer.Option(
-        False,
-        "--summary-only",
-        help="Write only .summary files (partition-function stats per siRNA); skip the per-prediction output TSV/parquet. Equivalent to the old pipeline's default output.",
-    ),
-) -> None:
+    risearch_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-r",
+            "--risearch-file",
+            help="Path to pre-computed RIsearch output file or directory of files.",
+            exists=True,
+            readable=True,
+            dir_okay=True,
+        ),
+    ] = None,
+    sirna_fasta: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-s",
+            "--sirna-fasta",
+            help="Path to siRNA FASTA file (one or more sequences). Runs RIsearch in-process via PyO3 bindings; also used to compute self-hybridisation E_min for directory inputs.",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    target_fasta: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--target-fasta",
+            "--genome",
+            help="Path to target FASTA (genome or transcriptome) for RIsearch.",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    target_index: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-idx",
+            "--target-index",
+            help="Pre-built RIsearch index (optional, speeds up repeated runs).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    workers: Annotated[
+        Optional[int],
+        typer.Option(
+            "-j",
+            "--workers",
+            help="Number of parallel threads for intersection (default: CPU count).",
+        ),
+    ] = None,
+    gtf_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-t",
+            "--transcriptome",
+            help="Path to transcriptome annotation file (.gtf) or .bed file.",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    feature_type: Annotated[
+        str,
+        typer.Option(
+            "--feature",
+            help="Feature type to select from GTF (default: exon).",
+        ),
+    ] = "exon",
+    expression_metric: Annotated[
+        str,
+        typer.Option(
+            "--expression-metric",
+            help="Attribute to use for expression score (default: RPKM).",
+        ),
+    ] = "RPKM",
+    transcriptome_format: Annotated[
+        str,
+        typer.Option(
+            "--transcriptome-format",
+            help="Transcriptome file format: auto, bed6, bed7, or gtf (default: auto-detect).",
+        ),
+    ] = "auto",
+    accessibility_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-a",
+            "--accessibility-dir",
+            help="Directory of per-chromosome accessibility Parquet files (from 'riot accessibility').",
+            exists=True,
+            file_okay=False,
+        ),
+    ] = None,
+    output_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-o",
+            "--output",
+            help="Path to save the analysis results (TSV).",
+        ),
+    ] = None,
+    genome_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-f",
+            "--fasta",
+            help="Path to genome FASTA file (computes accessibility on-the-fly).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    window_size: Annotated[
+        int, typer.Option("--window", "-W", help="Window size (W)")
+    ] = 80,
+    max_span: Annotated[
+        int, typer.Option("--span", "-L", help="Max base pair span (L)")
+    ] = 40,
+    unpaired_prob: Annotated[
+        int, typer.Option("--unpaired", "-u", help="Unpaired probability length (u)")
+    ] = 30,
+    temperature: Annotated[
+        float,
+        typer.Option(
+            "--temperature", "-T", help="Folding temperature in °C (default 37.0). Affects both accessibility and partition function."
+        ),
+    ] = 37.0,
+    on_target_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-on",
+            "--on-target",
+            help="Path to On-Target sequence FASTA (for Partition Function).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    on_target_risearch_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--on-target-risearch-file",
+            "-on-ris",
+            help="Path to pre-computed RIsearch output file for On-Target (skips on-the-fly calculation).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    query_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-q",
+            "--query",
+            help="Path to siRNA query FASTA (required if --on-target is used).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    on_target_expression: Annotated[
+        float,
+        typer.Option(
+            "--on-target-expression",
+            "-oexp",
+            help="Expression level for On-Target (default: 1000.0).",
+        ),
+    ] = 1000.0,
+    on_target_accessibility: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--on-target-accessibility",
+            help="Accessibility Parquet for the on-target (same schema as accessibility command output). Falls back to on-the-fly computation if omitted.",
+        ),
+    ] = None,
+    on_target_ids_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-oi",
+            "--on-target-ids",
+            help="TSV file mapping siRNA IDs to on-target transcript IDs (sirna_id \\t transcript_id).",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    alpha: Annotated[
+        str,
+        typer.Option(
+            "--alpha",
+            help="Alpha clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
+        ),
+    ] = "1.0",
+    gamma: Annotated[
+        str,
+        typer.Option(
+            "--gamma",
+            help="Gamma clamping parameter(s). Separate multiple values with ';' (e.g., '0.8;1.0').",
+        ),
+    ] = "1.0",
+    theta: Annotated[
+        str,
+        typer.Option(
+            "--theta",
+            help="Theta scaling parameter(s). Separate multiple values with ';' (e.g., '0.5;0.7').",
+        ),
+    ] = "",
+    legacy_format: Annotated[
+        bool,
+        typer.Option(
+            "--legacy-format",
+            help="Output in legacy format (gw.results style, aggregated by transcript).",
+        ),
+    ] = False,
+    detailed_report: Annotated[
+        bool,
+        typer.Option(
+            "--detailed-report",
+            help="Report off-target probabilities for individual transcripts (Legacy Format).",
+        ),
+    ] = False,
+    sense_only: Annotated[
+        bool,
+        typer.Option(
+            "--sense-only",
+            help="Limit RIsearch2 predictions to sense strand (+), ignore antisense.",
+        ),
+    ] = False,
+    predictions_type: Annotated[
+        str,
+        typer.Option(
+            "--type",
+            help="Type of RIsearch2 predictions. gw for genome-wide and tw for transcriptome-wide.",
+        ),
+    ] = "gw",
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Show detailed output (tables, stats).",
+        ),
+    ] = False,
+    profile: Annotated[
+        bool,
+        typer.Option(
+            "--profile",
+            help="Print a per-stage timing and memory profile table at the end of the run.",
+        ),
+    ] = False,
+    output_format: Annotated[
+        str,
+        typer.Option(
+            "--output-format",
+            help="Final output format: 'tsv', 'csv', or 'parquet'.",
+        ),
+    ] = "tsv",
+    summary_only: Annotated[
+        bool,
+        typer.Option(
+            "--summary-only",
+            help="Write only .summary files (partition-function stats per siRNA); skip the per-prediction output TSV/parquet. Equivalent to the old pipeline's default output.",
+        ),
+    ] = False,
+) -> dict | pl.DataFrame | None:
     """
     Analyze siRNA off-target predictions.
 
     Integrates RIsearch2 predictions with transcriptome data and optionally
     calculates off-target probabilities.
     """
+    # Accept str paths (Python API) as well as Path objects (CLI coerces these itself).
+    risearch_file = _as_path(risearch_file)
+    sirna_fasta = _as_path(sirna_fasta)
+    target_fasta = _as_path(target_fasta)
+    target_index = _as_path(target_index)
+    gtf_file = _as_path(gtf_file)
+    accessibility_dir = _as_path(accessibility_dir)
+    output_file = _as_path(output_file)
+    genome_file = _as_path(genome_file)
+    on_target_file = _as_path(on_target_file)
+    on_target_risearch_file = _as_path(on_target_risearch_file)
+    query_file = _as_path(query_file)
+    on_target_accessibility = _as_path(on_target_accessibility)
+    on_target_ids_file = _as_path(on_target_ids_file)
+
     risearch_parser = RIsearchParser()
 
-    console.print(Panel("RIsearch Pipeline", style="bold cyan"))
+    console.print(Panel("RIOT", style="bold cyan"))
 
     profiler = PipelineProfiler(enabled=profile)
 
@@ -781,7 +866,12 @@ def run(
                     shutil.rmtree(_ipc_tmp, ignore_errors=True)
 
             profiler.print_summary(console)
-            return  # Exit after directory mode processing
+            return {
+                "output": out_path,
+                "n_rows": total_rows,
+                "summary_dir": summary_out_dir,
+                "summary_files": summary_count,
+            }  # Exit after directory mode processing
 
         # Mode 2: Pre-computed RIsearch file (single TSV/.out.gz)
         elif risearch_file is not None:
@@ -1069,7 +1159,7 @@ def run(
                 console.print(
                     f"[green]✓[/green] Detailed results saved to {detailed_path}"
                 )
-            return
+            return df
 
         # Display Results Table
         if df.height > 0:
@@ -1119,6 +1209,8 @@ def run(
             )
 
         profiler.print_summary(console)
+
+        return df
 
     except FileNotFoundError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
