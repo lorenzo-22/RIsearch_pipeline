@@ -13,11 +13,11 @@ Requires Python ≥3.14 and ViennaRNA 2.7.2 (installed via `uv sync`). The `rise
 
 ### Run the pipeline
 ```bash
-risearch-pipeline --help
-risearch-pipeline off-targets --risearch-file predictions.tsv --transcriptome annotations.gtf ...
-risearch-pipeline -c config/off-targets.example.yaml   # YAML config mode
+riot --help
+riot off-targets --risearch-file predictions.tsv --transcriptome annotations.gtf ...
+riot -c config/off-targets.example.yaml   # YAML config mode
 ```
-The `gw` entrypoint is an alias for `risearch-pipeline`. `--risearch-file` can be a single TSV/`.out.gz` file **or a directory of `.parquet` files** (one per siRNA, produced by `convert_risearch_to_parquet.py`).
+The single CLI command is now `riot` (the former `gw` alias and `risearch-pipeline` command have been removed). `--risearch-file` can be a single TSV/`.out.gz` file **or a directory of `.parquet` files** (one per siRNA, produced by `convert_risearch_to_parquet.py`).
 
 ### Lint & type check
 ```bash
@@ -42,7 +42,7 @@ python tests/off-targets/data/create_regression_fixtures.py
 
 ### Profile
 ```bash
-scalene risearch-pipeline off-targets ...
+scalene riot off-targets ...
 ```
 
 ### Convert RIsearch output to Parquet

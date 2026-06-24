@@ -10,7 +10,7 @@ Focuses on the specific behaviours that were fixed:
 import pytest
 import polars as pl
 
-from RIsearch_pipeline.services.intersection_service import IntersectionService
+from riot.services.intersection_service import IntersectionService
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ class TestNCLSvsNumpy:
         result_ncls = svc.intersect(preds, transcripts)
 
         # Force numpy fallback by hiding NCLS
-        import RIsearch_pipeline.services.intersection_service as mod
+        import riot.services.intersection_service as mod
         monkeypatch.setattr(mod, "NCLS", None)
         result_numpy = svc.intersect(preds, transcripts)
 
@@ -183,6 +183,6 @@ class TestNCLSvsNumpy:
 
         assert svc.intersect(p, t).height == 0, "NCLS path: boundary hit"
 
-        import RIsearch_pipeline.services.intersection_service as mod
+        import riot.services.intersection_service as mod
         monkeypatch.setattr(mod, "NCLS", None)
         assert svc.intersect(p, t).height == 0, "numpy path: boundary hit"

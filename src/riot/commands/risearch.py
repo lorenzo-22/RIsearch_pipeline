@@ -5,8 +5,8 @@ from typing import Optional
 
 import typer
 
-from RIsearch_pipeline._logging import setup_logging
-from RIsearch_pipeline.services.risearch_service import RIsearchService
+from riot._logging import setup_logging
+from riot.services.risearch_service import RIsearchService
 
 
 def index(

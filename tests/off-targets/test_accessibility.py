@@ -4,11 +4,11 @@ import unittest
 from pathlib import Path
 import numpy as np
 import polars as pl
-from RIsearch_pipeline.services.accessibility import (
+from riot.services.accessibility import (
     GenomeAccessibilityService,
     AccessibilityError,
 )
-from RIsearch_pipeline.services.helpers import read_fasta
+from riot.services.helpers import read_fasta
 
 # Dummy FASTA content
 DUMMY_FASTA = """>chr1

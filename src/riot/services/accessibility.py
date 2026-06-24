@@ -176,7 +176,7 @@ class GenomeAccessibilityService:
             )
 
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        from RIsearch_pipeline.services.helpers import read_fasta
+        from riot.services.helpers import read_fasta
 
         # Read all chromosomes; longest-job-first to minimise tail latency.
         chromosomes = sorted(

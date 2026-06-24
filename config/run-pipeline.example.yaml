@@ -1,5 +1,5 @@
 # =============================================================================
-# RIsearch Pipeline — Orchestrator Configuration
+# RIOT — Orchestrator Configuration
 # =============================================================================
 # Usage:
 #   python run_pipeline.py --config path/to/this/config.yaml          # local

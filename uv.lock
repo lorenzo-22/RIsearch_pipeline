@@ -559,15 +559,7 @@ wheels = [
 ]
 
 [[package]]
-name = "risearch"
-version = "0.0.0a1"
-source = { git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc#5242668c1ef48c6cd817bc5272233e60cc8c83bc" }
-dependencies = [
-    { name = "polars" },
-]
-
-[[package]]
-name = "risearch-pipeline"
+name = "riot-sirna"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -617,6 +609,14 @@ dev = [
     { name = "ruff" },
     { name = "scalene", specifier = ">=2.1.3" },
     { name = "ty" },
+]
+
+[[package]]
+name = "risearch"
+version = "0.0.0a1"
+source = { git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc#5242668c1ef48c6cd817bc5272233e60cc8c83bc" }
+dependencies = [
+    { name = "polars" },
 ]
 
 [[package]]

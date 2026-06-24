@@ -5,7 +5,7 @@ dependencies (uses /proc/self/status on Linux, time.perf_counter everywhere).
 
 Usage::
 
-    from RIsearch_pipeline.services.profiling import PipelineProfiler
+    from riot.services.profiling import PipelineProfiler
 
     profiler = PipelineProfiler(enabled=True)
 

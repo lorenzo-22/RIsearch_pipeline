@@ -25,13 +25,13 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
-from RIsearch_pipeline.services.intersection_service import IntersectionService
-from RIsearch_pipeline.services.probability import ProbabilityService
-from RIsearch_pipeline.services.profiling import PipelineProfiler
-from RIsearch_pipeline.services.risearch_parser import RIsearchParser
-from RIsearch_pipeline.services.risearch_service import RIsearchService
-from RIsearch_pipeline.services.annotation_parser import AnnotationParser
+from riot.services.accessibility import GenomeAccessibilityService
+from riot.services.intersection_service import IntersectionService
+from riot.services.probability import ProbabilityService
+from riot.services.profiling import PipelineProfiler
+from riot.services.risearch_parser import RIsearchParser
+from riot.services.risearch_service import RIsearchService
+from riot.services.annotation_parser import AnnotationParser
 
 console = Console()
 
@@ -75,7 +75,7 @@ def _init_worker(
 
     acc_service = None
     if accessibility_dir:
-        from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+        from riot.services.accessibility import GenomeAccessibilityService
         acc_service = GenomeAccessibilityService(Path(accessibility_dir), max_cached=4)
 
     _WORKER_PROB_SERVICE = ProbabilityService(acc_service, temperature=temperature)
@@ -297,7 +297,7 @@ def run(
         None,
         "-a",
         "--accessibility-dir",
-        help="Directory of per-chromosome accessibility Parquet files (from 'risearch-pipeline accessibility').",
+        help="Directory of per-chromosome accessibility Parquet files (from 'riot accessibility').",
         exists=True,
         file_okay=False,
     ),

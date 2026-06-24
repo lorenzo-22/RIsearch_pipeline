@@ -1,9 +1,8 @@
 # =============================================================================
-# RIsearch Pipeline — Complete Configuration Reference
+# RIOT — Complete Configuration Reference
 # =============================================================================
 # Usage:
-#   risearch-pipeline --config path/to/this/config.yaml
-#   gw --config path/to/this/config.yaml   # alias
+#   riot --config path/to/this/config.yaml
 #
 # All relative paths are resolved relative to this file's directory.
 # Parameters marked [CLI-ONLY] cannot be set here; pass them on the command
@@ -54,7 +53,7 @@ off_targets:
   # ---------------------------------------------------------------------------
 
   # Directory of per-chromosome accessibility Parquet files produced by the
-  # "risearch-pipeline accessibility" command ({chrom}.accessibility.parquet).
+  # "riot accessibility" command ({chrom}.accessibility.parquet).
   # accessibility_dir: ../tests/off-targets/data/accessibility
 
   # FASTA file for computing accessibility on-the-fly via ViennaRNA.

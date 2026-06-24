@@ -9,7 +9,7 @@ from rich.progress import (
     TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
 )
 
-from RIsearch_pipeline.services.accessibility import GenomeAccessibilityService
+from riot.services.accessibility import GenomeAccessibilityService
 
 
 def _make_progress(console):

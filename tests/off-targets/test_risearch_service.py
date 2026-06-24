@@ -6,7 +6,7 @@ import tempfile
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.risearch_service import RIsearchService, RIsearchError
+from riot.services.risearch_service import RIsearchService, RIsearchError
 
 _risearch_available = False
 try:

@@ -5,13 +5,13 @@ from typing import Optional
 
 import typer
 
-from RIsearch_pipeline._logging import setup_logging
-from RIsearch_pipeline.commands import accessibility, off_targets, risearch
-from RIsearch_pipeline.config import load_config, config_to_kwargs
+from riot._logging import setup_logging
+from riot.commands import accessibility, off_targets, risearch
+from riot.config import load_config, config_to_kwargs
 
 
 app = typer.Typer(
-    name="risearch-pipeline",
+    name="riot",
     help="siRNA off-target discovery pipeline — analyze RIsearch2 predictions.",
     add_completion=False,
 )

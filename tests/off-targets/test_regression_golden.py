@@ -22,7 +22,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.probability import ProbabilityService
+from riot.services.probability import ProbabilityService
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Orchestrator for the RIsearch siRNA off-target discovery pipeline.
+Orchestrator for the RIOT siRNA off-target discovery pipeline.
 
 Runs pipeline stages in dependency order:
-  1. (optional) index       -- risearch-pipeline index
+  1. (optional) index       -- riot index
   2. (optional) convert     -- convert_risearch_to_parquet.py
-  3.            accessibility -- risearch-pipeline accessibility
-  4.            off-targets  -- risearch-pipeline off-targets
+  3.            accessibility -- riot accessibility
+  4.            off-targets  -- riot off-targets
 
 Local mode (default): steps run sequentially; logs go to logs/<timestamp>/<step>.log.
 Slurm mode (--slurm): each step submitted with sbatch, chained via --dependency=afterok.
@@ -103,7 +103,7 @@ def _build_index(cfg: dict, base: Path) -> list[str]:
     target = _resolve(cfg.get("target"), base)
     if not target:
         raise ValueError("'target' is required")
-    cmd = ["risearch-pipeline", "index", target]
+    cmd = ["riot", "index", target]
     output = _resolve(cfg.get("output"), base)
     if output:
         cmd += ["--output", output]
@@ -138,7 +138,7 @@ def _build_accessibility(cfg: dict, base: Path) -> list[str]:
     output = _resolve(cfg.get("output"), base)
     if not output:
         raise ValueError("'output' is required")
-    cmd = ["risearch-pipeline", "accessibility", "--fasta", fasta, "--output", output]
+    cmd = ["riot", "accessibility", "--fasta", fasta, "--output", output]
     for key, flag in [("window", "--window"), ("span", "--span"), ("unpaired", "--unpaired"),
                       ("temperature", "--temperature"), ("workers", "--workers")]:
         if key in cfg and cfg[key] is not None:
@@ -149,7 +149,7 @@ def _build_accessibility(cfg: dict, base: Path) -> list[str]:
 
 
 def _build_off_targets(cfg: dict, base: Path) -> list[str]:
-    cmd = ["risearch-pipeline", "off-targets"]
+    cmd = ["riot", "off-targets"]
 
     # Path options
     for key, flag in [

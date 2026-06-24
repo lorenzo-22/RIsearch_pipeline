@@ -14,7 +14,7 @@ import pytest
 import polars as pl
 import numpy as np
 
-from RIsearch_pipeline.services.probability import ProbabilityService, RT
+from riot.services.probability import ProbabilityService, RT
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from RIsearch_pipeline.cli import app
+from riot.cli import app
 
 runner = CliRunner()
 
