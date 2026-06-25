@@ -74,8 +74,9 @@ def test_off_targets_signature_has_no_typer_placeholder_defaults() -> None:
     )
 
 
-def test_accessibility_returns_chrom_to_path_mapping(tmp_path: Path) -> None:
-    """riot.accessibility(...) returns a dict mapping chromosome -> output Path.
+def test_accessibility_returns_chrom_to_dataframe(tmp_path: Path) -> None:
+    """riot.accessibility(...) returns a dict mapping chromosome -> in-memory
+    DataFrame (schema [position, strand, u1..u{u}]) and writes NO files.
 
     Uses small RNAplfold parameters (W=10, L=5, u=3) suited to the short
     (~71 nt) genome fixture, matching the values used in test_accessibility.py.
@@ -83,10 +84,9 @@ def test_accessibility_returns_chrom_to_path_mapping(tmp_path: Path) -> None:
     if not GENOME_FASTA.exists():
         pytest.skip(f"Genome FASTA fixture not found: {GENOME_FASTA}")
 
-    out_dir = tmp_path / "accessibility"
+    files_before = set(tmp_path.iterdir())
     result = riot.accessibility(
         genome=GENOME_FASTA,
-        output=out_dir,
         window_size=10,
         max_span=5,
         unpaired_prob=3,
@@ -94,10 +94,20 @@ def test_accessibility_returns_chrom_to_path_mapping(tmp_path: Path) -> None:
 
     assert isinstance(result, dict), f"Expected dict, got {type(result)!r}"
     assert result, "Expected at least one chromosome in the result mapping"
-    for chrom, path in result.items():
+    for chrom, df in result.items():
         assert isinstance(chrom, str), f"Expected str chromosome key, got {chrom!r}"
-        assert isinstance(path, Path), f"Expected Path value, got {type(path)!r}"
-        assert path.exists(), f"Output file does not exist: {path}"
+        assert isinstance(df, pl.DataFrame), f"Expected pl.DataFrame, got {type(df)!r}"
+        assert df.columns[:2] == ["position", "strand"], (
+            f"Unexpected leading columns: {df.columns}"
+        )
+        assert {"u1", "u2", "u3"}.issubset(df.columns), (
+            f"Expected u1..u3 columns; got {df.columns}"
+        )
+        assert set(df["strand"].unique()) <= {"+", "-"}
+        assert df.height > 0
+
+    # The in-memory API must not write anything to disk.
+    assert set(tmp_path.iterdir()) == files_before, "accessibility() wrote files"
 
 
 def test_off_targets_accepts_str_path() -> None:
@@ -110,18 +120,54 @@ def test_off_targets_accepts_str_path() -> None:
     assert df.height > 0, "Expected a non-empty result DataFrame"
 
 
-def test_off_targets_directory_mode_returns_summary_dict(tmp_path: Path) -> None:
-    """A *directory* of per-siRNA prediction files streams results to disk and
-    returns a summary dict (paths + counts), not a DataFrame. Guards the
-    directory-mode return path (also exercised by the CLI).
+def test_off_targets_directory_mode_yields_dataframes(tmp_path: Path) -> None:
+    """A *directory* of per-siRNA prediction files returns a generator yielding
+    one in-memory DataFrame per siRNA — and writes NO files (the in-memory API).
+
+    This is the contract change from the earlier re-export, which returned a
+    summary dict and streamed to disk. File writing is now the CLI's job.
     """
     in_dir = tmp_path / "in"
     in_dir.mkdir()
     (in_dir / RISEARCH_FILE.name).write_bytes(RISEARCH_FILE.read_bytes())
-    out_file = tmp_path / "out" / "res.tsv"
 
-    result = riot.off_targets(risearch_file=str(in_dir), output_file=str(out_file))
+    files_before = set(tmp_path.rglob("*"))
+    gen = riot.off_targets(risearch_file=str(in_dir))
 
-    assert isinstance(result, dict), f"Expected summary dict, got {type(result)!r}"
-    assert result.get("n_rows", 0) > 0, f"Expected processed rows; got {result}"
-    assert out_file.exists(), f"Directory mode should have written {out_file}"
+    import collections.abc
+
+    assert isinstance(gen, collections.abc.Iterator), (
+        f"Expected a generator/iterator, got {type(gen)!r}"
+    )
+
+    frames = list(gen)
+    assert frames, "Expected at least one per-siRNA DataFrame"
+    for df in frames:
+        assert isinstance(df, pl.DataFrame), f"Expected pl.DataFrame, got {type(df)!r}"
+        assert df.height > 0
+        assert "P_off_target" in df.columns
+
+    # The in-memory API must not write anything to disk.
+    assert set(tmp_path.rglob("*")) == files_before, "directory mode wrote files"
+
+
+def test_off_targets_no_input_raises_value_error() -> None:
+    """Bad input raises a plain ValueError, not a Typer/Click Exit."""
+    import typer
+
+    with pytest.raises(ValueError):
+        riot.off_targets()
+
+    # Defensive: the raised exception must not be a Typer/Click Exit.
+    try:
+        riot.off_targets()
+    except typer.Exit:  # pragma: no cover - should never hit
+        pytest.fail("API leaked a typer.Exit instead of a plain exception")
+    except ValueError:
+        pass
+
+
+def test_accessibility_missing_genome_raises(tmp_path: Path) -> None:
+    """A missing genome raises FileNotFoundError (not typer.Exit)."""
+    with pytest.raises(FileNotFoundError):
+        riot.accessibility(genome=tmp_path / "does_not_exist.fa")

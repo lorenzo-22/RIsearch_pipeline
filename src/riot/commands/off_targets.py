@@ -1,12 +1,5 @@
-import ctypes
-import gc
-import multiprocessing
+import contextlib
 import os
-import shutil
-import sys
-import tempfile
-import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -25,214 +18,23 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from riot.services.accessibility import GenomeAccessibilityService
-from riot.services.intersection_service import IntersectionService
+from riot.core.off_targets import (
+    _build_alpha_gamma_pairs,
+    _downcast_schema,
+    _parse_theta,
+    compute_off_targets_directory,
+    compute_off_targets_single,
+)
 from riot.services.probability import ProbabilityService
 from riot.services.profiling import PipelineProfiler
 from riot.services.risearch_parser import RIsearchParser
-from riot.services.risearch_service import RIsearchService
-from riot.services.annotation_parser import AnnotationParser
 
 console = Console()
-
-# ---------------------------------------------------------------------------
-# Per-worker state for directory-mode parallel processing (spawn-safe).
-# _init_worker() runs once per spawned worker process and populates these
-# module-level globals.  spawn (not fork) is used to avoid Rayon/Polars
-# thread-pool deadlocks that occur when forking a process that already has
-# background threads active.
-# ---------------------------------------------------------------------------
-_WORKER_DF_TRANS: Optional[pl.DataFrame] = None
-_WORKER_INTERSECTOR: Optional[object] = None
-_WORKER_PROB_SERVICE: Optional[object] = None
-_WORKER_ON_TARGET_MAP: dict = {}
-_WORKER_SELF_HYB_EMIN: dict = {}
-
-
-def _init_worker(
-    ipc_path: str,
-    accessibility_dir: str,
-    polars_max_threads: int,
-    on_target_map: dict,
-    self_hyb_emin: dict,
-    temperature: float = 37.0,
-) -> None:
-    """Initialise per-worker state.  Called once per spawned worker process.
-
-    The transcriptome is loaded from a pre-written Arrow IPC file (memory-mapped)
-    rather than being re-parsed from the original BED/GTF.  All workers share the
-    same physical memory pages via the OS page cache.
-    """
-    os.environ["POLARS_MAX_THREADS"] = str(polars_max_threads)
-
-    global _WORKER_DF_TRANS, _WORKER_INTERSECTOR, _WORKER_PROB_SERVICE
-    global _WORKER_ON_TARGET_MAP, _WORKER_SELF_HYB_EMIN
-
-    if ipc_path:
-        _WORKER_DF_TRANS = pl.read_ipc(Path(ipc_path), memory_map=True)
-        _WORKER_INTERSECTOR = IntersectionService()
-        _WORKER_INTERSECTOR.preload_transcriptome(_WORKER_DF_TRANS)
-
-    acc_service = None
-    if accessibility_dir:
-        from riot.services.accessibility import GenomeAccessibilityService
-        acc_service = GenomeAccessibilityService(Path(accessibility_dir), max_cached=4)
-
-    _WORKER_PROB_SERVICE = ProbabilityService(acc_service, temperature=temperature)
-
-    # Store per-run constants so they don't need to be pickled per task.
-    _WORKER_ON_TARGET_MAP = on_target_map
-    _WORKER_SELF_HYB_EMIN = self_hyb_emin
-
-
-def _process_one_sirna(
-    file_path_str: str,
-    alpha_gamma_pairs: list,
-    theta_vals: list,
-    on_target_expression: float,
-    sense_only: bool,
-    predictions_type: str,
-) -> tuple:
-    """Process a single siRNA file through the full pipeline.
-
-    Runs in a spawned worker process.  Reads worker state from module-level
-    globals populated by _init_worker().
-
-    Returns:
-        (PyArrow Table, metadata dict) or (None, {}) if no predictions remain.
-    """
-    _m = sys.modules[__name__]
-
-    df_trans = _m._WORKER_DF_TRANS
-    intersector = _m._WORKER_INTERSECTOR
-    prob_service = _m._WORKER_PROB_SERVICE
-    on_target_map = _m._WORKER_ON_TARGET_MAP
-    self_hyb_emin = _m._WORKER_SELF_HYB_EMIN
-
-    _t_start = time.perf_counter()
-
-    parser = RIsearchParser()
-    df = parser.load_single_file(Path(file_path_str))
-    _t_load = time.perf_counter()
-
-    if sense_only:
-        df = df.filter(pl.col("strand") == "+")
-    if df.height == 0:
-        return None, {}
-
-    # Apply self-hybridisation E_min override (one value per siRNA file)
-    if self_hyb_emin and "raw_e_min" in df.columns:
-        sirna_id = str(df["sirna_id"][0])
-        if sirna_id in self_hyb_emin:
-            df = df.with_columns(
-                pl.lit(self_hyb_emin[sirna_id]).cast(pl.Float32).alias("raw_e_min")
-            )
-
-    # Intersect with transcriptome (sequential — each worker owns its CPU).
-    # intersect() already deduplicates per (chrom, strand) pair internally.
-    _intersect_subtimings: dict = {}
-    if df_trans is not None and intersector is not None:
-        df = intersector.intersect(df, df_trans, mode=predictions_type, workers=1, _timings=_intersect_subtimings)
-        if df.height == 0:
-            return None, {}
-    _t_intersect = time.perf_counter()
-
-    # Probabilities
-    df, meta = prob_service.calculate_probabilities_per_sirna(
-        df,
-        alpha_gamma_pairs=alpha_gamma_pairs,
-        theta_values=theta_vals,
-        on_target_map=on_target_map,
-        on_target_expression=on_target_expression,
-    )
-    _t_prob = time.perf_counter()
-
-    # Drop heavy intermediate columns before returning
-    drop_cols = [
-        c for c in df.columns
-        if c.startswith("boltzmann_weight") or c.startswith("Z_sirna") or c == "E_min"
-    ]
-    if drop_cols:
-        df = df.drop(drop_cols)
-
-    arrow = df.to_arrow()
-    _t_end = time.perf_counter()
-
-    # Return freed pages to OS to prevent RSS growth across sequential siRNAs
-    # in the same worker. Python's allocator retains pages by default; gc +
-    # malloc_trim release them, keeping per-siRNA memory cost constant.
-    gc.collect()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass
-
-    meta["_timings"] = {
-        "load_s": _t_load - _t_start,
-        "intersect_s": _t_intersect - _t_load,
-        "prob_s": _t_prob - _t_intersect,
-        "serialize_s": _t_end - _t_prob,
-        "total_s": _t_end - _t_start,
-        **_intersect_subtimings,
-    }
-
-    return arrow, meta
-
-
-def _build_alpha_gamma_pairs(alpha: str, gamma: str) -> list[tuple[float, float]]:
-    """Parse semicolon-separated alpha/gamma strings into (alpha, gamma) pairs.
-
-    Always includes the baseline (1.0, 1.0). Enforces alpha ≤ gamma. Deduplicates.
-    """
-    alpha_vals = [float(x) for x in alpha.split(";") if x.strip()]
-    gamma_vals = [float(x) for x in gamma.split(";") if x.strip()]
-    pairs: list[tuple[float, float]] = [(1.0, 1.0)]
-    for a in alpha_vals:
-        for g in gamma_vals:
-            if a == 1.0 and g == 1.0:
-                continue
-            if a <= g:
-                pairs.append((a, g))
-    return list(dict.fromkeys(pairs))
-
-
-def _parse_theta(theta: str) -> list[float]:
-    return [float(x) for x in theta.split(";") if x.strip()]
 
 
 def _as_path(value: Optional[Path | str]) -> Optional[Path]:
     """Coerce a str (e.g. from the Python API) to Path; pass Path/None through."""
     return Path(value) if isinstance(value, str) else value
-
-
-def _downcast_schema(df: pl.DataFrame) -> pl.DataFrame:
-    """Downcast columns to minimize Arrow IPC file size.
-
-    - Coordinates: start/end → UInt32 (covers positions up to 4.3B)
-    - Strings: sirna_id, transcript_id, chrom, strand, gene_id → Categorical
-    - Floats: energy, opening_energy, dG_total, P_off_target, exp_value → Float32
-
-    Complexity: O(n) time, O(1) extra space.
-    """
-    casts = {}
-    for col in ["start", "end"]:
-        if col in df.columns:
-            casts[col] = pl.UInt32
-    for col in ["sirna_id", "transcript_id", "chrom", "strand", "gene_id"]:
-        if col in df.columns:
-            casts[col] = pl.Categorical
-    for col in [
-        "energy",
-        "opening_energy",
-        "dG_total",
-        "P_off_target",
-        "exp_value",
-    ]:
-        if col in df.columns:
-            casts[col] = pl.Float32
-    if casts:
-        df = df.cast(casts)
-    return df
 
 
 def run(
@@ -356,7 +158,9 @@ def run(
     temperature: Annotated[
         float,
         typer.Option(
-            "--temperature", "-T", help="Folding temperature in °C (default 37.0). Affects both accessibility and partition function."
+            "--temperature",
+            "-T",
+            help="Folding temperature in °C (default 37.0). Affects both accessibility and partition function.",
         ),
     ] = 37.0,
     on_target_file: Annotated[
@@ -514,28 +318,24 @@ def run(
     on_target_accessibility = _as_path(on_target_accessibility)
     on_target_ids_file = _as_path(on_target_ids_file)
 
-    risearch_parser = RIsearchParser()
-
     console.print(Panel("RIOT", style="bold cyan"))
 
     profiler = PipelineProfiler(enabled=profile)
-
     n_workers: int = workers if workers is not None else os.cpu_count() or 1
 
     try:
-        # Resolve input: a directory passed to --risearch-file triggers per-siRNA parallel mode.
+        # A directory passed to --risearch-file triggers per-siRNA parallel mode.
         input_dir: Optional[Path] = None
         if risearch_file is not None and risearch_file.is_dir():
             input_dir = risearch_file
             risearch_file = None
 
+        # Friendly CLI pre-checks (the core re-validates and raises ValueError).
         if risearch_file is None and sirna_fasta is None and input_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Must provide either --risearch-file (file or directory) OR --sirna-fasta"
             )
             raise typer.Exit(code=1)
-
-        # Integrated RIsearch execution requires target_fasta
         is_running_risearch = (
             (sirna_fasta is not None)
             and (risearch_file is None)
@@ -547,136 +347,31 @@ def run(
             )
             raise typer.Exit(code=1)
 
-        # Mode 1: Integrated RIsearch execution
-        if is_running_risearch:
-            risearch_service = RIsearchService()
-
-            # Validate siRNA FASTA (checks for duplicates)
-            try:
-                sirna_ids = risearch_service.validate_sirna_fasta(sirna_fasta)
-                console.print(
-                    f"[green]✓[/green] Validated [bold]{len(sirna_ids)}[/bold] siRNA(s) from {sirna_fasta.name}"
-                )
-            except ValueError as e:
-                console.print(f"[bold red]Error:[/bold red] {e}")
-                raise typer.Exit(code=1)
-
-            # Index target (or reuse existing index)
-            with console.status("[bold green]Indexing target..."):
-                if target_index is not None:
-                    index_path = target_index
-                    console.print(
-                        f"[green]✓[/green] Using pre-built index: {index_path.name}"
-                    )
-                else:
-                    index_path = risearch_service.index_target(target_fasta)
-                    console.print(f"[green]✓[/green] Created index: {index_path.name}")
-
-            # Run RIsearch
-            with console.status("[bold green]Running RIsearch..."):
-                df = risearch_service.run_search(
-                    query_path=sirna_fasta,
-                    index_path=index_path,
-                    target_fasta=target_fasta,
-                )
-
-        # Mode 3: Directory of per-siRNA files
-        elif input_dir is not None:
-            if not isinstance(input_dir, Path):
-                input_dir = Path(input_dir)
-
+        # -------------------------------------------------------------------
+        # Directory mode: stream per-siRNA DataFrames from the core generator
+        # and write the same outputs (per-prediction TSV/CSV/parquet + .summary).
+        # -------------------------------------------------------------------
+        if input_dir is not None:
             console.print(
                 f"[bold cyan]Directory mode[/bold cyan] - loading files from {input_dir}"
             )
-
-            # List all files
+            risearch_parser = RIsearchParser()
             all_files = risearch_parser.list_directory_files(input_dir)
             if not all_files:
                 console.print(
                     f"[bold red]Error:[/bold red] No RIsearch files found in {input_dir}"
                 )
                 raise typer.Exit(code=1)
-
             console.print(
                 f"[green]✓[/green] Found [bold]{len(all_files)}[/bold] files to process"
             )
 
-            # Prepare services
-            acc_service = None
-            if accessibility_dir:
-                acc_service = GenomeAccessibilityService(
-                    accessibility_dir, max_cached=4
-                )
-            prob_service = ProbabilityService(acc_service, temperature=temperature)
-
-            # Prepare transcriptome if provided
-            df_trans = None
-            intersector = None
-            if gtf_file:
-                if not isinstance(gtf_file, Path):
-                    gtf_file = Path(gtf_file)
-
-                trans_parser = AnnotationParser()
-                with profiler.stage("Load transcriptome") as _s:
-                    df_trans = trans_parser.load_gtf(
-                        gtf_file,
-                        feature=feature_type,
-                        score_col=expression_metric,
-                        format=transcriptome_format,
-                    )
-                    _s.rows_out = df_trans.height
-                intersector = IntersectionService()
-                console.print(
-                    f"[green]✓[/green] Loaded transcriptome with {df_trans.height} features"
-                )
-
-                # Serialize transcriptome to a temp Arrow IPC file so workers can
-                # memory-map it instead of re-parsing the BED/GTF from scratch.
-                # All workers share the same physical pages via the OS page cache.
-                _ipc_tmp = tempfile.mkdtemp(prefix="risearch_ipc_")
-                _ipc_path = Path(_ipc_tmp) / "transcriptome.arrow"
-                df_trans.write_ipc(_ipc_path)
-
-            # Parse on-target map
-            on_target_map = {}
-            if on_target_ids_file is not None:
-                with open(on_target_ids_file, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            parts = line.split("\t")
-                            if len(parts) >= 2:
-                                on_target_map[parts[0]] = parts[1]
-                console.print(
-                    f"  [dim]Loaded {len(on_target_map)} on-target mappings[/dim]"
-                )
-
-            # Compute self-hybridisation E_min for each siRNA if FASTA provided.
-            # This replicates the old pipeline's behaviour where E_min is the minimum
-            # energy of the siRNA hybridised against itself (not the genome-wide min).
-            self_hyb_emin: dict[str, float] = {}
-            if sirna_fasta is not None:
-                _ris_svc = RIsearchService()
-                console.print(
-                    f"  └─ Computing self-hybridisation E_min from [bold]{sirna_fasta.name}[/bold]..."
-                )
-                self_hyb_emin = _ris_svc.self_hybridization_emin_batch(sirna_fasta)
-                console.print(
-                    f"  [dim]Self-hyb E_min computed for {len(self_hyb_emin)} siRNA(s)[/dim]"
-                )
-
             alpha_gamma_pairs = _build_alpha_gamma_pairs(alpha, gamma)
             theta_vals = _parse_theta(theta)
+            # .summary formatting needs no accessibility service.
+            fmt_service = ProbabilityService(None, temperature=temperature)
 
-            total_rows = 0
-            n_proc = min(n_workers, len(all_files))
-
-            console.print(
-                f"  └─ Processing {len(all_files)} siRNAs with up to {n_proc} parallel workers"
-            )
-
-            # Resolve output path up-front so each batch can stream directly.
-            # --summary-only skips writing the per-prediction file entirely.
+            # Resolve the per-prediction output path (skipped under --summary-only).
             out_path = None
             _csv_first_batch = True
             _pq_writer = None
@@ -689,36 +384,46 @@ def run(
                     out_path = output_file.with_suffix(".csv")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Resolve summary output dir up-front for streaming writes.
-            # If --output is a directory path (no extension or trailing slash),
-            # write .summary files there; otherwise write alongside the output file.
+            # Resolve the .summary output dir. If --output is a directory path
+            # (no extension / trailing slash), write there; else alongside it.
             summary_out_dir = None
             if output_file is not None:
-                if output_file.suffix == "" or str(output_file).endswith("/") or output_file.is_dir():
+                if (
+                    output_file.suffix == ""
+                    or str(output_file).endswith("/")
+                    or output_file.is_dir()
+                ):
                     summary_out_dir = output_file
                 else:
                     summary_out_dir = output_file.parent
                 summary_out_dir.mkdir(parents=True, exist_ok=True)
             summary_count = 0
+            total_rows = 0
 
-            try:
-                # Polars threads per worker: 2 keeps N_workers × 2 ≤ available cores.
-                polars_threads_per_worker = max(1, n_workers // n_proc)
+            gen = compute_off_targets_directory(
+                input_dir=input_dir,
+                sirna_fasta=sirna_fasta,
+                gtf_file=gtf_file,
+                feature_type=feature_type,
+                expression_metric=expression_metric,
+                transcriptome_format=transcriptome_format,
+                accessibility_dir=accessibility_dir,
+                temperature=temperature,
+                on_target_ids_file=on_target_ids_file,
+                on_target_expression=on_target_expression,
+                alpha=alpha,
+                gamma=gamma,
+                theta=theta,
+                sense_only=sense_only,
+                predictions_type=predictions_type,
+                n_workers=n_workers,
+            )
 
-                # spawn: each worker starts a fresh Python interpreter, avoiding
-                # fork+Rayon deadlocks. Benchmarks show spawn is faster than
-                # forkserver for this workload (13.8s vs 17.6s at 32 workers).
-                _ctx = multiprocessing.get_context("spawn")
-
-                _init_args = (
-                    str(_ipc_path) if gtf_file else "",
-                    str(accessibility_dir) if accessibility_dir else "",
-                    polars_threads_per_worker,
-                    on_target_map,
-                    self_hyb_emin,
-                    temperature,
-                )
-
+            _drain_stage_totals: dict[str, float] = {}
+            _drain_n = 0
+            # contextlib.closing guarantees the generator's pool + temp-IPC are
+            # torn down even if a write below raises mid-stream.
+            with contextlib.closing(gen):
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
@@ -730,140 +435,91 @@ def run(
                     task = progress.add_task(
                         "Processing siRNAs...", total=len(all_files)
                     )
-
-                    with ProcessPoolExecutor(
-                        max_workers=n_proc,
-                        mp_context=_ctx,
-                        initializer=_init_worker,
-                        initargs=_init_args,
-                    ) as pool:
-                        futures = {
-                            pool.submit(
-                                _process_one_sirna,
-                                str(f),
-                                alpha_gamma_pairs,
-                                theta_vals,
-                                on_target_expression,
-                                sense_only,
-                                predictions_type,
-                            ): f
-                            for f in all_files
-                        }
-
-                        _drain_stage_totals: dict[str, float] = {}
-                        _drain_n = 0
-                        _drain_wait_total = 0.0
-
-                        completed = 0
-                        for future in as_completed(futures):
-                            _t_drain_start = time.perf_counter()
+                    completed = 0
+                    try:
+                        for df_chunk, batch_metadata in gen:
                             completed += 1
                             progress.update(
                                 task,
                                 advance=1,
                                 description=f"Batch {completed}/{len(all_files)}",
                             )
-
-                            # Pop the future from the dict immediately so Future._result
-                            # (which holds the full arrow_table + metadata) can be GC'd
-                            # as soon as the loop variable is overwritten next iteration.
-                            # Without this, all N completed futures accumulate their
-                            # results in memory for the entire loop — O(N) growth.
-                            f = futures.pop(future)
-                            try:
-                                _t_wait = time.perf_counter()
-                                arrow_table, batch_metadata = future.result()
-                                _drain_wait_total += time.perf_counter() - _t_wait
-                            except Exception as exc:
-                                logger.error(f"Worker failed for {f.name}: {exc}")
-                                continue
-
-                            if arrow_table is None:
-                                continue
-
-                            _t_deserialize = time.perf_counter()
-                            df_chunk = pl.from_arrow(arrow_table)
-                            del arrow_table  # Arrow copy no longer needed; Polars owns the data
                             total_rows += df_chunk.height
-                            _dt_deserialize = time.perf_counter() - _t_deserialize
 
-                            # Stream .summary files as each siRNA completes
-                            _t_summary = time.perf_counter()
+                            # Stream .summary files as each siRNA completes.
                             if summary_out_dir is not None:
                                 z_per_sirna = batch_metadata.get("z_per_sirna", {})
-                                w_per_sirna = batch_metadata.get("on_target_weights", {})
+                                w_per_sirna = batch_metadata.get(
+                                    "on_target_weights", {}
+                                )
                                 for sid, z_dict in z_per_sirna.items():
-                                    text = prob_service.format_legacy_summary(
+                                    text = fmt_service.format_legacy_summary(
                                         sid,
                                         z_dict,
                                         w_per_sirna.get(sid, {}),
                                         alpha_gamma_pairs,
                                         theta_vals,
                                     )
-                                    (summary_out_dir / f"{sid}.summary").write_text(text)
+                                    (summary_out_dir / f"{sid}.summary").write_text(
+                                        text
+                                    )
                                     summary_count += 1
-                            _dt_summary = time.perf_counter() - _t_summary
 
-                            _t_write = time.perf_counter()
+                            # Stream per-prediction output.
                             if out_path is not None:
                                 if output_format == "parquet":
                                     arrow_tbl = _downcast_schema(df_chunk).to_arrow()
                                     if _pq_writer is None:
-                                        _pq_writer = pq.ParquetWriter(out_path, arrow_tbl.schema)
+                                        _pq_writer = pq.ParquetWriter(
+                                            out_path, arrow_tbl.schema
+                                        )
                                     _pq_writer.write_table(arrow_tbl)
                                 else:
                                     sep = "\t" if output_format == "tsv" else ","
-                                    with open(out_path, "w" if _csv_first_batch else "a") as _f:
-                                        df_chunk.write_csv(_f, separator=sep, include_header=_csv_first_batch)
+                                    with open(
+                                        out_path, "w" if _csv_first_batch else "a"
+                                    ) as _f:
+                                        df_chunk.write_csv(
+                                            _f,
+                                            separator=sep,
+                                            include_header=_csv_first_batch,
+                                        )
                                     _csv_first_batch = False
-                            _dt_write = time.perf_counter() - _t_write
 
-                            del df_chunk
-
-                            # Accumulate worker-reported per-stage timings
-                            worker_timings = batch_metadata.get("_timings", {})
-                            for k, v in worker_timings.items():
-                                _drain_stage_totals[k] = _drain_stage_totals.get(k, 0.0) + v
-                            # Accumulate drain-side timings
-                            _drain_stage_totals["drain_deserialize_s"] = _drain_stage_totals.get("drain_deserialize_s", 0.0) + _dt_deserialize
-                            _drain_stage_totals["drain_summary_s"] = _drain_stage_totals.get("drain_summary_s", 0.0) + _dt_summary
-                            _drain_stage_totals["drain_write_s"] = _drain_stage_totals.get("drain_write_s", 0.0) + _dt_write
+                            for k, v in batch_metadata.get("_timings", {}).items():
+                                _drain_stage_totals[k] = (
+                                    _drain_stage_totals.get(k, 0.0) + v
+                                )
                             _drain_n += 1
+                    finally:
+                        # Flush the Parquet footer (CLI owns the writer).
+                        if _pq_writer is not None:
+                            _pq_writer.close()
 
-                        _perf_lines: list[str] = []
-                        if _drain_n > 0:
-                            _perf_lines = [f"[perf] per-siRNA stage breakdown (N={_drain_n}, times are sums over all siRNAs):"]
-                            for k, v in sorted(_drain_stage_totals.items()):
-                                _perf_lines.append(f"  {k}: {v:.3f}s  (avg {v/_drain_n*1000:.1f}ms/siRNA)")
-                            _perf_lines.append(f"  drain_wait_for_future_s: {_drain_wait_total:.3f}s  (avg {_drain_wait_total/_drain_n*1000:.1f}ms/siRNA)")
-
-                if _perf_lines:
-                    console.print("\n".join(_perf_lines), markup=False, highlight=False)
-
-                # Report results
-                if total_rows > 0 and out_path is not None:
-                    console.print(
-                        f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
+            if profile and _drain_n > 0:
+                _perf_lines = [
+                    f"[perf] per-siRNA stage breakdown (N={_drain_n}, sums over all siRNAs):"
+                ]
+                for k, v in sorted(_drain_stage_totals.items()):
+                    _perf_lines.append(
+                        f"  {k}: {v:.3f}s  (avg {v / _drain_n * 1000:.1f}ms/siRNA)"
                     )
-                elif total_rows > 0:
-                    console.print(
-                        f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions (no output file specified)"
-                    )
-                elif total_rows == 0:
-                    console.print("[yellow]Warning:[/yellow] No predictions to process")
+                console.print("\n".join(_perf_lines), markup=False, highlight=False)
 
-                if summary_count > 0:
-                    console.print(
-                        f"[green]✓[/green] Wrote {summary_count} .summary files to [bold]{summary_out_dir}[/bold]"
-                    )
-
-            finally:
-                # Ensure Parquet writer is always closed (flushes footer)
-                if _pq_writer is not None:
-                    _pq_writer.close()
-                # Clean up the temp Arrow IPC file used to share the transcriptome
-                if "_ipc_tmp" in dir() and _ipc_tmp:
-                    shutil.rmtree(_ipc_tmp, ignore_errors=True)
+            if total_rows > 0 and out_path is not None:
+                console.print(
+                    f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions → [bold]{out_path}[/bold]"
+                )
+            elif total_rows > 0:
+                console.print(
+                    f"[green]✓[/green] Processed [bold]{total_rows}[/bold] predictions (no output file specified)"
+                )
+            else:
+                console.print("[yellow]Warning:[/yellow] No predictions to process")
+            if summary_count > 0:
+                console.print(
+                    f"[green]✓[/green] Wrote {summary_count} .summary files to [bold]{summary_out_dir}[/bold]"
+                )
 
             profiler.print_summary(console)
             return {
@@ -871,277 +527,128 @@ def run(
                 "n_rows": total_rows,
                 "summary_dir": summary_out_dir,
                 "summary_files": summary_count,
-            }  # Exit after directory mode processing
+            }
 
-        # Mode 2: Pre-computed RIsearch file (single TSV/.out.gz)
-        elif risearch_file is not None:
-            if not isinstance(risearch_file, Path):
-                risearch_file = Path(risearch_file)
+        # -------------------------------------------------------------------
+        # Single-file / inline-RIsearch mode: the core returns (df, meta);
+        # this wrapper renders the same files and console output as before.
+        # -------------------------------------------------------------------
+        console.print("[bold green]Calculating probabilities...[/bold green]")
 
-            # Load entire file
-            with profiler.stage("Load predictions") as _s:
-                df = risearch_parser.load(risearch_file)
-                _s.rows_out = df.height
-
-        logger.info(f"Loaded {df.height:,} predictions for {df['sirna_id'].n_unique()} siRNAs")
-
-        # Apply --sense-only filter (Sense strand only)
-        if sense_only:
-            df = df.filter(pl.col("strand") == "+")
-
-        # Verbose: Raw DF
-        if verbose:
-            console.print("[dim]--- RIsearch Predictions (First 5 rows) ---[/dim]")
-            console.print(df.head(5))
-
-        summary_ris = risearch_parser.summary(df)
-        source_name = sirna_fasta.name if sirna_fasta else risearch_file.name
-        console.print(
-            f"[green]✓[/green] Loaded [bold]{summary_ris['row_count']}[/bold] predictions from {source_name}"
-        )
-        console.print(
-            f"  └─ Energy range: {summary_ris['energy_min']:.2f} to {summary_ris['energy_max']:.2f} kcal/mol"
-        )
-
-        if sense_only:
-            console.print("  └─ (Filtered to sense strand only)")
-
-        # Load Transcriptome if provided
-        if gtf_file:
-            if not isinstance(gtf_file, Path):
-                gtf_file = Path(gtf_file)
-
-            trans_parser = AnnotationParser()
-            with profiler.stage("Load transcriptome") as _s:
-                df_trans = trans_parser.load_gtf(
-                    gtf_file,
-                    feature=feature_type,
-                    score_col=expression_metric,
-                    format=transcriptome_format,
-                )
-                _s.rows_out = df_trans.height
-
-            if verbose:
-                console.print("[dim]--- Transcriptome Data (First 5 rows) ---[/dim]")
-                console.print(df_trans.head(5))
-
-            summary_trans = trans_parser.summary(df_trans)
-            console.print(
-                f"[green]✓[/green] Loaded [bold]{summary_trans['row_count']}[/bold] features from {gtf_file.name}"
-            )
-            logger.info(f"Transcriptome: {df_trans.height:,} rows, {df_trans['gene_id'].n_unique()} genes")
-
-            # Perform intersection
-            with profiler.stage("Intersection", rows_in=df.height) as _s:
-                with console.status(
-                    f"[bold green]Intersecting predictions (mode={predictions_type})..."
-                ):
-                    intersector = IntersectionService()
-                    df = intersector.intersect(df, df_trans, mode=predictions_type, workers=n_workers)
-                    _s.rows_out = df.height
-
-            console.print(
-                f"[green]✓[/green] Found [bold]{df.height}[/bold] intersecting off-target candidates"
-            )
-            logger.info(f"After intersection: {df.height:,} rows")
-
-        # Accessibility and Probability Calculation
-        # Keep reference to temp dir object so it persists until function exit
-        temp_dir_obj = None
-
-        if accessibility_dir:
-            console.print(
-                f"  [dim]Calculating probabilities using profiles from {accessibility_dir}...[/dim]"
-            )
-            acc_service = GenomeAccessibilityService(accessibility_dir, max_cached=4)
-            prob_service = ProbabilityService(acc_service, temperature=temperature)
-
-        elif genome_file:
-            console.print(
-                f"  [dim]Computing accessibility on-the-fly from {genome_file} (this may take time)...[/dim]"
-            )
-
-            # Create temp dir
-            temp_dir_obj = tempfile.TemporaryDirectory(prefix="risearch_accessibility_")
-            temp_dir = Path(temp_dir_obj.name)
-
-            acc_service = GenomeAccessibilityService(temp_dir, max_cached=4)
-
-            # Use progress bar for accessibility
-            with Progress(
+        # A progress bar is shown only while accessibility is folded on-the-fly;
+        # otherwise a null context yields ``progress = None``. Either way there is a
+        # single, explicitly-keyworded core call (keeping the type checker happy —
+        # a **kwargs dict would widen every value to one union type).
+        if genome_file and not accessibility_dir:
+            _progress_cm = Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TimeElapsedColumn(),
                 console=console,
-            ) as progress:
-                task = progress.add_task(
-                    "Calculating Accessibility...", total=None
-                )  # Total unknown initially
-
-                def progress_callback(advance=0, description=""):
-                    progress.update(task, advance=advance, description=description)
-
-                acc_service.compute_genome_accessibility(
-                    genome_file,
-                    window_size=window_size,
-                    max_span=max_span,
-                    unpaired_prob=unpaired_prob,
-                    progress_callback=progress_callback,
-                    temperature=temperature,
-                )
-
-            prob_service = ProbabilityService(acc_service, temperature=temperature)
-
-        else:
-            console.print(
-                "[yellow]Warning:[/yellow] No accessibility data provided. P(OT) based on energy only."
-            )
-            prob_service = ProbabilityService(None, temperature=temperature)
-
-        # Calculate P(OT)
-        # Calculate P(OT)
-        console.print("[bold green]Calculating probabilities...[/bold green]")
-
-        # 1. Annotate Opening Energies
-        if accessibility_dir or genome_file:
-            console.print(
-                "  └─ Annotating opening energies from accessibility profiles..."
             )
         else:
-            console.print(
-                "  └─ [yellow]Skipping accessibility annotation (energy only)[/yellow]"
-            )
+            _progress_cm = contextlib.nullcontext()
 
-        alpha_gamma_pairs = _build_alpha_gamma_pairs(alpha, gamma)
-        theta_vals = _parse_theta(theta)
+        with _progress_cm as progress:
+            acc_cb = None
+            if progress is not None:
+                _task = progress.add_task("Calculating Accessibility...", total=None)
 
-        # Detect multi-siRNA mode OR if custom parameters are used (forcing vectorized path)
-        unique_sirnas = df["sirna_id"].unique() if "sirna_id" in df.columns else []
-        has_custom_params = len(alpha_gamma_pairs) > 1 or len(theta_vals) > 0
+                def acc_cb(advance=0, description=""):
+                    progress.update(_task, advance=advance, description=description)
 
-        is_multi_sirna = len(unique_sirnas) > 1 or has_custom_params
-
-        # Parse on-target IDs file if provided
-        on_target_map: dict[str, str] = {}
-        if on_target_ids_file is not None:
-            try:
-                mapping_df = pl.read_csv(
-                    on_target_ids_file, separator="\t", has_header=False
-                )
-                on_target_map = dict(
-                    zip(
-                        mapping_df.get_column("column_1"),
-                        mapping_df.get_column("column_2"),
-                    )
-                )
-                console.print(
-                    f"[green]✓[/green] Loaded {len(on_target_map)} on-target ID mappings from {on_target_ids_file.name}"
-                )
-            except Exception as e:
-                console.print(
-                    f"[bold red]Error parsing on-target mapping file:[/bold red] {e}"
-                )
-                raise typer.Exit(code=1)
-
-        if is_multi_sirna:
-            mode_msg = (
-                "Multi-siRNA"
-                if len(unique_sirnas) > 1
-                else "Parameterized Single-siRNA"
-            )
-            console.print(f"  └─ {mode_msg} detection: {len(unique_sirnas)} siRNAs")
-
-            with profiler.stage("Probabilities (per-siRNA)", rows_in=df.height) as _s:
-                df, meta = prob_service.calculate_probabilities_per_sirna(
-                    df,
-                    alpha_gamma_pairs=alpha_gamma_pairs,
-                    theta_values=theta_vals,
-                    on_target_map=on_target_map if on_target_map else None,
-                    on_target_expression=on_target_expression,
-                )
-                _s.rows_out = df.height
-            logger.info(f"After probabilities: {df.height:,} rows")
-
-            # Write .summary files if output_file is provided
-            if output_file:
-                out_dir = output_file.parent
-                out_dir.mkdir(parents=True, exist_ok=True)
-                global_z_stats = meta["z_per_sirna"]
-                global_on_w_stats = meta["on_target_weights"]
-                for sid in global_z_stats:
-                    summary_text = prob_service.format_legacy_summary(
-                        sid,
-                        global_z_stats[sid],
-                        global_on_w_stats.get(sid, {}),
-                        alpha_gamma_pairs,
-                        theta_vals,
-                    )
-                    summary_file = out_dir / f"{sid}.summary"
-                    summary_file.write_text(summary_text)
-
-            # Display per-siRNA Z summary
-            console.print("  └─ Computing per-siRNA Boltzmann weights...")
-            if has_custom_params:
-                console.print(
-                    f"  └─ Applied {len(alpha_gamma_pairs) - 1} alpha/gamma pairs and {len(theta_vals)} theta values"
-                )
-
-            # Compute total Z from per-siRNA data
-            total_z = sum(
-                z_dict.get("Z_sirna", 0.0) for z_dict in meta["z_per_sirna"].values()
-            )
-            console.print(
-                f"  └─ Total Z across all siRNAs (base): [bold]{total_z:.2e}[/bold]"
-            )
-        else:
-            with profiler.stage("Probabilities (single-siRNA)", rows_in=df.height) as _s:
-                df, meta = prob_service.calculate_probabilities(
-                    df,
-                    on_target_path=on_target_file,
-                    query_path=query_file,
-                    on_target_expression=on_target_expression,
-                    on_target_accessibility_path=on_target_accessibility,
-                    on_target_risearch_path=on_target_risearch_file,
-                )
-                _s.rows_out = df.height
-
-            # 2. Boltzmann Weights
-            console.print("  └─ Computing Boltzmann weights (α=1.0, γ=1.0)...")
-
-            # 3. Partition Function Info
-            z_fmt = f"{meta['z_total']:.2e}"
-            z_off = f"{meta['z_off_target']:.2e}"
-            z_on = f"{meta['w_on_target']:.2e}"
-            console.print(
-                f"  └─ Partition Function Z = [bold]{z_fmt}[/bold] (Off-Target={z_off}, On-Target={z_on})"
-            )
-
-        # 4. On-Target Details (single siRNA mode only)
-        if meta.get("has_on_target", False):
-            dg_on = f"{meta['dG_on_target']:.2f}"
-            # Use high precision to show deviation from 1.0
-            p_on = f"{meta.get('p_on_target', 0.0):.10f}"
-            console.print(f"  └─ On-Target: ΔG_total={dg_on} kcal/mol, P(on)={p_on}")
-
-        # Legacy Format Output
-        if legacy_format:
-            # Extract siRNA ID from query or use default
-            sirna_id = "siRNA"
-            if query_file:
-                sirna_id = query_file.stem
-
-            legacy_output = prob_service.calculate_legacy_format(
-                df,
-                sirna_id=sirna_id,
-                on_target_path=on_target_file,
-                query_path=query_file,
+            df, meta = compute_off_targets_single(
+                risearch_file=risearch_file,
+                sirna_fasta=sirna_fasta,
+                target_fasta=target_fasta,
+                target_index=target_index,
+                gtf_file=gtf_file,
+                feature_type=feature_type,
+                expression_metric=expression_metric,
+                transcriptome_format=transcriptome_format,
+                accessibility_dir=accessibility_dir,
+                genome_file=genome_file,
+                window_size=window_size,
+                max_span=max_span,
+                unpaired_prob=unpaired_prob,
+                temperature=temperature,
+                on_target_file=on_target_file,
+                on_target_risearch_file=on_target_risearch_file,
+                query_file=query_file,
                 on_target_expression=on_target_expression,
-                on_target_accessibility_path=on_target_accessibility,
-                on_target_risearch_path=on_target_risearch_file,
-                verbose=detailed_report,
+                on_target_accessibility=on_target_accessibility,
+                on_target_ids_file=on_target_ids_file,
+                alpha=alpha,
+                gamma=gamma,
+                theta=theta,
+                sense_only=sense_only,
+                predictions_type=predictions_type,
+                legacy_format=legacy_format,
+                detailed_report=detailed_report,
+                n_workers=n_workers,
+                profiler=profiler,
+                accessibility_progress_callback=acc_cb,
             )
 
+        # Diagnostics (loaded count / energy range / intersection counts).
+        rep = meta.get("_report", {})
+        source_name = (
+            sirna_fasta.name
+            if sirna_fasta
+            else (risearch_file.name if risearch_file else "input")
+        )
+        if rep:
+            console.print(
+                f"[green]✓[/green] Loaded [bold]{rep['n_loaded']}[/bold] predictions from {source_name}"
+            )
+            console.print(
+                f"  └─ Energy range: {rep['energy_min']:.2f} to {rep['energy_max']:.2f} kcal/mol"
+            )
+            if rep.get("sense_only"):
+                console.print("  └─ (Filtered to sense strand only)")
+            if rep.get("n_features") is not None:
+                _gtf_name = gtf_file.name if gtf_file else ""
+                console.print(
+                    f"[green]✓[/green] Loaded [bold]{rep['n_features']}[/bold] features from {_gtf_name}"
+                )
+                console.print(
+                    f"[green]✓[/green] Found [bold]{rep['n_intersected']}[/bold] intersecting off-target candidates"
+                )
+        if verbose and "preview" in rep:
+            console.print("[dim]--- RIsearch Predictions (First 5 rows) ---[/dim]")
+            console.print(rep["preview"])
+
+        # Multi-siRNA runs (discriminated by the per-siRNA partition-function key)
+        # write one .summary per siRNA next to the output file.
+        if output_file and "z_per_sirna" in meta:
+            out_dir = output_file.parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+            fmt_service = ProbabilityService(None, temperature=temperature)
+            alpha_gamma_pairs = _build_alpha_gamma_pairs(alpha, gamma)
+            theta_vals = _parse_theta(theta)
+            on_weights = meta.get("on_target_weights", {})
+            for sid in meta["z_per_sirna"]:
+                summary_text = fmt_service.format_legacy_summary(
+                    sid,
+                    meta["z_per_sirna"][sid],
+                    on_weights.get(sid, {}),
+                    alpha_gamma_pairs,
+                    theta_vals,
+                )
+                (out_dir / f"{sid}.summary").write_text(summary_text)
+
+        # On-target details (single-siRNA mode only).
+        if meta.get("has_on_target", False):
+            console.print(
+                f"  └─ On-Target: ΔG_total={meta['dG_on_target']:.2f} kcal/mol, "
+                f"P(on)={meta.get('p_on_target', 0.0):.10f}"
+            )
+
+        # Legacy format: write .results + detailed_results.tsv, then return early
+        # (skips the preview table and the standard TSV write).
+        if legacy_format:
+            legacy_output = meta.get("legacy_text", "")
             if output_file:
                 legacy_path = output_file.with_suffix(".results")
                 with open(legacy_path, "w") as f:
@@ -1149,19 +656,17 @@ def run(
                 console.print(
                     f"[green]✓[/green] Legacy format results saved to {legacy_path}"
                 )
-            else:
-                console.print(legacy_output)
-
-            # Also save TSV if requested (Standard flow continues below? No, return in orig)
-            if output_file:
                 detailed_path = output_file.parent / "detailed_results.tsv"
                 df.write_csv(detailed_path, separator="\t")
                 console.print(
                     f"[green]✓[/green] Detailed results saved to {detailed_path}"
                 )
+            else:
+                console.print(legacy_output)
             return df
 
-        # Display Results Table
+        # Results preview table (sorts df by P_off_target — preserved so the saved
+        # TSV is ordered identically to the pre-refactor output).
         if df.height > 0:
             if "P_off_target" in df.columns:
                 df = df.sort("P_off_target", descending=True)
@@ -1170,8 +675,6 @@ def run(
                 title = "Predictions Preview"
 
             table = Table(title=title)
-
-            # Select useful columns to show
             potential_cols = [
                 "sirna_id",
                 "chrom",
@@ -1183,23 +686,16 @@ def run(
                 "exp_value",
             ]
             display_cols = [c for c in potential_cols if c in df.columns]
-
             for col in display_cols:
                 table.add_column(col)
-
             for row in df.select(display_cols).head(10).iter_rows():
-                # Format floats nicely
-                formatted_row = []
-                for val in row:
-                    if isinstance(val, float):
-                        formatted_row.append(f"{val:.4g}")
-                    else:
-                        formatted_row.append(str(val))
+                formatted_row = [
+                    f"{val:.4g}" if isinstance(val, float) else str(val) for val in row
+                ]
                 table.add_row(*formatted_row)
-
             console.print(table)
 
-        # Save to Output File
+        # Save to output file.
         if output_file:
             logger.info(f"Writing {df.height:,} rows to {output_file}")
             with profiler.stage("Write output", rows_in=df.height):
@@ -1209,7 +705,6 @@ def run(
             )
 
         profiler.print_summary(console)
-
         return df
 
     except FileNotFoundError as e:

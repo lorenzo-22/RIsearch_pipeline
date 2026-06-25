@@ -7,7 +7,7 @@ import polars as pl
 import typer
 
 from riot._logging import setup_logging
-from riot.services.risearch_service import RIsearchService
+from riot.core import risearch as core
 
 
 def index(
@@ -26,11 +26,7 @@ def index(
 ) -> Path:
     """Build a RIsearch index from a target FASTA file."""
     setup_logging(verbose)
-    # Accept str paths (Python API) as well as Path objects.
-    target = Path(target) if isinstance(target, str) else target
-    output = Path(output) if isinstance(output, str) else output
-    svc = RIsearchService()
-    index_path = svc.index_target(target, output)
+    index_path = core.build_index(target, output)
     typer.echo(f"Index written to: {index_path}")
     return index_path
 
@@ -77,21 +73,16 @@ def search(
 ) -> pl.DataFrame:
     """Run a RIsearch search and output hits as TSV."""
     setup_logging(verbose)
-    # Accept str paths (Python API) as well as Path objects.
-    query = Path(query) if isinstance(query, str) else query
-    index = Path(index) if isinstance(index, str) else index
-    target = Path(target) if isinstance(target, str) else target
-    output = Path(output) if isinstance(output, str) else output
-    svc = RIsearchService()
-    df = svc.run_search(
-        query_path=query,
-        index_path=index,
-        target_fasta=target,
+    df = core.run_search(
+        query=query,
+        index=index,
+        target=target,
         seed_length=seed_length,
         max_extension=max_extension,
         energy_threshold=energy_threshold,
     )
 
+    output = Path(output) if isinstance(output, str) else output
     if output is not None:
         df.write_csv(output, separator="\t")
         typer.echo(f"Results written to: {output} ({df.height} hits)")
