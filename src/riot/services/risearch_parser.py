@@ -4,7 +4,7 @@ from pathlib import Path
 
 import polars as pl
 
-from RIsearch_pipeline.models import RISEARCH_COLUMNS, RISEARCH_SCHEMA
+from riot.models import RISEARCH_COLUMNS, RISEARCH_SCHEMA
 
 _VALID_SUFFIXES = {".gz", ".tsv", ".out", ".parquet"}
 

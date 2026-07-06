@@ -13,11 +13,11 @@ Requires Python ≥3.14 and ViennaRNA 2.7.2 (installed via `uv sync`). The `rise
 
 ### Run the pipeline
 ```bash
-risearch-pipeline --help
-risearch-pipeline off-targets --risearch-file predictions.tsv --transcriptome annotations.gtf ...
-risearch-pipeline -c config/off-targets.example.yaml   # YAML config mode
+riot --help
+riot off-targets --risearch-file predictions.tsv --transcriptome annotations.gtf ...
+riot -c config/off-targets.example.yaml   # YAML config mode
 ```
-The `gw` entrypoint is an alias for `risearch-pipeline`. `--risearch-file` can be a single TSV/`.out.gz` file **or a directory of `.parquet` files** (one per siRNA, produced by `convert_risearch_to_parquet.py`).
+The single CLI command is now `riot` (the former `gw` alias and `risearch-pipeline` command have been removed). `--risearch-file` can be a single TSV/`.out.gz` file **or a directory of `.parquet` files** (one per siRNA, produced by `convert_risearch_to_parquet.py`).
 
 ### Lint & type check
 ```bash
@@ -42,7 +42,7 @@ python tests/off-targets/data/create_regression_fixtures.py
 
 ### Profile
 ```bash
-scalene risearch-pipeline off-targets ...
+scalene riot off-targets ...
 ```
 
 ### Convert RIsearch output to Parquet
@@ -73,7 +73,7 @@ config.py                       ← OmegaConf schema + YAML loading + path resol
 
 ### The `risearch` dependency
 
-`risearch` is a separate Rust project (the RIsearch core **and** its PyO3 Python bindings, `risearch-python/`), installed as a dependency — `git+ssh` from a private repo, pinned in `pyproject.toml`. It is **not vendored** in this repo (no `risearch/` directory, no submodule). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. `import risearch` is lazy, so the off-target analysis on pre-computed output runs without it; only the in-process `index`/`search` commands need it.
+`risearch` is a separate Rust project (the RIsearch core **and** its PyO3 Python bindings, `risearch-python/`), installed as a dependency — `git+ssh` from a private repo, pinned in `pyproject.toml`. It is **not vendored** in this repo (no `risearch/` directory, no submodule). `RIsearchService` calls the bindings **in-process** — there is no subprocess or intermediate TSV. `risearch` is imported at module top in `risearch_service.py`, so it is a hard dependency required for any `riot` invocation that loads that module (effectively all of them).
 
 ### Data flow for `off-targets`
 

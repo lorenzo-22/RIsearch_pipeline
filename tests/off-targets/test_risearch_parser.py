@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.risearch_parser import RIsearchParser
+from riot.services.risearch_parser import RIsearchParser
 
 
 @pytest.fixture

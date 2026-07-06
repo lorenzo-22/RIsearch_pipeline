@@ -3,7 +3,7 @@
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.intersection_service import IntersectionService
+from riot.services.intersection_service import IntersectionService
 
 
 @pytest.fixture

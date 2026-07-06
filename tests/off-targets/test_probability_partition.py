@@ -3,7 +3,7 @@ from unittest.mock import patch
 import polars as pl
 import numpy as np
 from pathlib import Path
-from RIsearch_pipeline.services.probability import ProbabilityService, RT
+from riot.services.probability import ProbabilityService, RT
 
 
 class TestProbabilityPartition(unittest.TestCase):
@@ -46,7 +46,7 @@ class TestProbabilityPartition(unittest.TestCase):
         self.assertAlmostEqual(p2, expected_p2, places=4)
 
     @patch(
-        "RIsearch_pipeline.services.probability.ProbabilityService._run_risearch_binary"
+        "riot.services.probability.ProbabilityService._run_risearch_binary"
     )
     def test_z_score_with_on_target(self, mock_risearch):
         """Test P(OT) including On-Target in Z (Open Universe)."""

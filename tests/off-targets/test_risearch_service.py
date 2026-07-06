@@ -6,19 +6,7 @@ import tempfile
 import polars as pl
 import pytest
 
-from RIsearch_pipeline.services.risearch_service import RIsearchService, RIsearchError
-
-_risearch_available = False
-try:
-    import risearch as _risearch_mod  # noqa: F401
-    _risearch_available = True
-except ImportError:
-    pass
-
-_requires_risearch = pytest.mark.skipif(
-    not _risearch_available,
-    reason="risearch PyO3 bindings not installed (SSH git dep)",
-)
+from riot.services.risearch_service import RIsearchService, RIsearchError
 
 
 @pytest.fixture
@@ -84,7 +72,6 @@ class TestValidateSirnaFasta:
             service.validate_sirna_fasta(Path("/nonexistent/sirna.fa"))
 
 
-@_requires_risearch
 class TestIndexTarget:
     """Tests for index_target()."""
 
@@ -113,7 +100,6 @@ class TestIndexTarget:
             assert index_path.stat().st_mtime == first_mtime
 
 
-@_requires_risearch
 class TestRunSearch:
     """Tests for run_search()."""
 
@@ -136,7 +122,6 @@ class TestRunSearch:
             )
 
 
-@_requires_risearch
 class TestSearchSingleSirna:
     """Tests for search_single_sirna()."""
 

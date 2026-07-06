@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import numpy as np
 from math import log
-from RIsearch_pipeline.services.probability import ProbabilityService, RT, R
+from riot.services.probability import ProbabilityService, RT, R
 
 
 class TestProbabilityService(unittest.TestCase):

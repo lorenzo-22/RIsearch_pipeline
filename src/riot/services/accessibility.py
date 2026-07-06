@@ -25,6 +25,61 @@ def _reverse_complement(seq: str) -> str:
     return seq.translate(_COMPLEMENT_TABLE)[::-1]
 
 
+def fold_sequence(
+    sequence: str,
+    window_size: int = 80,
+    max_span: int = 40,
+    unpaired_prob: int = 30,
+    temperature: float = 37.0,
+) -> np.ndarray:
+    """Fold a single sequence and return opening energies (no instance state).
+
+    Module-level so callers that only need a profile (the in-memory core, the
+    on-target path) can fold without constructing a service or touching disk.
+
+    Returns a 2D float32 array [seq_len, unpaired_prob]; result[pos, u-1] is the
+    opening energy for length u at 0-based position pos.
+    """
+    seq_len = len(sequence)
+    if seq_len == 0:
+        return np.array([], dtype=np.float32)
+
+    rna_seq = sequence.upper().replace("T", "U")
+    w = min(window_size, seq_len)
+    max_span_adj = min(max_span, seq_len)
+    RT = _GAS_CONSTANT * (temperature + 273.15)
+
+    profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
+
+    try:
+        md = RNA.md()
+        md.temperature = temperature
+        md.window_size = w
+        md.max_bp_span = max_span_adj
+        fc = RNA.fold_compound(rna_seq, md, RNA.OPTION_WINDOW)
+        probs_matrix = [None] * (seq_len + 2)
+
+        def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
+            if (what & RNA.PROBS_WINDOW_UP) and v is not None:
+                _pm[i] = list(v)
+
+        fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, _cb)
+        for i in range(1, seq_len + 1):
+            if i < len(probs_matrix) and probs_matrix[i] is not None:
+                for u in range(1, unpaired_prob + 1):
+                    if u < len(probs_matrix[i]):
+                        p = probs_matrix[i][u]
+                        if p is not None and p > 0:
+                            profile[i - 1, u - 1] = -RT * np.log(p)
+
+        logger.debug(f"Computed accessibility for sequence of length {seq_len}")
+    except Exception as e:
+        logger.error(f"ViennaRNA error computing accessibility: {e}")
+        raise AccessibilityError(f"Failed to compute accessibility: {e}") from e
+
+    return profile
+
+
 def _fold_full_chromosome(
     sequence: str,
     chrom: str,
@@ -167,16 +222,8 @@ class GenomeAccessibilityService:
         Returns:
             Dictionary mapping 'chrom' to the output Parquet path.
         """
-        try:
-            import RNA  # noqa: F401
-        except ImportError:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Install ViennaRNA with Python bindings."
-            )
-
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        from RIsearch_pipeline.services.helpers import read_fasta
+        from riot.services.helpers import read_fasta
 
         # Read all chromosomes; longest-job-first to minimise tail latency.
         chromosomes = sorted(
@@ -261,52 +308,13 @@ class GenomeAccessibilityService:
             2D numpy array [seq_len, unpaired_prob] of opening energies.
             Use result[pos, u-1] to get opening energy for length u at position pos.
         """
-        try:
-            import RNA
-        except ImportError:
-            raise AccessibilityError(
-                "ViennaRNA Python bindings ('import RNA') not found. "
-                "Install ViennaRNA with Python bindings."
-            )
-
-        seq_len = len(sequence)
-        if seq_len == 0:
-            return np.array([], dtype=np.float32)
-
-        rna_seq = sequence.upper().replace("T", "U")
-        w = min(window_size, seq_len)
-        max_span_adj = min(max_span, seq_len)
-        RT = _GAS_CONSTANT * (temperature + 273.15)
-
-        profile = np.full((seq_len, unpaired_prob), 25.5, dtype=np.float32)
-
-        try:
-            md = RNA.md()
-            md.temperature = temperature
-            md.window_size = w
-            md.max_bp_span = max_span_adj
-            fc = RNA.fold_compound(rna_seq, md, RNA.OPTION_WINDOW)
-            probs_matrix = [None] * (seq_len + 2)
-
-            def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
-                if (what & RNA.PROBS_WINDOW_UP) and v is not None:
-                    _pm[i] = list(v)
-
-            fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, _cb)
-            for i in range(1, seq_len + 1):
-                if i < len(probs_matrix) and probs_matrix[i] is not None:
-                    for u in range(1, unpaired_prob + 1):
-                        if u < len(probs_matrix[i]):
-                            p = probs_matrix[i][u]
-                            if p is not None and p > 0:
-                                profile[i - 1, u - 1] = -RT * np.log(p)
-
-            logger.debug(f"Computed accessibility for sequence of length {seq_len}")
-        except Exception as e:
-            logger.error(f"ViennaRNA error computing accessibility: {e}")
-            raise AccessibilityError(f"Failed to compute accessibility: {e}") from e
-
-        return profile
+        return fold_sequence(
+            sequence,
+            window_size=window_size,
+            max_span=max_span,
+            unpaired_prob=unpaired_prob,
+            temperature=temperature,
+        )
 
     def _find_profile(self, chrom: str) -> Path | None:
         """Return path to the chromosome's accessibility Parquet, or None."""
@@ -339,8 +347,6 @@ class GenomeAccessibilityService:
                 f"Profile for {chrom} not found in {self.data_dir}. "
                 f"Expected {self.data_dir / f'{chrom}.accessibility.parquet'}."
             )
-
-        import polars as pl
 
         df = (
             pl.read_parquet(path)

@@ -1,4 +1,6 @@
-# RIsearch Pipeline
+# RIOT
+
+RIOT — siRNA off-target discovery pipeline.
 
 A bioinformatics pipeline for **siRNA off-target discovery and probability quantification**. Integrates RNA-RNA interaction predictions with transcriptome annotations, RNA accessibility profiling, and thermodynamic modeling to rank off-target binding sites.
 
@@ -72,18 +74,56 @@ flowchart TD
 
 ---
 
+## Python API
+
+RIOT can be used as a library — `import riot`, then call the commands as plain functions; they return their results in-memory.
+
+```python
+import riot
+
+# Off-target analysis on a pre-computed predictions file → polars.DataFrame
+df = riot.off_targets(risearch_file="predictions.tsv", gtf_file="annotations.gtf")
+
+# Pre-compute per-chromosome accessibility profiles → dict[chrom -> Path]
+profiles = riot.accessibility(genome="genome.fa", output="acc_dir/")
+
+# Build a RIsearch index → Path (needs the external 'risearch' package)
+idx = riot.index("target.fa")
+
+# Run a RIsearch search → polars.DataFrame (needs the external 'risearch' package)
+hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
+```
+
+**Notes**
+
+- `riot.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it streams results to disk and returns a summary `dict` (output paths + row/summary counts) instead.
+- On error the underlying command raises `typer.Exit` (a Click exception).
+- `riot.index` / `riot.search` require the external `risearch` package — the same dependency the CLI's `index`/`search` commands need.
+
+---
+
 ## Installation
 
 Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.
 
 ```bash
-git clone git@github.com:lorenzo-22/RIsearch_pipeline.git
-cd RIsearch_pipeline
+git clone git@github.com:lorenzo-22/RIOT.git
+cd RIOT
 
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
 uv sync
 ```
+
+### Publishing / PyPI
+
+The PyPI distribution name is **`riot-sirna`** (plain `riot` is already taken on
+PyPI). Installing from PyPI with `pip install riot-sirna` is **pending
+publication of the upstream `risearch` dependency** (currently a `git+ssh`
+direct URL — see below) — until then, install from source / git as shown above.
+
+> **Note:** the import name `riot` could collide with Datadog's PyPI `riot`
+> package if both are installed in the same environment.
 
 ### The `risearch` dependency
 
@@ -111,7 +151,7 @@ Update the pin only when upstream fixes the mismatch.
 
 ```bash
 # Verify
-risearch-pipeline --help
+riot --help
 ```
 
 ---
@@ -122,7 +162,7 @@ risearch-pipeline --help
 
 ```bash
 # Pre-computed predictions file
-risearch-pipeline off-targets \
+riot off-targets \
   -r predictions.tsv \
   -t annotation.gtf \
   -a accessibility_profiles/ \
@@ -130,7 +170,7 @@ risearch-pipeline off-targets \
   -o results.tsv
 
 # Via YAML config (paths relative to config file)
-risearch-pipeline -c config/off-targets.example.yaml
+riot -c config/off-targets.example.yaml
 ```
 
 ### Orchestrated multi-step mode (local)
@@ -143,10 +183,10 @@ risearch-pipeline -c config/off-targets.example.yaml
 
 | Step | Command | Notes |
 |------|---------|-------|
-| `index` | `risearch-pipeline index` | Optional — build RIsearch index |
+| `index` | `riot index` | Optional — build RIsearch index |
 | `convert` | `convert_risearch_to_parquet.py` | Optional — `.out.gz` → Parquet |
-| `accessibility` | `risearch-pipeline accessibility` | Compute RNA accessibility profiles |
-| `off-targets` | `risearch-pipeline off-targets` | Main analysis |
+| `accessibility` | `riot accessibility` | Compute RNA accessibility profiles |
+| `off-targets` | `riot off-targets` | Main analysis |
 
 `index`, `convert`, and `accessibility` are independent and run in parallel on Slurm. `off-targets` waits for both `accessibility` and `convert`.
 

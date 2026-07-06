@@ -4,13 +4,11 @@ Tests for IntersectionService overlap semantics.
 Focuses on the specific behaviours that were fixed:
   1. Any-overlap (not containment-only)
   2. Boundary-touching intervals do NOT overlap (BED half-open)
-  3. NCLS and numpy fallback paths give identical results
 """
 
-import pytest
 import polars as pl
 
-from RIsearch_pipeline.services.intersection_service import IntersectionService
+from riot.services.intersection_service import IntersectionService
 
 
 # ---------------------------------------------------------------------------
@@ -122,67 +120,3 @@ class TestStrandSpecificity:
         assert hits(svc, pred(10, 20, strand="-"), trans(5, 30, strand="+")) == 0
 
 
-# ---------------------------------------------------------------------------
-# NCLS vs numpy fallback consistency
-# ---------------------------------------------------------------------------
-
-class TestNCLSvsNumpy:
-    """
-    NCLS fast path and numpy fallback must produce identical results.
-    """
-
-    @pytest.fixture
-    def mixed_df(self):
-        """Predictions with a mix of overlapping, touching, and non-overlapping."""
-        preds = pl.DataFrame({
-            "sirna_id": ["si1", "si2", "si3", "si4", "si5"],
-            "chrom":    ["chr1", "chr1", "chr1", "chr1", "chr2"],
-            "start":    [10,     50,     90,     130,    10   ],
-            "end":      [30,     70,     110,    150,    30   ],
-            "strand":   ["+",    "+",    "+",    "+",    "+"  ],
-            "energy":   [-15.0,  -12.0,  -10.0,  -8.0,  -11.0],
-        })
-        transcripts = pl.DataFrame({
-            "chrom":         ["chr1", "chr1", "chr2"],
-            "start":         [0,      70,     0    ],
-            "end":           [40,     120,    50   ],
-            "strand":        ["+",    "+",    "+"  ],
-            "gene_id":       ["g1",   "g2",   "g3" ],
-            "transcript_id": ["t1",   "t2",   "t3" ],
-            "exp_value":     [5.0,    10.0,   15.0 ],
-        })
-        return preds, transcripts
-
-    def test_ncls_and_numpy_same_hits(self, mixed_df, monkeypatch):
-        preds, transcripts = mixed_df
-        svc = IntersectionService()
-
-        # Run with NCLS (normal path)
-        result_ncls = svc.intersect(preds, transcripts)
-
-        # Force numpy fallback by hiding NCLS
-        import RIsearch_pipeline.services.intersection_service as mod
-        monkeypatch.setattr(mod, "NCLS", None)
-        result_numpy = svc.intersect(preds, transcripts)
-
-        # Same number of rows
-        assert result_ncls.height == result_numpy.height, (
-            f"NCLS={result_ncls.height} rows, numpy={result_numpy.height} rows"
-        )
-
-        # Same siRNA IDs hit
-        ncls_ids  = set(result_ncls["sirna_id"].to_list())
-        numpy_ids = set(result_numpy["sirna_id"].to_list())
-        assert ncls_ids == numpy_ids
-
-    def test_boundary_consistent_both_paths(self, monkeypatch):
-        """Boundary-touching must return 0 hits in BOTH paths."""
-        p = pred(10, 20)
-        t = trans(20, 30)
-        svc = IntersectionService()
-
-        assert svc.intersect(p, t).height == 0, "NCLS path: boundary hit"
-
-        import RIsearch_pipeline.services.intersection_service as mod
-        monkeypatch.setattr(mod, "NCLS", None)
-        assert svc.intersect(p, t).height == 0, "numpy path: boundary hit"

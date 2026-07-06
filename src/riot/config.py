@@ -6,7 +6,7 @@ from typing import Optional
 
 from omegaconf import MISSING, OmegaConf, DictConfig
 
-from RIsearch_pipeline.models import PredictionsMode
+from riot.models import PredictionsMode
 
 
 @dataclass

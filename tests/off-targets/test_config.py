@@ -2,7 +2,7 @@
 
 import pytest
 from omegaconf import MissingMandatoryValue
-from RIsearch_pipeline.config import load_config, config_to_kwargs
+from riot.config import load_config, config_to_kwargs
 
 
 class TestLoadConfig:

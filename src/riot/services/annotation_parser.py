@@ -5,7 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-from RIsearch_pipeline.models import GTF_SCHEMA
+from riot.models import GTF_SCHEMA
 
 
 class AnnotationParser:
