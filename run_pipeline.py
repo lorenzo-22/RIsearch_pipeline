@@ -116,16 +116,17 @@ class Job:
 
 # Built-in per-step Slurm resource defaults.
 _DEFAULT_RESOURCES: dict[str, dict] = {
-    "index":         {"time": "01:00:00", "mem": "8G",  "cpus_per_task": 4},
-    "convert":       {"time": "02:00:00", "mem": "16G", "cpus_per_task": 16},
+    "index": {"time": "01:00:00", "mem": "8G", "cpus_per_task": 4},
+    "convert": {"time": "02:00:00", "mem": "16G", "cpus_per_task": 16},
     "accessibility": {"time": "08:00:00", "mem": "32G", "cpus_per_task": 8},
-    "off-targets":   {"time": "04:00:00", "mem": "64G", "cpus_per_task": 16},
+    "off-targets": {"time": "04:00:00", "mem": "64G", "cpus_per_task": 16},
 }
 
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text()) or {}
@@ -141,6 +142,7 @@ def _resolve(value: str | None, base: Path) -> str | None:
 # ---------------------------------------------------------------------------
 # Command builders: config section dict → CLI argv list
 # ---------------------------------------------------------------------------
+
 
 def _build_index(cfg: dict, base: Path) -> list[str]:
     target = _resolve(cfg.get("target"), base)
@@ -182,8 +184,13 @@ def _build_accessibility(cfg: dict, base: Path) -> list[str]:
     if not output:
         raise ValueError("'output' is required")
     cmd = ["riot", "accessibility", "--fasta", fasta, "--output", output]
-    for key, flag in [("window", "--window"), ("span", "--span"), ("unpaired", "--unpaired"),
-                      ("temperature", "--temperature"), ("workers", "--workers")]:
+    for key, flag in [
+        ("window", "--window"),
+        ("span", "--span"),
+        ("unpaired", "--unpaired"),
+        ("temperature", "--temperature"),
+        ("workers", "--workers"),
+    ]:
         if key in cfg and cfg[key] is not None:
             cmd += [flag, str(cfg[key])]
     if cfg.get("verbose"):
@@ -196,19 +203,19 @@ def _build_off_targets(cfg: dict, base: Path) -> list[str]:
 
     # Path options
     for key, flag in [
-        ("risearch_file",          "--risearch-file"),
-        ("sirna_fasta",            "--sirna-fasta"),
-        ("target_fasta",           "--target-fasta"),
-        ("target_index",           "--target-index"),
-        ("transcriptome",          "--transcriptome"),
-        ("accessibility_dir",      "--accessibility-dir"),
-        ("output",                 "--output"),
-        ("fasta",                  "--fasta"),
-        ("on_target",              "--on-target"),
-        ("on_target_risearch_file","--on-target-risearch-file"),
-        ("query",                  "--query"),
-        ("on_target_accessibility","--on-target-accessibility"),
-        ("on_target_ids",          "--on-target-ids"),
+        ("risearch_file", "--risearch-file"),
+        ("sirna_fasta", "--sirna-fasta"),
+        ("target_fasta", "--target-fasta"),
+        ("target_index", "--target-index"),
+        ("transcriptome", "--transcriptome"),
+        ("accessibility_dir", "--accessibility-dir"),
+        ("output", "--output"),
+        ("fasta", "--fasta"),
+        ("on_target", "--on-target"),
+        ("on_target_risearch_file", "--on-target-risearch-file"),
+        ("query", "--query"),
+        ("on_target_accessibility", "--on-target-accessibility"),
+        ("on_target_ids", "--on-target-ids"),
     ]:
         val = _resolve(cfg.get(key), base)
         if val is not None:
@@ -216,32 +223,32 @@ def _build_off_targets(cfg: dict, base: Path) -> list[str]:
 
     # Scalar options
     for key, flag in [
-        ("workers",              "--workers"),
-        ("feature",              "--feature"),
-        ("expression_metric",    "--expression-metric"),
+        ("workers", "--workers"),
+        ("feature", "--feature"),
+        ("expression_metric", "--expression-metric"),
         ("transcriptome_format", "--transcriptome-format"),
-        ("window",               "--window"),
-        ("span",                 "--span"),
-        ("unpaired",             "--unpaired"),
-        ("temperature",          "--temperature"),
+        ("window", "--window"),
+        ("span", "--span"),
+        ("unpaired", "--unpaired"),
+        ("temperature", "--temperature"),
         ("on_target_expression", "--on-target-expression"),
-        ("alpha",                "--alpha"),
-        ("gamma",                "--gamma"),
-        ("theta",                "--theta"),
-        ("type",                 "--type"),
-        ("output_format",        "--output-format"),
+        ("alpha", "--alpha"),
+        ("gamma", "--gamma"),
+        ("theta", "--theta"),
+        ("type", "--type"),
+        ("output_format", "--output-format"),
     ]:
         if key in cfg and cfg[key] is not None:
             cmd += [flag, str(cfg[key])]
 
     # Boolean flags
     for key, flag in [
-        ("legacy_format",   "--legacy-format"),
+        ("legacy_format", "--legacy-format"),
         ("detailed_report", "--detailed-report"),
-        ("sense_only",      "--sense-only"),
-        ("verbose",         "--verbose"),
-        ("profile",         "--profile"),
-        ("summary_only",    "--summary-only"),
+        ("sense_only", "--sense-only"),
+        ("verbose", "--verbose"),
+        ("profile", "--profile"),
+        ("summary_only", "--summary-only"),
     ]:
         if cfg.get(key):
             cmd.append(flag)
@@ -250,26 +257,26 @@ def _build_off_targets(cfg: dict, base: Path) -> list[str]:
 
 
 _BUILDERS = {
-    "index":         _build_index,
-    "convert":       _build_convert,
+    "index": _build_index,
+    "convert": _build_convert,
     "accessibility": _build_accessibility,
-    "off-targets":   _build_off_targets,
+    "off-targets": _build_off_targets,
 }
 
 _CFG_KEYS = {
-    "index":         "index",
-    "convert":       "convert",
+    "index": "index",
+    "convert": "convert",
     "accessibility": "accessibility",
-    "off-targets":   "off_targets",
+    "off-targets": "off_targets",
 }
 
 # Dependency graph: index/convert/accessibility are independent of each other.
 # off-targets waits for accessibility (always) and convert (if convert is in the run).
 _DEPS: dict[str, list[str]] = {
-    "index":         [],
-    "convert":       [],
+    "index": [],
+    "convert": [],
     "accessibility": [],
-    "off-targets":   ["accessibility", "convert"],
+    "off-targets": ["accessibility", "convert"],
 }
 
 
@@ -338,8 +345,14 @@ def _build_jobs(cfg: dict, steps: list[str], base: Path) -> list[Job]:
     global_off = cfg.get("off_targets") or {}
     compute_acc = "accessibility" in steps
     for group in groups:
-        merged_off = {**global_off, **{k: v for k, v in group.items()
-                                       if k not in _ACCESSIBILITY_ONLY_GROUP_KEYS}}
+        merged_off = {
+            **global_off,
+            **{
+                k: v
+                for k, v in group.items()
+                if k not in _ACCESSIBILITY_ONLY_GROUP_KEYS
+            },
+        }
         if not merged_off.get("risearch_file"):
             raise ValueError(f"transcriptome '{group['name']}' needs a 'risearch_file'")
         # When accessibility is computed per group, each group must name its own
@@ -350,11 +363,13 @@ def _build_jobs(cfg: dict, steps: list[str], base: Path) -> list[Job]:
             if not group.get("fasta"):
                 raise ValueError(
                     f"transcriptome '{group['name']}': 'fasta' is required when "
-                    f"'accessibility' is in steps")
+                    f"'accessibility' is in steps"
+                )
             if not group.get("accessibility_dir"):
                 raise ValueError(
                     f"transcriptome '{group['name']}': 'accessibility_dir' is required "
-                    f"when 'accessibility' is in steps (where profiles are written and read)")
+                    f"when 'accessibility' is in steps (where profiles are written and read)"
+                )
         group.setdefault("output", f"results/{group['name']}.tsv")
 
     outputs = [_resolve(g["output"], base) for g in groups]
@@ -379,13 +394,16 @@ def _build_jobs(cfg: dict, steps: list[str], base: Path) -> list[Job]:
                 if d not in steps:
                     continue
                 dep_keys.append(d if d not in FANOUT_STEPS else f"{d}:{name}")
-            jobs.append(Job(key=f"{step}:{name}", step=step, cmd=cmd, dep_keys=dep_keys))
+            jobs.append(
+                Job(key=f"{step}:{name}", step=step, cmd=cmd, dep_keys=dep_keys)
+            )
     return jobs
 
 
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
+
 
 def _slug(key: str) -> str:
     """Filesystem-/Slurm-safe token from a job key (e.g. 'off-targets:human')."""
@@ -422,13 +440,20 @@ def _run_slurm(
         slug = _slug(job.key)
         res = resources[job.step]
         sbatch = [
-            "sbatch", "--parsable",
-            "--time",          res.get("time", "04:00:00"),
-            "--mem",           res.get("mem", "16G"),
-            "--cpus-per-task", str(res.get("cpus_per_task", 4)),
-            "--job-name",      f"rip_{slug}",
-            "--output",        str(log_dir / f"{slug}_%j.out"),
-            "--error",         str(log_dir / f"{slug}_%j.err"),
+            "sbatch",
+            "--parsable",
+            "--time",
+            res.get("time", "04:00:00"),
+            "--mem",
+            res.get("mem", "16G"),
+            "--cpus-per-task",
+            str(res.get("cpus_per_task", 4)),
+            "--job-name",
+            f"rip_{slug}",
+            "--output",
+            str(log_dir / f"{slug}_%j.out"),
+            "--error",
+            str(log_dir / f"{slug}_%j.err"),
         ]
         partition = slurm_cfg.get("partition")
         if partition:
@@ -450,7 +475,10 @@ def _run_slurm(
         else:
             result = subprocess.run(sbatch, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"[{job.key}] sbatch failed: {result.stderr.strip()}", file=sys.stderr)
+                print(
+                    f"[{job.key}] sbatch failed: {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
                 sys.exit(result.returncode)
             job_ids[job.key] = result.stdout.strip().split(";")[0]
             print(f"[{job.key}] submitted → job {job_ids[job.key]}")
@@ -460,33 +488,56 @@ def _run_slurm(
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="run_pipeline.py",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", "-c", required=True, type=Path,
-                        metavar="YAML",
-                        help="Pipeline orchestrator config file.")
-    parser.add_argument("--slurm", action="store_true",
-                        help="Submit steps as Slurm jobs.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print commands without executing.")
-    parser.add_argument("--steps", metavar="STEP[,STEP...]",
-                        help=f"Steps to run (default: {','.join(DEFAULT_STEPS)}). "
-                             f"Available: {','.join(STEP_ORDER)}.")
+    parser.add_argument(
+        "--config",
+        "-c",
+        required=True,
+        type=Path,
+        metavar="YAML",
+        help="Pipeline orchestrator config file.",
+    )
+    parser.add_argument(
+        "--slurm", action="store_true", help="Submit steps as Slurm jobs."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without executing."
+    )
+    parser.add_argument(
+        "--steps",
+        metavar="STEP[,STEP...]",
+        help=f"Steps to run (default: {','.join(DEFAULT_STEPS)}). "
+        f"Available: {','.join(STEP_ORDER)}.",
+    )
     # Global Slurm resource overrides (applied to every step)
-    parser.add_argument("--partition", metavar="NAME",
-                        help="Slurm partition (overrides config).")
-    parser.add_argument("--account", metavar="NAME",
-                        help="Slurm account (overrides config).")
-    parser.add_argument("--time", metavar="HH:MM:SS",
-                        help="Wall time for every step (overrides per-step defaults).")
-    parser.add_argument("--mem", metavar="SIZE",
-                        help="Memory for every step, e.g. 32G (overrides per-step defaults).")
-    parser.add_argument("--cpus-per-task", type=int, metavar="N",
-                        help="CPUs per step (overrides per-step defaults).")
+    parser.add_argument(
+        "--partition", metavar="NAME", help="Slurm partition (overrides config)."
+    )
+    parser.add_argument(
+        "--account", metavar="NAME", help="Slurm account (overrides config)."
+    )
+    parser.add_argument(
+        "--time",
+        metavar="HH:MM:SS",
+        help="Wall time for every step (overrides per-step defaults).",
+    )
+    parser.add_argument(
+        "--mem",
+        metavar="SIZE",
+        help="Memory for every step, e.g. 32G (overrides per-step defaults).",
+    )
+    parser.add_argument(
+        "--cpus-per-task",
+        type=int,
+        metavar="N",
+        help="CPUs per step (overrides per-step defaults).",
+    )
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -531,7 +582,7 @@ def main() -> None:
     for step in steps:
         res = dict(_DEFAULT_RESOURCES.get(step, {}))
         step_key = step.replace("-", "_")
-        step_slurm = (slurm_cfg.get(step_key) or {})
+        step_slurm = slurm_cfg.get(step_key) or {}
         res.update(step_slurm)
         if args.time:
             res["time"] = args.time
