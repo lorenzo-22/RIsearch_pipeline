@@ -56,12 +56,35 @@ Config format (YAML):
     alpha: "0.8;1.0"
     gamma: "1.0"
     type: gw
+
+Multi-transcriptome fan-out (Slurm-native, one transcriptome per node):
+  Add a top-level `transcriptomes:` list to analyze several genomes at once.
+  Each entry is an independent run: its own risearch_file/transcriptome/output,
+  its own Slurm job(s). The top-level off_targets/accessibility/convert blocks
+  become shared defaults; each group overrides the per-group fields. `index` is
+  never fanned out. Off-targets math (Z_s) is unchanged — groups never mix.
+
+  off_targets:                      # shared defaults for every group
+    alpha: "0.8;1.0"
+    type: gw
+  transcriptomes:
+    - name: human
+      risearch_file: data/human.out
+      transcriptome: data/human.gtf
+      accessibility_dir: data/human_acc/   # precomputed
+      output: results/human.tsv
+    - name: mouse
+      risearch_file: data/mouse.out
+      transcriptome: data/mouse.gtf
+      accessibility_dir: data/mouse_acc/
+      output: results/mouse.tsv
 """
 
 import argparse
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -70,6 +93,26 @@ import yaml
 
 STEP_ORDER = ["index", "convert", "accessibility", "off-targets"]
 DEFAULT_STEPS = ["accessibility", "off-targets"]
+
+# Steps that fan out to one job per transcriptome group. index is genome-index
+# construction and stays a single global job even in fan-out mode.
+FANOUT_STEPS = {"convert", "accessibility", "off-targets"}
+
+
+@dataclass
+class Job:
+    """A single unit of work: one CLI invocation submitted as one Slurm job.
+
+    In single-run mode ``key == step``. In transcriptome fan-out mode
+    ``key == f"{step}:{group_name}"`` and ``dep_keys`` holds the keys of the
+    upstream jobs (same group) this one waits on via ``--dependency=afterok``.
+    """
+
+    key: str
+    step: str
+    cmd: list[str]
+    dep_keys: list[str] = field(default_factory=list)
+
 
 # Built-in per-step Slurm resource defaults.
 _DEFAULT_RESOURCES: dict[str, dict] = {
@@ -231,46 +274,161 @@ _DEPS: dict[str, list[str]] = {
 
 
 # ---------------------------------------------------------------------------
+# Job assembly: config → list[Job]  (single-run or transcriptome fan-out)
+# ---------------------------------------------------------------------------
+
+# Group keys that configure the accessibility/convert steps rather than
+# off-targets; excluded when a group entry is merged into the off_targets block.
+_ACCESSIBILITY_ONLY_GROUP_KEYS = {"name", "fasta"}
+
+
+def _group_step_cfg(step: str, global_cfg: dict, group: dict) -> dict:
+    """Assemble the per-group config dict for one step.
+
+    Top-level ``off_targets:`` / ``accessibility:`` / ``convert:`` blocks are
+    shared defaults; the group entry overrides them. ``accessibility_dir`` is
+    the handoff path: it is the accessibility step's ``output`` (where profiles
+    are written) and the off-targets step's ``accessibility_dir`` (where they
+    are read), so a computed profile feeds straight into that group's analysis.
+    """
+    merged = dict(global_cfg or {})
+    if step == "off-targets":
+        for k, v in group.items():
+            if k in _ACCESSIBILITY_ONLY_GROUP_KEYS:
+                continue
+            merged[k] = v
+    elif step == "accessibility":
+        if group.get("fasta"):
+            merged["fasta"] = group["fasta"]
+        if group.get("accessibility_dir"):
+            merged["output"] = group["accessibility_dir"]
+    elif step == "convert":
+        for k in ("input_dir", "out_dir", "ids_file", "workers", "skip_existing"):
+            if k in group:
+                merged[k] = group[k]
+    return merged
+
+
+def _build_jobs(cfg: dict, steps: list[str], base: Path) -> list[Job]:
+    """Build the job list, fanning out per transcriptome group when configured."""
+    groups = cfg.get("transcriptomes")
+
+    if not groups:
+        # Single-run mode: one job per step, unchanged from the original design.
+        jobs: list[Job] = []
+        for step in steps:
+            step_cfg = cfg.get(_CFG_KEYS[step]) or {}
+            cmd = _BUILDERS[step](step_cfg, base)
+            dep_keys = [d for d in _DEPS.get(step, []) if d in steps]
+            jobs.append(Job(key=step, step=step, cmd=cmd, dep_keys=dep_keys))
+        return jobs
+
+    # Fan-out mode: validate groups, then emit one job per (group, step).
+    if not isinstance(groups, list):
+        raise ValueError("'transcriptomes' must be a list of group entries")
+    names: list[str] = []
+    for i, group in enumerate(groups):
+        if not isinstance(group, dict) or not group.get("name"):
+            raise ValueError(f"transcriptomes[{i}] needs a 'name'")
+        names.append(group["name"])
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate transcriptome names: {names}")
+
+    # Assign a default per-group output before validating uniqueness.
+    global_off = cfg.get("off_targets") or {}
+    compute_acc = "accessibility" in steps
+    for group in groups:
+        merged_off = {**global_off, **{k: v for k, v in group.items()
+                                       if k not in _ACCESSIBILITY_ONLY_GROUP_KEYS}}
+        if not merged_off.get("risearch_file"):
+            raise ValueError(f"transcriptome '{group['name']}' needs a 'risearch_file'")
+        # When accessibility is computed per group, each group must name its own
+        # fasta AND a group-unique accessibility_dir (the handoff path). Without
+        # the latter, groups would collide on the shared global output dir and
+        # off-targets would silently fall back to energy-only probabilities.
+        if compute_acc:
+            if not group.get("fasta"):
+                raise ValueError(
+                    f"transcriptome '{group['name']}': 'fasta' is required when "
+                    f"'accessibility' is in steps")
+            if not group.get("accessibility_dir"):
+                raise ValueError(
+                    f"transcriptome '{group['name']}': 'accessibility_dir' is required "
+                    f"when 'accessibility' is in steps (where profiles are written and read)")
+        group.setdefault("output", f"results/{group['name']}.tsv")
+
+    outputs = [_resolve(g["output"], base) for g in groups]
+    if len(set(outputs)) != len(outputs):
+        raise ValueError(f"transcriptome 'output' paths must be unique, got: {outputs}")
+
+    jobs = []
+    for step in steps:
+        if step not in FANOUT_STEPS:
+            # index stays a single global job.
+            step_cfg = cfg.get(_CFG_KEYS[step]) or {}
+            cmd = _BUILDERS[step](step_cfg, base)
+            jobs.append(Job(key=step, step=step, cmd=cmd, dep_keys=[]))
+            continue
+        global_cfg = cfg.get(_CFG_KEYS[step]) or {}
+        for group in groups:
+            name = group["name"]
+            step_cfg = _group_step_cfg(step, global_cfg, group)
+            cmd = _BUILDERS[step](step_cfg, base)
+            dep_keys = []
+            for d in _DEPS.get(step, []):
+                if d not in steps:
+                    continue
+                dep_keys.append(d if d not in FANOUT_STEPS else f"{d}:{name}")
+            jobs.append(Job(key=f"{step}:{name}", step=step, cmd=cmd, dep_keys=dep_keys))
+    return jobs
+
+
+# ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 
-def _run_local(steps: list[str], commands: list[list[str]], log_dir: Path) -> None:
+def _slug(key: str) -> str:
+    """Filesystem-/Slurm-safe token from a job key (e.g. 'off-targets:human')."""
+    return key.replace("-", "_").replace(":", "_")
+
+
+def _run_local(jobs: list[Job], log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    for step, cmd in zip(steps, commands):
-        log_file = log_dir / f"{step}.log"
-        print(f"\n[{step}] {shlex.join(cmd)}")
-        print(f"[{step}] log → {log_file}")
+    for job in jobs:
+        log_file = log_dir / f"{_slug(job.key)}.log"
+        print(f"\n[{job.key}] {shlex.join(job.cmd)}")
+        print(f"[{job.key}] log → {log_file}")
         with log_file.open("w") as fh:
-            fh.write(f"CMD: {shlex.join(cmd)}\n\n")
+            fh.write(f"CMD: {shlex.join(job.cmd)}\n\n")
             fh.flush()
-            rc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT).returncode
+            rc = subprocess.run(job.cmd, stdout=fh, stderr=subprocess.STDOUT).returncode
         if rc != 0:
-            print(f"[{step}] FAILED (exit {rc}) — see {log_file}", file=sys.stderr)
+            print(f"[{job.key}] FAILED (exit {rc}) — see {log_file}", file=sys.stderr)
             sys.exit(rc)
-        print(f"[{step}] OK")
+        print(f"[{job.key}] OK")
 
 
 def _run_slurm(
-    steps: list[str],
-    commands: list[list[str]],
+    jobs: list[Job],
     slurm_cfg: dict,
     resources: dict[str, dict],
     log_dir: Path,
     dry_run: bool,
 ) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    job_ids: dict[str, str] = {}  # step → job ID (real or placeholder)
+    job_ids: dict[str, str] = {}  # job key → job ID (real or placeholder)
 
-    for step, cmd in zip(steps, commands):
-        res = resources[step]
+    for job in jobs:
+        slug = _slug(job.key)
+        res = resources[job.step]
         sbatch = [
             "sbatch", "--parsable",
             "--time",          res.get("time", "04:00:00"),
             "--mem",           res.get("mem", "16G"),
             "--cpus-per-task", str(res.get("cpus_per_task", 4)),
-            "--job-name",      f"rip_{step.replace('-', '_')}",
-            "--output",        str(log_dir / f"{step}_%j.out"),
-            "--error",         str(log_dir / f"{step}_%j.err"),
+            "--job-name",      f"rip_{slug}",
+            "--output",        str(log_dir / f"{slug}_%j.out"),
+            "--error",         str(log_dir / f"{slug}_%j.err"),
         ]
         partition = slurm_cfg.get("partition")
         if partition:
@@ -279,24 +437,23 @@ def _run_slurm(
         if account:
             sbatch += ["--account", account]
 
-        active_deps = [s for s in _DEPS.get(step, []) if s in steps]
-        if active_deps:
-            dep_str = ":".join(job_ids[d] for d in active_deps)
+        if job.dep_keys:
+            dep_str = ":".join(job_ids[d] for d in job.dep_keys)
             sbatch += ["--dependency", f"afterok:{dep_str}"]
 
-        sbatch += ["--wrap", shlex.join(cmd)]
+        sbatch += ["--wrap", shlex.join(job.cmd)]
 
         if dry_run:
             print(shlex.join(sbatch))
             print()
-            job_ids[step] = f"<JOBID_{step.replace('-', '_')}>"
+            job_ids[job.key] = f"<JOBID_{slug}>"
         else:
             result = subprocess.run(sbatch, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"[{step}] sbatch failed: {result.stderr.strip()}", file=sys.stderr)
+                print(f"[{job.key}] sbatch failed: {result.stderr.strip()}", file=sys.stderr)
                 sys.exit(result.returncode)
-            job_ids[step] = result.stdout.strip().split(";")[0]
-            print(f"[{step}] submitted → job {job_ids[step]}")
+            job_ids[job.key] = result.stdout.strip().split(";")[0]
+            print(f"[{job.key}] submitted → job {job_ids[job.key]}")
 
 
 # ---------------------------------------------------------------------------
@@ -352,14 +509,11 @@ def main() -> None:
     # Preserve canonical dependency order
     steps = [s for s in STEP_ORDER if s in steps]
 
-    # Build argv lists
-    commands: list[list[str]] = []
-    for step in steps:
-        step_cfg = cfg.get(_CFG_KEYS[step]) or {}
-        try:
-            commands.append(_BUILDERS[step](step_cfg, base))
-        except ValueError as exc:
-            sys.exit(f"Config error for step '{step}': {exc}")
+    # Build jobs (one per step, or one per (group, step) with fan-out)
+    try:
+        jobs = _build_jobs(cfg, steps, base)
+    except ValueError as exc:
+        sys.exit(f"Config error: {exc}")
 
     # Log directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -389,16 +543,16 @@ def main() -> None:
 
     # Execute
     if args.dry_run and not args.slurm:
-        for step, cmd in zip(steps, commands):
-            print(f"# {step}")
-            print(shlex.join(cmd))
+        for job in jobs:
+            print(f"# {job.key}")
+            print(shlex.join(job.cmd))
             print()
         return
 
     if args.slurm:
-        _run_slurm(steps, commands, slurm_cfg, resources, log_dir, args.dry_run)
+        _run_slurm(jobs, slurm_cfg, resources, log_dir, args.dry_run)
     else:
-        _run_local(steps, commands, log_dir)
+        _run_local(jobs, log_dir)
 
 
 if __name__ == "__main__":

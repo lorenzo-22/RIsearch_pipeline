@@ -233,6 +233,34 @@ slurm:
 
 Each step gets its own `--output`/`--error` log under `logs/<timestamp>/`. CLI flags (`--partition`, `--time`, `--mem`, `--cpus-per-task`, `--account`) override YAML for all steps.
 
+### Multiple transcriptomes (fan-out)
+
+Add a top-level `transcriptomes:` list to analyze several genomes/transcriptomes in one launch — Slurm-native, **one transcriptome per node**, run in parallel. Each entry is an independent run (its own predictions, annotation, and output); groups never mix, so the off-target probability math (`Z_s`) is unchanged. The top-level `off_targets:`/`accessibility:`/`convert:` blocks act as shared defaults; each group overrides its per-group fields. `index` is never fanned out.
+
+```yaml
+steps: [off-targets]
+
+off_targets:            # shared defaults for every group
+  alpha: "0.8;1.0"
+  type: gw
+
+transcriptomes:
+  - name: human         # required — job names, logs, default output
+    risearch_file: ../data/human.out
+    transcriptome: ../data/human.gtf
+    accessibility_dir: ../data/human_acc/   # precomputed
+    output: results/human.tsv               # must be unique per group
+  - name: mouse
+    risearch_file: ../data/mouse.out
+    transcriptome: ../data/mouse.gtf
+    accessibility_dir: ../data/mouse_acc/
+    output: results/mouse.tsv
+```
+
+Each group submits its own Slurm job(s) (`rip_off_targets_human`, `rip_off_targets_mouse`, …); a group's `off-targets` waits only on its own upstream jobs. To compute accessibility per group, add `accessibility` to `steps` and give each group **both** a `fasta:` and an `accessibility_dir:` (the profiles are written there and read back by that group's off-targets; both are required and validated). Omitting a group `output` defaults it to `results/<name>.tsv`.
+
+> `convert` also fans out per group when in `steps`, but its output is **not** auto-wired to that group's `risearch_file` — set each group's `input_dir`/`out_dir` and `risearch_file` explicitly.
+
 ### Orchestrator config format
 
 See `config/run-pipeline.example.yaml` for the full reference. All paths resolve relative to the config file's directory.
