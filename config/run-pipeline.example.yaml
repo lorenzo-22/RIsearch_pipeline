@@ -86,3 +86,34 @@ off_targets:
   gamma: "1.0"
   theta: ""
   on_target_expression: 1000.0
+
+# =============================================================================
+# Multi-transcriptome fan-out (optional)
+# =============================================================================
+# Add a top-level `transcriptomes:` list to analyze several genomes/transcriptomes
+# in one launch. Each entry is an INDEPENDENT run with its own predictions,
+# annotation, and output — Slurm-native: one transcriptome per node, run in
+# parallel (each group's off-targets waits only on its OWN upstream jobs). The
+# off-target math (Z_s) is unchanged; groups never mix.
+#
+# The top-level off_targets/accessibility/convert blocks above act as SHARED
+# DEFAULTS; each group overrides only its per-group fields:
+#   off_targets:            <- shared defaults (alpha/gamma/theta, window/span,
+#     alpha: "0.8;1.0"         temperature, on-target config, type, ...)
+#     type: gw
+#   transcriptomes:         <- one job (pair) per entry; `index` never fans out
+#     - name: human           # required — used for job names, logs, default output
+#       risearch_file: ../data/human.out
+#       transcriptome: ../data/human.gtf
+#       accessibility_dir: ../data/human_acc/   # precomputed profiles
+#       output: results/human.tsv               # must be unique per group
+#     - name: mouse
+#       risearch_file: ../data/mouse.out
+#       transcriptome: ../data/mouse.gtf
+#       accessibility_dir: ../data/mouse_acc/
+#       output: results/mouse.tsv
+#
+# To COMPUTE accessibility per group instead of using precomputed profiles, add
+# `accessibility` to `steps` and give each group a `fasta:` plus the
+# `accessibility_dir:` to write into — off-targets then waits on that group's
+# accessibility job.
