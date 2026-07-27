@@ -26,6 +26,7 @@ dependencies = [
   "omegaconf>=2.3.0",
   "polars[rtcompat]>=1.0",
   "pyarrow",
+  "pyyaml",
   "rich>=14.3.0",
   # NOTE: PyPI upload is blocked until `risearch` is published to PyPI; PyPI rejects
   # direct git/URL deps. Swap to a normal version pin (e.g. "risearch>=X.Y") then.

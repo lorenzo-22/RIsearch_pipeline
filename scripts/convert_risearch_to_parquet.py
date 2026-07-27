@@ -14,16 +14,16 @@ processes, so memory usage stays low regardless of dataset size.
 
 Usage:
     # Convert a directory in-place (output alongside input)
-    python3 convert_risearch_to_parquet.py <input_dir>
+    python3 scripts/convert_risearch_to_parquet.py <input_dir>
 
     # Convert to a separate output directory
-    python3 convert_risearch_to_parquet.py <input_dir> --out-dir <output_dir>
+    python3 scripts/convert_risearch_to_parquet.py <input_dir> --out-dir <output_dir>
 
     # Control parallelism
-    python3 convert_risearch_to_parquet.py <input_dir> --workers 32
+    python3 scripts/convert_risearch_to_parquet.py <input_dir> --workers 32
 
     # Convert only a specific subset of siRNA IDs (one ID per line)
-    python3 convert_risearch_to_parquet.py <input_dir> --ids-file subset.ids --out-dir <output_dir>
+    python3 scripts/convert_risearch_to_parquet.py <input_dir> --ids-file subset.ids --out-dir <output_dir>
 """
 
 import argparse

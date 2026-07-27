@@ -4,7 +4,7 @@ Orchestrator for the RIOT siRNA off-target discovery pipeline.
 
 Runs pipeline stages in dependency order:
   1. (optional) index       -- riot index
-  2. (optional) convert     -- convert_risearch_to_parquet.py
+  2. (optional) convert     -- scripts/convert_risearch_to_parquet.py
   3.            accessibility -- riot accessibility
   4.            off-targets  -- riot off-targets
 
@@ -491,7 +491,7 @@ def _run_slurm(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="run_pipeline.py",
+        prog="scripts/run_pipeline.py",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

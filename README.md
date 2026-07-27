@@ -170,21 +170,22 @@ riot off-targets \
   -o results.tsv
 
 # Via YAML config (paths relative to config file)
-riot -c config/off-targets.example.yaml
+riot -c example_yaml/off-targets.example.yaml
 ```
 
 ### Orchestrated multi-step mode (local)
 
-> `run_pipeline.py` and `convert_risearch_to_parquet.py` live at the repo root —
-> they are available when you **clone** the repo, but are **not** installed by
-> `pip`/`uv` as console scripts. Run them with `python <script>.py` from a clone.
+> `scripts/run_pipeline.py` and `scripts/convert_risearch_to_parquet.py` live in
+> the `scripts/` directory — they are available when you **clone** the repo, but
+> are **not** installed by `pip`/`uv` as console scripts. Run them with
+> `python scripts/<script>.py` from a clone.
 
-`run_pipeline.py` runs all pipeline stages in dependency order:
+`scripts/run_pipeline.py` runs all pipeline stages in dependency order:
 
 | Step | Command | Notes |
 |------|---------|-------|
 | `index` | `riot index` | Optional — build RIsearch index |
-| `convert` | `convert_risearch_to_parquet.py` | Optional — `.out.gz` → Parquet |
+| `convert` | `scripts/convert_risearch_to_parquet.py` | Optional — `.out.gz` → Parquet |
 | `accessibility` | `riot accessibility` | Compute RNA accessibility profiles |
 | `off-targets` | `riot off-targets` | Main analysis |
 
@@ -192,26 +193,26 @@ riot -c config/off-targets.example.yaml
 
 ```bash
 # Dry-run (print commands without executing)
-python run_pipeline.py --config config/run-pipeline.example.yaml --dry-run
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml --dry-run
 
 # Run locally (sequential, logs to logs/<timestamp>/)
-python run_pipeline.py --config config/run-pipeline.example.yaml
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml
 
 # Run a subset of steps
-python run_pipeline.py --config config/run-pipeline.example.yaml --steps accessibility,off-targets
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml --steps accessibility,off-targets
 ```
 
 ### Cluster mode (Slurm)
 
 ```bash
 # Dry-run — shows full sbatch commands with dependency chain
-python run_pipeline.py --config config/run-pipeline.example.yaml --slurm --dry-run
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml --slurm --dry-run
 
 # Submit to Slurm
-python run_pipeline.py --config config/run-pipeline.example.yaml --slurm
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml --slurm
 
 # Override resources for all steps
-python run_pipeline.py --config config/run-pipeline.example.yaml --slurm \
+python scripts/run_pipeline.py --config example_yaml/run-pipeline.example.yaml --slurm \
   --partition gpu --mem 128G --cpus-per-task 32 --account mylab
 ```
 
@@ -263,7 +264,7 @@ Each group submits its own Slurm job(s) (`rip_off_targets_human`, `rip_off_targe
 
 ### Orchestrator config format
 
-See `config/run-pipeline.example.yaml` for the full reference. All paths resolve relative to the config file's directory.
+See `example_yaml/run-pipeline.example.yaml` for the full reference. All paths resolve relative to the config file's directory.
 
 ```yaml
 steps: [accessibility, off-targets]   # default; add index/convert to enable
