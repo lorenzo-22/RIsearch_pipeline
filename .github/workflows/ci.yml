@@ -47,13 +47,19 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
+      # --frozen resolves the correct per-version dependency set from the
+      # single universal uv.lock for this matrix.python-version.
       - run: uv sync --frozen
       # risearch-dependent tests auto-skip (pytest.importorskip) since the
       # optional `risearch` extra is not installed here.
