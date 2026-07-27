@@ -50,9 +50,7 @@ def search(
             help="Output TSV file. Defaults to stdout.",
         ),
     ] = None,
-    seed_length: Annotated[
-        int, typer.Option("--seed", "-s", help="Seed length.")
-    ] = 6,
+    seed_length: Annotated[int, typer.Option("--seed", "-s", help="Seed length.")] = 6,
     max_extension: Annotated[
         int,
         typer.Option(

@@ -28,6 +28,7 @@ from rich.table import Table
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _rss_mb() -> float:
     """Return process RSS in MB via /proc/self/status (Linux).
 
@@ -46,6 +47,7 @@ def _rss_mb() -> float:
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class StageRecord:
@@ -79,6 +81,7 @@ class _StageContext:
 # ---------------------------------------------------------------------------
 # Main profiler
 # ---------------------------------------------------------------------------
+
 
 class PipelineProfiler:
     """Collects per-stage timing and memory deltas, then renders a Rich table.
@@ -148,7 +151,11 @@ class PipelineProfiler:
             delta_mem = s.mem_after_mb - s.mem_before_mb
             # Throughput is based on whichever row count is non-zero
             ref_rows = s.rows_out if s.rows_out > 0 else s.rows_in
-            throughput = (ref_rows / s.elapsed / 1_000) if s.elapsed > 0 and ref_rows > 0 else 0.0
+            throughput = (
+                (ref_rows / s.elapsed / 1_000)
+                if s.elapsed > 0 and ref_rows > 0
+                else 0.0
+            )
 
             if s.rows_out > 0 and s.rows_in > 0:
                 rows_str = f"{s.rows_in:,} → {s.rows_out:,}"

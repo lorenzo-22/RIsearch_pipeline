@@ -14,9 +14,7 @@ class TestCLIMain:
 
     def test_run_valid_file(self) -> None:
         """CLI loads valid TSV and prints summary."""
-        tsv_path = (
-            Path(__file__).parent / "data" / "risearch_siRNAID.out"
-        )
+        tsv_path = Path(__file__).parent / "data" / "risearch_siRNAID.out"
         result = runner.invoke(app, ["off-targets", "-r", str(tsv_path)])
 
         assert result.exit_code == 0
@@ -32,18 +30,14 @@ class TestCLIMain:
     def test_run_shows_chromosomes(self) -> None:
         """CLI output includes chromosome information."""
         # Use verbose to see the dataframe head where chromosomes/targets are listed
-        tsv_path = (
-            Path(__file__).parent / "data" / "risearch_siRNAID.out"
-        )
+        tsv_path = Path(__file__).parent / "data" / "risearch_siRNAID.out"
         result = runner.invoke(app, ["off-targets", "-r", str(tsv_path), "-v"])
 
         assert "transcript_3" in result.stdout
 
     def test_run_shows_strands(self) -> None:
         """CLI output includes strand information."""
-        tsv_path = (
-            Path(__file__).parent / "data" / "risearch_siRNAID.out"
-        )
+        tsv_path = Path(__file__).parent / "data" / "risearch_siRNAID.out"
         result = runner.invoke(app, ["off-targets", "-r", str(tsv_path), "-v"])
 
         assert "+" in result.stdout

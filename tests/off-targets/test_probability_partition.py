@@ -45,9 +45,7 @@ class TestProbabilityPartition(unittest.TestCase):
         self.assertAlmostEqual(p1, expected_p1, places=4)
         self.assertAlmostEqual(p2, expected_p2, places=4)
 
-    @patch(
-        "riot.services.probability.ProbabilityService._run_risearch_binary"
-    )
+    @patch("riot.services.probability.ProbabilityService._run_risearch_binary")
     def test_z_score_with_on_target(self, mock_risearch):
         """Test P(OT) including On-Target in Z (Open Universe)."""
         # Mock RIsearch to return -30.0 kcal/mol for on-target (very stable)

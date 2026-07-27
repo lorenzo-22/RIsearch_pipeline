@@ -28,13 +28,22 @@ dependencies = [
   "pyarrow",
   "pyyaml",
   "rich>=14.3.0",
-  # NOTE: PyPI upload is blocked until `risearch` is published to PyPI; PyPI rejects
-  # direct git/URL deps. Swap to a normal version pin (e.g. "risearch>=X.Y") then.
-  # Pin to last buildable commit on feature/polars-lts-support; 69aa6d7 removed from_fastas from core
-  # without updating risearch-python/src/lib.rs (compilation bug). Update when upstream fixes.
-  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
   "typer",
   "viennaRNA==2.7.2",
+]
+
+[project.optional-dependencies]
+# The `risearch` PyO3 bindings are only needed for the in-process `index` /
+# `search` commands. Core off-targets/accessibility work without them, so this is
+# an optional extra: `uv sync` installs core; `uv sync --extra risearch` adds it.
+#
+# NOTE: PyPI upload is blocked while this is a git/URL dep; PyPI rejects direct
+# git/URL deps. Swap to a normal version pin (e.g. "risearch>=X.Y") once published.
+# Pin to last buildable commit on feature/polars-lts-support; 69aa6d7 removed
+# from_fastas from core without updating risearch-python/src/lib.rs (compilation
+# bug). Update when upstream fixes.
+risearch = [
+  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
 ]
 
 [project.urls]

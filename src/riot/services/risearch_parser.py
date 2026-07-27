@@ -64,7 +64,9 @@ class RIsearchParser:
             .select(_TSV_SELECT)
             .collect()
         )
-        raw_emin = df.group_by("sirna_id").agg(pl.col("energy").min().alias("raw_e_min"))
+        raw_emin = df.group_by("sirna_id").agg(
+            pl.col("energy").min().alias("raw_e_min")
+        )
         return df.join(raw_emin, on="sirna_id", how="left")
 
     def list_directory_files(self, directory: Path) -> list[Path]:

@@ -114,8 +114,15 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
     kwargs = OmegaConf.to_container(section, resolve=True)
 
     for key in [
-        "risearch_file", "transcriptome", "accessibility_dir", "output",
-        "fasta", "on_target", "on_target_risearch_file", "query", "on_target_accessibility",
+        "risearch_file",
+        "transcriptome",
+        "accessibility_dir",
+        "output",
+        "fasta",
+        "on_target",
+        "on_target_risearch_file",
+        "query",
+        "on_target_accessibility",
     ]:
         if key in kwargs and kwargs[key] is not None:
             kwargs[key] = Path(kwargs[key])
@@ -130,25 +137,35 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
     }
 
     if command == "off-targets":
-        key_mapping.update({
-            "transcriptome": "gtf_file",
-            "feature": "feature_type",
-            "output": "output_file",
-            "fasta": "genome_file",
-            "on_target": "on_target_file",
-            "query": "query_file",
-        })
+        key_mapping.update(
+            {
+                "transcriptome": "gtf_file",
+                "feature": "feature_type",
+                "output": "output_file",
+                "fasta": "genome_file",
+                "on_target": "on_target_file",
+                "query": "query_file",
+            }
+        )
         # Typer OptionInfo objects become defaults when calling the function directly,
         # not via CLI — set these to None so callers get clean None defaults.
-        for arg in ("sirna_fasta", "target_fasta", "target_index", "workers", "on_target_ids_file"):
+        for arg in (
+            "sirna_fasta",
+            "target_fasta",
+            "target_index",
+            "workers",
+            "on_target_ids_file",
+        ):
             kwargs.setdefault(arg, None)
 
     elif command == "accessibility":
-        key_mapping.update({
-            "fasta": "genome",
-            "output": "output_dir",
-            "temperature": "temperature",
-        })
+        key_mapping.update(
+            {
+                "fasta": "genome",
+                "output": "output_dir",
+                "temperature": "temperature",
+            }
+        )
 
     for old_key, new_key in key_mapping.items():
         if old_key in kwargs:

@@ -162,10 +162,7 @@ def _fold_full_chromosome(
             arrays = [
                 pa.array(positions),
                 pa.array([strand_char] * n_pos, type=pa.utf8()),
-            ] + [
-                pa.array(u_matrix[:, u - 1])
-                for u in range(1, unpaired_prob + 1)
-            ]
+            ] + [pa.array(u_matrix[:, u - 1]) for u in range(1, unpaired_prob + 1)]
             writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
 
             pos += chunk_size
@@ -348,15 +345,9 @@ class GenomeAccessibilityService:
                 f"Expected {self.data_dir / f'{chrom}.accessibility.parquet'}."
             )
 
-        df = (
-            pl.read_parquet(path)
-            .filter(pl.col("strand") == strand)
-            .sort("position")
-        )
+        df = pl.read_parquet(path).filter(pl.col("strand") == strand).sort("position")
         if df.height == 0:
-            raise AccessibilityError(
-                f"No data for strand {strand!r} in {path}"
-            )
+            raise AccessibilityError(f"No data for strand {strand!r} in {path}")
 
         u_cols = sorted(
             [c for c in df.columns if c.startswith("u") and c[1:].isdigit()],

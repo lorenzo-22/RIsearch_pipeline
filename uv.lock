@@ -572,9 +572,13 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "rich" },
-    { name = "risearch" },
     { name = "typer" },
     { name = "viennarna" },
+]
+
+[package.optional-dependencies]
+risearch = [
+    { name = "risearch" },
 ]
 
 [package.dev-dependencies]
@@ -598,10 +602,11 @@ requires-dist = [
     { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "rich", specifier = ">=14.3.0" },
-    { name = "risearch", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc" },
+    { name = "risearch", marker = "extra == 'risearch'", git = "ssh://git@github.com/saiden89/risearch.git?subdirectory=risearch-python&rev=5242668c1ef48c6cd817bc5272233e60cc8c83bc" },
     { name = "typer" },
     { name = "viennarna", specifier = "==2.7.2" },
 ]
+provides-extras = ["risearch"]
 
 [package.metadata.requires-dev]
 dev = [

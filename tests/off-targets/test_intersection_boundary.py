@@ -15,27 +15,32 @@ from riot.services.intersection_service import IntersectionService
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def pred(start, end, chrom="chr1", strand="+", sid="si1", energy=-15.0):
-    return pl.DataFrame({
-        "sirna_id": [sid],
-        "chrom": [chrom],
-        "start": [start],
-        "end": [end],
-        "strand": [strand],
-        "energy": [energy],
-    })
+    return pl.DataFrame(
+        {
+            "sirna_id": [sid],
+            "chrom": [chrom],
+            "start": [start],
+            "end": [end],
+            "strand": [strand],
+            "energy": [energy],
+        }
+    )
 
 
 def trans(start, end, chrom="chr1", strand="+", gene="g1", tid="t1", exp=10.0):
-    return pl.DataFrame({
-        "chrom": [chrom],
-        "start": [start],
-        "end": [end],
-        "strand": [strand],
-        "gene_id": [gene],
-        "transcript_id": [tid],
-        "exp_value": [exp],
-    })
+    return pl.DataFrame(
+        {
+            "chrom": [chrom],
+            "start": [start],
+            "end": [end],
+            "strand": [strand],
+            "gene_id": [gene],
+            "transcript_id": [tid],
+            "exp_value": [exp],
+        }
+    )
 
 
 def hits(svc, p, t):
@@ -45,6 +50,7 @@ def hits(svc, p, t):
 # ---------------------------------------------------------------------------
 # Any-overlap tests
 # ---------------------------------------------------------------------------
+
 
 class TestAnyOverlap:
     """Partial overlap in either direction must be detected."""
@@ -75,6 +81,7 @@ class TestAnyOverlap:
 # ---------------------------------------------------------------------------
 # Boundary-touching tests (the NCLS +1 fix)
 # ---------------------------------------------------------------------------
+
 
 class TestBoundaryTouching:
     """
@@ -108,6 +115,7 @@ class TestBoundaryTouching:
 # Strand specificity tests
 # ---------------------------------------------------------------------------
 
+
 class TestStrandSpecificity:
     def test_same_strand_matches(self):
         svc = IntersectionService()
@@ -118,5 +126,3 @@ class TestStrandSpecificity:
         svc = IntersectionService()
         assert hits(svc, pred(10, 20, strand="+"), trans(5, 30, strand="-")) == 0
         assert hits(svc, pred(10, 20, strand="-"), trans(5, 30, strand="+")) == 0
-
-

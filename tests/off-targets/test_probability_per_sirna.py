@@ -10,15 +10,14 @@ external data files.
 """
 
 import math
-import pytest
 import polars as pl
-import numpy as np
 
 from riot.services.probability import ProbabilityService, RT
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_df(**cols):
     """Build a minimal DataFrame accepted by calculate_probabilities_per_sirna."""
@@ -35,9 +34,9 @@ def make_df(**cols):
 def zoff_noacc_from_meta(meta, sid, suffix=""):
     """Extract Zoff_noacc for a siRNA from the metadata dict."""
     z_row = meta["z_per_sirna"].get(sid, {})
-    w_on  = meta["on_target_weights"].get(sid, {})
-    z_total   = z_row.get(f"Z_sirna_noacc{suffix}", 0.0)
-    w_on_val  = w_on.get(f"W_on_noacc{suffix}", 0.0)
+    w_on = meta["on_target_weights"].get(sid, {})
+    z_total = z_row.get(f"Z_sirna_noacc{suffix}", 0.0)
+    w_on_val = w_on.get(f"W_on_noacc{suffix}", 0.0)
     return z_total - w_on_val
 
 
@@ -45,35 +44,42 @@ def zoff_noacc_from_meta(meta, sid, suffix=""):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestBaseCase:
     """alpha=1, gamma=1 — no clamping; Z_noacc = sum(exp_value * exp(-energy / RT))."""
 
     def test_z_noacc_two_rows(self):
-        energy   = [-20.0, -15.0]
-        exp_val  = [10.0, 5.0]
+        energy = [-20.0, -15.0]
+        exp_val = [10.0, 5.0]
         raw_emin = [-39.41, -39.41]
 
         df = make_df(energy=energy, exp_value=exp_val, raw_e_min=raw_emin)
         svc = ProbabilityService(None)
         # Pass a dummy alpha/gamma to bypass the single-siRNA early-exit path
         # (which returns a different metadata structure).
-        _, meta = svc.calculate_probabilities_per_sirna(df, alpha_gamma_pairs=[(0.85, 0.9)])
+        _, meta = svc.calculate_probabilities_per_sirna(
+            df, alpha_gamma_pairs=[(0.85, 0.9)]
+        )
 
         expected = 10.0 * math.exp(20.0 / RT) + 5.0 * math.exp(15.0 / RT)
         got = zoff_noacc_from_meta(meta, "si1")
-        assert abs(got / expected - 1.0) < 1e-5, f"got {got:.4e}, expected {expected:.4e}"
+        assert abs(got / expected - 1.0) < 1e-5, (
+            f"got {got:.4e}, expected {expected:.4e}"
+        )
 
     def test_multiple_sirnas_independent_z(self):
         """Each siRNA must have its own partition function."""
-        df = pl.DataFrame({
-            "sirna_id": ["siA", "siA", "siB", "siB"],
-            "energy": [-20.0, -15.0, -10.0, -5.0],
-            "exp_value": [1.0, 1.0, 1.0, 1.0],
-            "raw_e_min": [-39.0, -39.0, -39.0, -39.0],
-            "opening_energy": [0.0, 0.0, 0.0, 0.0],
-            "gene_id": ["g1", "g1", "g2", "g2"],
-            "transcript_id": ["t1", "t1", "t2", "t2"],
-        })
+        df = pl.DataFrame(
+            {
+                "sirna_id": ["siA", "siA", "siB", "siB"],
+                "energy": [-20.0, -15.0, -10.0, -5.0],
+                "exp_value": [1.0, 1.0, 1.0, 1.0],
+                "raw_e_min": [-39.0, -39.0, -39.0, -39.0],
+                "opening_energy": [0.0, 0.0, 0.0, 0.0],
+                "gene_id": ["g1", "g1", "g2", "g2"],
+                "transcript_id": ["t1", "t1", "t2", "t2"],
+            }
+        )
         svc = ProbabilityService(None)
         _, meta = svc.calculate_probabilities_per_sirna(df)
 
@@ -147,8 +153,8 @@ class TestAlphaGammaClamping:
         #               threshold with raw=-39 → 0.9*(-39) = -35.1
         alpha, gamma = 0.9, 1.0
         raw_emin = -35.0
-        energy   = -32.0  # -32 < -31.5 (threshold with raw=-35) → clamped
-                           # -32 > -35.1 (threshold with raw=-39) → NOT clamped
+        energy = -32.0  # -32 < -31.5 (threshold with raw=-35) → clamped
+        # -32 > -35.1 (threshold with raw=-39) → NOT clamped
 
         # With raw_e_min present: should clamp
         df_with = make_df(energy=[energy], exp_value=[1.0], raw_e_min=[raw_emin])
@@ -164,14 +170,16 @@ class TestAlphaGammaClamping:
 
         # Without raw_e_min: E_min = energy.min() = -32, threshold = 0.9*(-32) = -28.8
         # -32 < -28.8 → would be clamped to gamma * (-32) = -32 (no change since gamma=1)
-        df_without = pl.DataFrame({
-            "sirna_id": ["si1"],
-            "energy": [energy],
-            "exp_value": [1.0],
-            "opening_energy": [0.0],
-            "gene_id": ["g1"],
-            "transcript_id": ["t1"],
-        })
+        df_without = pl.DataFrame(
+            {
+                "sirna_id": ["si1"],
+                "energy": [energy],
+                "exp_value": [1.0],
+                "opening_energy": [0.0],
+                "gene_id": ["g1"],
+                "transcript_id": ["t1"],
+            }
+        )
         _, meta2 = svc.calculate_probabilities_per_sirna(
             df_without, alpha_gamma_pairs=[(alpha, gamma)]
         )
@@ -187,7 +195,7 @@ class TestThetaScaling:
     """Theta scales energy linearly: assigned = theta*(energy+10) - 10."""
 
     def test_theta_scaling_z(self):
-        theta  = 0.9
+        theta = 0.9
         energy = -20.0
         assigned = theta * (energy + 10.0) - 10.0  # = 0.9*(-10) - 10 = -19.0
 
@@ -201,7 +209,7 @@ class TestThetaScaling:
         assert abs(got / expected - 1.0) < 1e-5
 
     def test_theta_05_scaling(self):
-        theta  = 0.5
+        theta = 0.5
         energy = -20.0
         assigned = theta * (energy + 10.0) - 10.0  # = 0.5*(-10) - 10 = -15.0
 
@@ -232,15 +240,17 @@ class TestOnTargetInPredictionsMode:
     """On-target rows stay in Z but contribute to W_on; Zoff = Z - W_on."""
 
     def _build_df(self):
-        return pl.DataFrame({
-            "sirna_id": ["si1", "si1"],
-            "energy": [-25.0, -30.0],
-            "exp_value": [100.0, 10.0],
-            "raw_e_min": [-39.41, -39.41],
-            "opening_energy": [0.0, 0.0],
-            "gene_id": ["g_off", "g_on"],
-            "transcript_id": ["t_off", "t_on"],
-        })
+        return pl.DataFrame(
+            {
+                "sirna_id": ["si1", "si1"],
+                "energy": [-25.0, -30.0],
+                "exp_value": [100.0, 10.0],
+                "raw_e_min": [-39.41, -39.41],
+                "opening_energy": [0.0, 0.0],
+                "gene_id": ["g_off", "g_on"],
+                "transcript_id": ["t_off", "t_on"],
+            }
+        )
 
     def test_zoff_excludes_on_target_weight(self):
         df = self._build_df()
@@ -250,7 +260,7 @@ class TestOnTargetInPredictionsMode:
         )
 
         w_off = 100.0 * math.exp(25.0 / RT)
-        w_on  = 10.0  * math.exp(30.0 / RT)
+        _w_on = 10.0 * math.exp(30.0 / RT)  # on-target weight — excluded from Zoff
         expected_zoff = w_off  # on-target excluded
 
         zoff = zoff_noacc_from_meta(meta, "si1")
@@ -266,7 +276,7 @@ class TestOnTargetInPredictionsMode:
         z_total = z_row.get("Z_sirna_noacc", 0.0)
 
         w_off = 100.0 * math.exp(25.0 / RT)
-        w_on  = 10.0  * math.exp(30.0 / RT)
+        w_on = 10.0 * math.exp(30.0 / RT)
         expected_total = w_off + w_on
 
         assert abs(z_total / expected_total - 1.0) < 1e-5
@@ -275,9 +285,11 @@ class TestOnTargetInPredictionsMode:
         df = self._build_df()
         svc = ProbabilityService(None)
         # Pass a dummy alpha/gamma to bypass the single-siRNA early-exit path.
-        _, meta = svc.calculate_probabilities_per_sirna(df, alpha_gamma_pairs=[(0.85, 0.9)])
+        _, meta = svc.calculate_probabilities_per_sirna(
+            df, alpha_gamma_pairs=[(0.85, 0.9)]
+        )
 
         z_total = meta["z_per_sirna"]["si1"].get("Z_sirna_noacc", 0.0)
-        zoff    = zoff_noacc_from_meta(meta, "si1")
+        zoff = zoff_noacc_from_meta(meta, "si1")
         # Without on_target_map, no rows are tagged → Zoff == Z_total
         assert abs(zoff / z_total - 1.0) < 1e-10

@@ -51,7 +51,15 @@ class AnnotationParser:
                 num_cols = 6
 
         if num_cols >= 7:
-            headers = ["chrom", "start", "end", "transcript_id", "score_placeholder", "strand", "exp_value"]
+            headers = [
+                "chrom",
+                "start",
+                "end",
+                "transcript_id",
+                "score_placeholder",
+                "strand",
+                "exp_value",
+            ]
             df = pl.read_csv(
                 path,
                 separator="\t",
@@ -60,15 +68,17 @@ class AnnotationParser:
                 new_columns=headers,
                 truncate_ragged_lines=True,
             )
-            return df.select([
-                pl.col("chrom"),
-                pl.col("start"),
-                pl.col("end"),
-                pl.col("strand"),
-                pl.col("transcript_id").alias("gene_id"),
-                pl.col("transcript_id"),
-                pl.col("exp_value").cast(pl.Float32, strict=False).fill_null(0.0),
-            ])
+            return df.select(
+                [
+                    pl.col("chrom"),
+                    pl.col("start"),
+                    pl.col("end"),
+                    pl.col("strand"),
+                    pl.col("transcript_id").alias("gene_id"),
+                    pl.col("transcript_id"),
+                    pl.col("exp_value").cast(pl.Float32, strict=False).fill_null(0.0),
+                ]
+            )
         else:
             headers = ["chrom", "start", "end", "transcript_id", "score", "strand"]
             df = pl.read_csv(
@@ -80,15 +90,20 @@ class AnnotationParser:
                 truncate_ragged_lines=True,
                 schema_overrides={h: pl.Utf8 for h in headers},
             )
-            return df.select([
-                pl.col("chrom"),
-                pl.col("start").cast(pl.Int64),
-                pl.col("end").cast(pl.Int64),
-                pl.col("strand"),
-                pl.col("transcript_id").alias("gene_id"),
-                pl.col("transcript_id"),
-                pl.col("score").cast(pl.Float32, strict=False).fill_null(0.0).alias("exp_value"),
-            ])
+            return df.select(
+                [
+                    pl.col("chrom"),
+                    pl.col("start").cast(pl.Int64),
+                    pl.col("end").cast(pl.Int64),
+                    pl.col("strand"),
+                    pl.col("transcript_id").alias("gene_id"),
+                    pl.col("transcript_id"),
+                    pl.col("score")
+                    .cast(pl.Float32, strict=False)
+                    .fill_null(0.0)
+                    .alias("exp_value"),
+                ]
+            )
 
     def _load_gtf_impl(self, path: Path, feature: str, score_col: str) -> pl.DataFrame:
         df = pl.read_csv(
@@ -107,15 +122,20 @@ class AnnotationParser:
         def extract_attr(key: str) -> pl.Expr:
             return pl.col("attributes").str.extract(rf'{key}\s+"?([^";]+)"?', 1)
 
-        return df.select([
-            pl.col("chrom"),
-            pl.col("start"),
-            pl.col("end"),
-            pl.col("strand"),
-            extract_attr("gene_id").alias("gene_id"),
-            extract_attr("transcript_id").alias("transcript_id"),
-            extract_attr(score_col).cast(pl.Float32, strict=False).fill_null(0.0).alias("exp_value"),
-        ])
+        return df.select(
+            [
+                pl.col("chrom"),
+                pl.col("start"),
+                pl.col("end"),
+                pl.col("strand"),
+                extract_attr("gene_id").alias("gene_id"),
+                extract_attr("transcript_id").alias("transcript_id"),
+                extract_attr(score_col)
+                .cast(pl.Float32, strict=False)
+                .fill_null(0.0)
+                .alias("exp_value"),
+            ]
+        )
 
     def summary(self, df: pl.DataFrame) -> dict:
         return {
