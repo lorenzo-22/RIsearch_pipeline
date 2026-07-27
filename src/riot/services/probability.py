@@ -823,7 +823,7 @@ class ProbabilityService:
                     ],
                     key=lambda x: int(x[1:]),
                 )
-                max_pos = cast(int, df_acc["position"].max())
+                max_pos = int(cast(int, df_acc["position"].max()))
                 n_u = len(u_cols)
                 profile = np.full((max_pos, n_u), 25.5, dtype=np.float32)
                 pos_0 = df_acc["position"].to_numpy() - 1

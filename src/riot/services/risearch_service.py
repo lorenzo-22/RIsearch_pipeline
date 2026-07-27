@@ -181,7 +181,7 @@ class RIsearchService:
                     f"No self-hybridisation hits for {sirna_id}, using E_min=0.0"
                 )
                 return 0.0
-            emin = cast(float, df["energy"].min())
+            emin = float(cast(float, df["energy"].min()))
             logger.debug(f"Self-hyb E_min {sirna_id}: {emin:.4f} kcal/mol")
             return emin
 
