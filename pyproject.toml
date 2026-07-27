@@ -68,6 +68,13 @@ dev = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 
+[tool.pyrefly]
+project-includes = ["src"]
+python-version = "3.14"
+# `risearch` is an optional extra (`uv sync --extra risearch`), imported lazily.
+# Treat it as `Any` so type-checking passes whether or not it is installed.
+replace-imports-with-any = ["risearch"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/riot"]
 
