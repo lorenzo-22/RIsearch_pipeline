@@ -219,4 +219,5 @@ logs/
 
 # Editor / assistant config
 .claude/
+CLAUDE.md
 

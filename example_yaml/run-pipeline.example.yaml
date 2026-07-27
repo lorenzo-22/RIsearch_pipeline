@@ -2,9 +2,9 @@
 # RIOT — Orchestrator Configuration
 # =============================================================================
 # Usage:
-#   python run_pipeline.py --config path/to/this/config.yaml          # local
-#   python run_pipeline.py --config path/to/this/config.yaml --slurm  # Slurm
-#   python run_pipeline.py --config path/to/this/config.yaml --dry-run
+#   python scripts/run_pipeline.py --config path/to/this/config.yaml          # local
+#   python scripts/run_pipeline.py --config path/to/this/config.yaml --slurm  # Slurm
+#   python scripts/run_pipeline.py --config path/to/this/config.yaml --dry-run
 #
 # All relative paths are resolved relative to this file's directory.
 # This example points at the bundled test data so it can be run directly.
