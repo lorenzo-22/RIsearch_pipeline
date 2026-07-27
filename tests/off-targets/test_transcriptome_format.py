@@ -3,7 +3,6 @@
 import tempfile
 from pathlib import Path
 
-import polars as pl
 import pytest
 
 from riot.services.annotation_parser import AnnotationParser

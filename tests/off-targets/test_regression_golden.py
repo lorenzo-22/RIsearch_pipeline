@@ -16,7 +16,6 @@ will cause this test to fail.
 """
 
 import json
-import math
 from pathlib import Path
 
 import polars as pl
@@ -32,10 +31,20 @@ FIXTURE_DIR = Path(__file__).parent / "data"
 
 # Parameters used when the reference was generated
 ALPHA_GAMMA = [
-    (0.5, 0.55), (0.5, 0.85), (0.5, 0.9), (0.5, 0.95), (0.5, 1.0),
-    (0.85, 0.85), (0.85, 0.9), (0.85, 0.95), (0.85, 1.0),
-    (0.9, 0.9), (0.9, 0.95), (0.9, 1.0),
-    (0.95, 0.95), (0.95, 1.0),
+    (0.5, 0.55),
+    (0.5, 0.85),
+    (0.5, 0.9),
+    (0.5, 0.95),
+    (0.5, 1.0),
+    (0.85, 0.85),
+    (0.85, 0.9),
+    (0.85, 0.95),
+    (0.85, 1.0),
+    (0.9, 0.9),
+    (0.9, 0.95),
+    (0.9, 1.0),
+    (0.95, 0.95),
+    (0.95, 1.0),
 ]
 THETA = [0.5, 0.9]
 
@@ -52,7 +61,9 @@ TOLERANCE = 0.002
 def regression_input() -> pl.DataFrame:
     path = FIXTURE_DIR / "regression_input.parquet"
     if not path.exists():
-        pytest.skip(f"Fixture not found: {path}. Run create_regression_fixtures.py first.")
+        pytest.skip(
+            f"Fixture not found: {path}. Run create_regression_fixtures.py first."
+        )
     return pl.read_parquet(path)
 
 
@@ -60,7 +71,9 @@ def regression_input() -> pl.DataFrame:
 def regression_reference() -> dict:
     path = FIXTURE_DIR / "regression_reference.json"
     if not path.exists():
-        pytest.skip(f"Reference not found: {path}. Run create_regression_fixtures.py first.")
+        pytest.skip(
+            f"Reference not found: {path}. Run create_regression_fixtures.py first."
+        )
     return json.loads(path.read_text())
 
 
@@ -80,10 +93,11 @@ def computed_meta(regression_input) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def get_zoff_noacc(meta: dict, sid: str, suffix: str = "") -> float:
     z_row = meta["z_per_sirna"].get(sid, {})
-    w_on  = meta["on_target_weights"].get(sid, {})
-    z_total  = z_row.get(f"Z_sirna_noacc{suffix}", 0.0)
+    w_on = meta["on_target_weights"].get(sid, {})
+    z_total = z_row.get(f"Z_sirna_noacc{suffix}", 0.0)
     w_on_val = w_on.get(f"W_on_noacc{suffix}", 0.0)
     return z_total - w_on_val
 
@@ -106,6 +120,7 @@ def param_key_to_suffix(param_key: str) -> str:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_fixture_has_expected_sirnas(regression_input):
     ids = set(regression_input["sirna_id"].unique().to_list())
     expected = {
@@ -119,20 +134,21 @@ def test_fixture_has_expected_sirnas(regression_input):
 
 def test_fixture_row_counts(regression_input):
     counts = (
-        regression_input.group_by("sirna_id")
-        .agg(pl.len().alias("n"))
-        .sort("sirna_id")
+        regression_input.group_by("sirna_id").agg(pl.len().alias("n")).sort("sirna_id")
     )
     for row in counts.iter_rows(named=True):
         assert row["n"] > 10_000, f"{row['sirna_id']} has only {row['n']} rows"
 
 
-@pytest.mark.parametrize("sid", [
-    "ENSG00000109991-51-19902",
-    "ENSG00000137726-36-18816",
-    "ENSG00000167941-35-19603",
-    "ENSG00000177889-78-18537",
-])
+@pytest.mark.parametrize(
+    "sid",
+    [
+        "ENSG00000109991-51-19902",
+        "ENSG00000137726-36-18816",
+        "ENSG00000167941-35-19603",
+        "ENSG00000177889-78-18537",
+    ],
+)
 def test_zoff_noacc_base_case(sid, computed_meta, regression_reference):
     """Base case (alpha=1.0, gamma=1.0): Zoff_noacc must match reference within 0.2%."""
     ref_z = regression_reference[sid].get("alpha=1.0,gamma=1.0")
@@ -146,12 +162,15 @@ def test_zoff_noacc_base_case(sid, computed_meta, regression_reference):
     )
 
 
-@pytest.mark.parametrize("sid", [
-    "ENSG00000109991-51-19902",
-    "ENSG00000137726-36-18816",
-    "ENSG00000167941-35-19603",
-    "ENSG00000177889-78-18537",
-])
+@pytest.mark.parametrize(
+    "sid",
+    [
+        "ENSG00000109991-51-19902",
+        "ENSG00000137726-36-18816",
+        "ENSG00000167941-35-19603",
+        "ENSG00000177889-78-18537",
+    ],
+)
 def test_zoff_noacc_all_parameters(sid, computed_meta, regression_reference):
     """All alpha/gamma/theta combinations must match within 0.2%."""
     ref_params = regression_reference.get(sid, {})
@@ -178,10 +197,12 @@ def test_on_target_zoff_smaller_than_ztotal(computed_meta):
     sid = "ENSG00000177889-78-18537"
     z_row = computed_meta["z_per_sirna"].get(sid, {})
     z_total = z_row.get("Z_sirna_noacc", 0.0)
-    zoff    = get_zoff_noacc(computed_meta, sid, "")
+    zoff = get_zoff_noacc(computed_meta, sid, "")
 
     assert z_total > 0
-    assert zoff < z_total, "Zoff_noacc should be smaller than Z_total when on-target rows present"
+    assert zoff < z_total, (
+        "Zoff_noacc should be smaller than Z_total when on-target rows present"
+    )
     # On-target weight must be substantial (gene is expressed and strongly bound)
     w_on = computed_meta["on_target_weights"].get(sid, {}).get("W_on_noacc", 0.0)
     assert w_on > 0, "Expected non-zero on-target weight for ENSG00000177889"
@@ -194,9 +215,9 @@ def test_no_on_target_for_other_sirnas(computed_meta):
         "ENSG00000137726-36-18816",
         "ENSG00000167941-35-19603",
     ]:
-        z_row   = computed_meta["z_per_sirna"].get(sid, {})
+        z_row = computed_meta["z_per_sirna"].get(sid, {})
         z_total = z_row.get("Z_sirna_noacc", 0.0)
-        zoff    = get_zoff_noacc(computed_meta, sid, "")
+        zoff = get_zoff_noacc(computed_meta, sid, "")
         assert abs(zoff / z_total - 1.0) < 1e-9, (
-            f"{sid}: expected Zoff == Z_total (no on-target), but got ratio {zoff/z_total:.6f}"
+            f"{sid}: expected Zoff == Z_total (no on-target), but got ratio {zoff / z_total:.6f}"
         )

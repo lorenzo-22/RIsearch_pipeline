@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import MagicMock
 import polars as pl
 import numpy as np
-from math import log
 from riot.services.probability import ProbabilityService, RT, R
 
 
@@ -34,8 +33,8 @@ class TestProbabilityService(unittest.TestCase):
         """Test with accessibility service mocked."""
         acc_service = MagicMock()
         # annotate_opening_energy_vectorized adds opening_energy column (0.5 for all rows)
-        acc_service.annotate_opening_energy_vectorized.side_effect = (
-            lambda df: df.with_columns(pl.lit(0.5).cast(pl.Float32).alias("opening_energy"))
+        acc_service.annotate_opening_energy_vectorized.side_effect = lambda df: (
+            df.with_columns(pl.lit(0.5).cast(pl.Float32).alias("opening_energy"))
         )
 
         service = ProbabilityService(acc_service)
@@ -92,14 +91,18 @@ class TestProbabilityService(unittest.TestCase):
             "Probabilities must differ between temperature=37 and temperature=80",
         )
         # At higher T, distribution is less peaked: leading probability drops
-        self.assertGreater(p_37[0], p_80[0], "Highest-weight entry less dominant at higher T")
+        self.assertGreater(
+            p_37[0], p_80[0], "Highest-weight entry less dominant at higher T"
+        )
 
     def test_temperature_alters_per_sirna_probabilities(self):
         """calculate_probabilities_per_sirna respects temperature."""
-        df = pl.DataFrame({
-            "sirna_id": ["s1", "s1", "s2", "s2"],
-            "energy": [-10.0, -5.0, -8.0, -3.0],
-        })
+        df = pl.DataFrame(
+            {
+                "sirna_id": ["s1", "s1", "s2", "s2"],
+                "energy": [-10.0, -5.0, -8.0, -3.0],
+            }
+        )
 
         svc_37 = ProbabilityService(None, temperature=37.0)
         svc_80 = ProbabilityService(None, temperature=80.0)

@@ -34,7 +34,9 @@ class IntersectionService:
         self._trans_ncls_index = {}
         for key, sub_df in self._trans_partition.items():
             if sub_df.height > 0:
-                self._trans_ncls_index[key] = self._build_transcript_index(sub_df.sort("start"))
+                self._trans_ncls_index[key] = self._build_transcript_index(
+                    sub_df.sort("start")
+                )
 
     def intersect(
         self,
@@ -48,7 +50,9 @@ class IntersectionService:
         if mode == PredictionsMode.TW:
             return self._transcriptome_wide_join(risearch_df, transcriptome_df)
         else:
-            return self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers, _timings=_timings)
+            return self._genome_wide_streaming(
+                risearch_df, transcriptome_df, workers=workers, _timings=_timings
+            )
 
     def _transcriptome_wide_join(
         self,
@@ -117,7 +121,9 @@ class IntersectionService:
             else:
                 trans_index = self._build_transcript_index(trans.sort("start"))
             _ncls_time[0] += time.perf_counter() - _tb
-            logger.debug(f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts")
+            logger.debug(
+                f"Intersecting chrom={chrom} strand={strand}: {preds.height} preds × {trans.height} transcripts"
+            )
 
             results = []
             _tm = time.perf_counter()
@@ -130,10 +136,20 @@ class IntersectionService:
 
             if results:
                 combined = pl.concat(results, how="diagonal")
-                return [combined.unique(
-                    subset=["sirna_id", "chrom", "start", "end", "strand", "energy", "transcript_id"],
-                    keep="first",
-                )]
+                return [
+                    combined.unique(
+                        subset=[
+                            "sirna_id",
+                            "chrom",
+                            "start",
+                            "end",
+                            "strand",
+                            "energy",
+                            "transcript_id",
+                        ],
+                        keep="first",
+                    )
+                ]
             return []
 
         all_results: list[pl.DataFrame] = []
@@ -142,7 +158,10 @@ class IntersectionService:
             # Cap at 8: beyond that, peak memory from concurrent chromosome-sized DataFrames outweighs speedup.
             safe_workers = min(workers, 8)
             with ThreadPoolExecutor(max_workers=safe_workers) as pool:
-                futures = {pool.submit(_process_pair, pair): pair for pair in chrom_strand_pairs}
+                futures = {
+                    pool.submit(_process_pair, pair): pair
+                    for pair in chrom_strand_pairs
+                }
                 for future in as_completed(futures):
                     all_results.extend(future.result())
         else:
@@ -198,13 +217,15 @@ class IntersectionService:
             return None
 
         preds_sel = preds[pred_idx]
-        trans_sel = trans_df[trans_idx].select([
-            pl.col("start").alias("trans_start"),
-            pl.col("end").alias("trans_end"),
-            pl.col("gene_id"),
-            pl.col("transcript_id"),
-            pl.col("exp_value"),
-        ])
+        trans_sel = trans_df[trans_idx].select(
+            [
+                pl.col("start").alias("trans_start"),
+                pl.col("end").alias("trans_end"),
+                pl.col("gene_id"),
+                pl.col("transcript_id"),
+                pl.col("exp_value"),
+            ]
+        )
 
         return preds_sel.hstack(trans_sel)
 
@@ -221,7 +242,9 @@ class IntersectionService:
             return
 
         if workers > 1:
-            result = self._genome_wide_streaming(risearch_df, transcriptome_df, workers=workers)
+            result = self._genome_wide_streaming(
+                risearch_df, transcriptome_df, workers=workers
+            )
             for offset in range(0, result.height, _BATCH_SIZE):
                 yield result.slice(offset, _BATCH_SIZE)
             return
@@ -251,10 +274,12 @@ class IntersectionService:
                     yield batch_result
 
     def _empty_result_schema(self, risearch_df: pl.DataFrame) -> pl.DataFrame:
-        return risearch_df.head(0).with_columns([
-            pl.lit(None).cast(pl.Int64).alias("trans_start"),
-            pl.lit(None).cast(pl.Int64).alias("trans_end"),
-            pl.lit(None).cast(pl.Utf8).alias("gene_id"),
-            pl.lit(None).cast(pl.Utf8).alias("transcript_id"),
-            pl.lit(None).cast(pl.Float32).alias("exp_value"),
-        ])
+        return risearch_df.head(0).with_columns(
+            [
+                pl.lit(None).cast(pl.Int64).alias("trans_start"),
+                pl.lit(None).cast(pl.Int64).alias("trans_end"),
+                pl.lit(None).cast(pl.Utf8).alias("gene_id"),
+                pl.lit(None).cast(pl.Utf8).alias("transcript_id"),
+                pl.lit(None).cast(pl.Float32).alias("exp_value"),
+            ]
+        )

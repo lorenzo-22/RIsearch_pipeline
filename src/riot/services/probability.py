@@ -60,10 +60,16 @@ class ProbabilityService:
         if "exp_value" in df.columns:
             expr_val = pl.col("exp_value").fill_null(0.0)
         else:
-            logger.info("No expression value found; assuming uniform expression=1.0 for Off-Targets")
+            logger.info(
+                "No expression value found; assuming uniform expression=1.0 for Off-Targets"
+            )
             expr_val = pl.lit(1.0)
 
-        df = df.with_columns((expr_val * ((-pl.col("dG_total") / self._RT).exp())).alias("boltzmann_weight"))
+        df = df.with_columns(
+            (expr_val * ((-pl.col("dG_total") / self._RT).exp())).alias(
+                "boltzmann_weight"
+            )
+        )
         z_partial = df["boltzmann_weight"].sum()
 
         w_on = 0.0
@@ -74,25 +80,36 @@ class ProbabilityService:
         if on_target_path and query_path:
             logger.info("Calculating On-Target weight...")
             dG_hyb_on, dG_open_on = self._calculate_on_target_components(
-                on_target_path, query_path, on_target_accessibility_path, on_target_risearch_path,
+                on_target_path,
+                query_path,
+                on_target_accessibility_path,
+                on_target_risearch_path,
             )
             dG_total_on = dG_hyb_on + dG_open_on
             w_on = on_target_expression * np.exp(-dG_total_on / self._RT)
             logger.info(f"On-Target dG_total={dG_total_on:.2f}, Weight={w_on:.2e}")
 
         z_total = z_partial + w_on
-        logger.info(f"Partition Function Z = {z_total:.2e} (Off-Target={z_partial:.2e}, On-Target={w_on:.2e})")
+        logger.info(
+            f"Partition Function Z = {z_total:.2e} (Off-Target={z_partial:.2e}, On-Target={w_on:.2e})"
+        )
 
         if z_total > 0:
-            df = df.with_columns((pl.col("boltzmann_weight") / z_total).alias("P_off_target"))
+            df = df.with_columns(
+                (pl.col("boltzmann_weight") / z_total).alias("P_off_target")
+            )
         else:
             df = df.with_columns(pl.lit(0.0).alias("P_off_target"))
 
         if on_target_path and query_path:
             if on_target_risearch_path:
-                _hyb, _start, _end, _strand = self._parse_risearch_file(on_target_risearch_path)
+                _hyb, _start, _end, _strand = self._parse_risearch_file(
+                    on_target_risearch_path
+                )
             else:
-                _hyb, _start, _end, _strand = self._run_risearch_binary(query_path, on_target_path)
+                _hyb, _start, _end, _strand = self._run_risearch_binary(
+                    query_path, on_target_path
+                )
 
             p_on_val = w_on / z_total if z_total > 0 else 0.0
 
@@ -114,7 +131,9 @@ class ProbabilityService:
 
             for col in df.columns:
                 if col not in ont_df.columns:
-                    ont_df = ont_df.with_columns(pl.lit(None, dtype=df.schema[col]).alias(col))
+                    ont_df = ont_df.with_columns(
+                        pl.lit(None, dtype=df.schema[col]).alias(col)
+                    )
                 else:
                     target_dtype = df.schema[col]
                     if target_dtype != ont_df.schema[col]:
@@ -168,13 +187,17 @@ class ProbabilityService:
             logger.info("Single siRNA detected; using standard calculation")
             return self.calculate_probabilities(df)
 
-        logger.info(f"Processing {len(unique_sirnas)} siRNAs with per-siRNA partition functions")
+        logger.info(
+            f"Processing {len(unique_sirnas)} siRNAs with per-siRNA partition functions"
+        )
 
         if self.accessibility_service:
             df = self._annotate_opening_energy(df)
 
         if "opening_energy" in df.columns:
-            df = df.with_columns((pl.col("energy") + pl.col("opening_energy")).alias("dG_total"))
+            df = df.with_columns(
+                (pl.col("energy") + pl.col("opening_energy")).alias("dG_total")
+            )
         else:
             df = df.with_columns(
                 pl.lit(0.0).alias("opening_energy"),
@@ -215,7 +238,9 @@ class ProbabilityService:
                 df = df.with_columns(pl.lit(False).alias("is_on_target"))
 
             n_on = df.filter(pl.col("is_on_target")).height
-            logger.info(f"In-predictions on-target mode: tagged {n_on} rows as on-target (from {len(local_map)} mappings)")
+            logger.info(
+                f"In-predictions on-target mode: tagged {n_on} rows as on-target (from {len(local_map)} mappings)"
+            )
 
         elif use_fasta_mode and on_target_map and "transcript_id" in df.columns:
             on_target_data_fasta = on_target_fasta_data
@@ -238,7 +263,9 @@ class ProbabilityService:
                 for cond in exclude_conditions[1:]:
                     exclude_expr = exclude_expr | cond
                 df = df.filter(~exclude_expr)
-                logger.info(f"FASTA mode: excluded on-target rows for {len(on_target_fasta_data)} siRNAs")
+                logger.info(
+                    f"FASTA mode: excluded on-target rows for {len(on_target_fasta_data)} siRNAs"
+                )
 
             df = df.with_columns(pl.lit(False).alias("is_on_target"))
         else:
@@ -248,9 +275,13 @@ class ProbabilityService:
         # post-intersection minimum. raw_e_min is set by the parser when loading
         # per-siRNA directory files.
         if "raw_e_min" in df.columns:
-            min_energies = df.group_by("sirna_id").agg(pl.col("raw_e_min").min().alias("E_min"))
+            min_energies = df.group_by("sirna_id").agg(
+                pl.col("raw_e_min").min().alias("E_min")
+            )
         else:
-            min_energies = df.group_by("sirna_id").agg(pl.col("energy").min().alias("E_min"))
+            min_energies = df.group_by("sirna_id").agg(
+                pl.col("energy").min().alias("E_min")
+            )
         df = df.join(min_energies, on="sirna_id", how="left")
 
         calc_configs = [("", "dG_total", "energy")]
@@ -266,16 +297,18 @@ class ProbabilityService:
                 col_name_noacc = f"energy{suffix}"
 
                 # Clamp: energy < α·E_min → use γ·E_min; otherwise keep energy
-                all_dG_exprs.extend([
-                    pl.when(pl.col("energy") < alpha * pl.col("E_min"))
-                    .then(gamma * pl.col("E_min") + pl.col("opening_energy"))
-                    .otherwise(pl.col("energy") + pl.col("opening_energy"))
-                    .alias(col_name),
-                    pl.when(pl.col("energy") < alpha * pl.col("E_min"))
-                    .then(gamma * pl.col("E_min"))
-                    .otherwise(pl.col("energy"))
-                    .alias(col_name_noacc),
-                ])
+                all_dG_exprs.extend(
+                    [
+                        pl.when(pl.col("energy") < alpha * pl.col("E_min"))
+                        .then(gamma * pl.col("E_min") + pl.col("opening_energy"))
+                        .otherwise(pl.col("energy") + pl.col("opening_energy"))
+                        .alias(col_name),
+                        pl.when(pl.col("energy") < alpha * pl.col("E_min"))
+                        .then(gamma * pl.col("E_min"))
+                        .otherwise(pl.col("energy"))
+                        .alias(col_name_noacc),
+                    ]
+                )
                 calc_configs.append((suffix, col_name, col_name_noacc))
 
         if theta_values:
@@ -285,10 +318,17 @@ class ProbabilityService:
                 col_name_noacc = f"energy{suffix}"
 
                 # Theta scaling: ((θ·(E + 10)) - 10) + open_energy
-                all_dG_exprs.extend([
-                    (((theta * (pl.col("energy") + 10.0)) - 10.0) + pl.col("opening_energy")).alias(col_name),
-                    ((theta * (pl.col("energy") + 10.0)) - 10.0).alias(col_name_noacc),
-                ])
+                all_dG_exprs.extend(
+                    [
+                        (
+                            ((theta * (pl.col("energy") + 10.0)) - 10.0)
+                            + pl.col("opening_energy")
+                        ).alias(col_name),
+                        ((theta * (pl.col("energy") + 10.0)) - 10.0).alias(
+                            col_name_noacc
+                        ),
+                    ]
+                )
                 calc_configs.append((suffix, col_name, col_name_noacc))
 
         if all_dG_exprs:
@@ -302,23 +342,39 @@ class ProbabilityService:
         for suffix, dG_col, dG_noacc_col in calc_configs:
             weight_col = f"boltzmann_weight{suffix}"
             weight_noacc_col = f"boltzmann_weight_noacc{suffix}"
-            all_weight_exprs.extend([
-                (pl.col("exp_value") * ((-pl.col(dG_col) / self._RT).exp())).alias(weight_col),
-                (pl.col("exp_value") * ((-pl.col(dG_noacc_col) / self._RT).exp())).alias(weight_noacc_col),
-            ])
+            all_weight_exprs.extend(
+                [
+                    (pl.col("exp_value") * ((-pl.col(dG_col) / self._RT).exp())).alias(
+                        weight_col
+                    ),
+                    (
+                        pl.col("exp_value") * ((-pl.col(dG_noacc_col) / self._RT).exp())
+                    ).alias(weight_noacc_col),
+                ]
+            )
             z_col = f"Z_sirna{suffix}"
             z_noacc_col = f"Z_sirna_noacc{suffix}"
-            z_aggs.extend([
-                pl.col(weight_col).sum().alias(z_col),
-                pl.col(weight_noacc_col).sum().alias(z_noacc_col),
-            ])
+            z_aggs.extend(
+                [
+                    pl.col(weight_col).sum().alias(z_col),
+                    pl.col(weight_noacc_col).sum().alias(z_noacc_col),
+                ]
+            )
             z_col_names.extend([z_col, z_noacc_col])
 
             if in_predictions_mode:
-                on_aggs.extend([
-                    pl.col(weight_col).filter(pl.col("is_on_target")).sum().alias(f"W_on{suffix}"),
-                    pl.col(weight_noacc_col).filter(pl.col("is_on_target")).sum().alias(f"W_on_noacc{suffix}"),
-                ])
+                on_aggs.extend(
+                    [
+                        pl.col(weight_col)
+                        .filter(pl.col("is_on_target"))
+                        .sum()
+                        .alias(f"W_on{suffix}"),
+                        pl.col(weight_noacc_col)
+                        .filter(pl.col("is_on_target"))
+                        .sum()
+                        .alias(f"W_on_noacc{suffix}"),
+                    ]
+                )
 
         df = df.with_columns(all_weight_exprs)
 
@@ -331,11 +387,17 @@ class ProbabilityService:
             on_df = agg_df.drop(z_col_names)
             for row in on_df.to_dicts():
                 sid = row["sirna_id"]
-                on_target_weight_metadata[sid] = {k: v for k, v in row.items() if k != "sirna_id"}
-            logger.info(f"In-predictions mode: computed on-target weights for {on_df.height} siRNAs")
+                on_target_weight_metadata[sid] = {
+                    k: v for k, v in row.items() if k != "sirna_id"
+                }
+            logger.info(
+                f"In-predictions mode: computed on-target weights for {on_df.height} siRNAs"
+            )
 
         elif on_target_data_fasta:
-            min_e_dict = {row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()}
+            min_e_dict = {
+                row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()
+            }
             z_modifications = []
 
             for suffix, dG_col, dG_noacc_col in calc_configs:
@@ -366,24 +428,42 @@ class ProbabilityService:
                         assigned_e_noacc = orig_energy
 
                     w_on = on_target_expression * np.exp(-assigned_e / self._RT)
-                    w_on_noacc = on_target_expression * np.exp(-assigned_e_noacc / self._RT)
+                    w_on_noacc = on_target_expression * np.exp(
+                        -assigned_e_noacc / self._RT
+                    )
                     on_target_w[sirna_id] = w_on
                     on_target_w_noacc[sirna_id] = w_on_noacc
 
                     if sirna_id not in on_target_weight_metadata:
                         on_target_weight_metadata[sirna_id] = {}
                     on_target_weight_metadata[sirna_id][f"W_on{suffix}"] = w_on
-                    on_target_weight_metadata[sirna_id][f"W_on_noacc{suffix}"] = w_on_noacc
+                    on_target_weight_metadata[sirna_id][f"W_on_noacc{suffix}"] = (
+                        w_on_noacc
+                    )
 
                 z_col = f"Z_sirna{suffix}"
                 z_noacc_col = f"Z_sirna_noacc{suffix}"
-                z_modifications.extend([
-                    (pl.col(z_col) + pl.col("sirna_id").replace_strict(on_target_w, default=0.0)).alias(z_col),
-                    (pl.col(z_noacc_col) + pl.col("sirna_id").replace_strict(on_target_w_noacc, default=0.0)).alias(z_noacc_col),
-                ])
+                z_modifications.extend(
+                    [
+                        (
+                            pl.col(z_col)
+                            + pl.col("sirna_id").replace_strict(
+                                on_target_w, default=0.0
+                            )
+                        ).alias(z_col),
+                        (
+                            pl.col(z_noacc_col)
+                            + pl.col("sirna_id").replace_strict(
+                                on_target_w_noacc, default=0.0
+                            )
+                        ).alias(z_noacc_col),
+                    ]
+                )
 
             z_df = z_df.with_columns(z_modifications)
-            logger.info(f"FASTA mode: added on-target weights for {len(on_target_data_fasta)} siRNAs to partition functions")
+            logger.info(
+                f"FASTA mode: added on-target weights for {len(on_target_data_fasta)} siRNAs to partition functions"
+            )
 
         df = df.join(z_df, on="sirna_id", how="left")
 
@@ -490,7 +570,10 @@ class ProbabilityService:
         dG_open_on = 0.0
         if on_target_path and query_path:
             dG_hyb_on, dG_open_on = self._calculate_on_target_components(
-                on_target_path, query_path, on_target_accessibility_path, on_target_risearch_path,
+                on_target_path,
+                query_path,
+                on_target_accessibility_path,
+                on_target_risearch_path,
             )
 
         results_by_ag = {}
@@ -507,26 +590,37 @@ class ProbabilityService:
         df = df.filter(pl.col("transcript_id") != "onTarget")
 
         for alpha, gamma in alpha_gamma_pairs:
-            df_scaled = df.with_columns([
-                pl.when(pl.col("energy") < alpha * min_energy)
-                .then(gamma * min_energy + pl.col("opening_energy"))
-                .otherwise(pl.col("energy") + pl.col("opening_energy"))
-                .alias("dG_scaled"),
-                pl.when(pl.col("energy") < alpha * min_energy)
-                .then(gamma * min_energy)
-                .otherwise(pl.col("energy"))
-                .alias("dG_scaled_noacc"),
-            ])
+            df_scaled = df.with_columns(
+                [
+                    pl.when(pl.col("energy") < alpha * min_energy)
+                    .then(gamma * min_energy + pl.col("opening_energy"))
+                    .otherwise(pl.col("energy") + pl.col("opening_energy"))
+                    .alias("dG_scaled"),
+                    pl.when(pl.col("energy") < alpha * min_energy)
+                    .then(gamma * min_energy)
+                    .otherwise(pl.col("energy"))
+                    .alias("dG_scaled_noacc"),
+                ]
+            )
 
-            df_scaled = df_scaled.with_columns([
-                (pl.col("exp_value") * ((-pl.col("dG_scaled") / self._RT).exp())).alias("W"),
-                (pl.col("exp_value") * ((-pl.col("dG_scaled_noacc") / self._RT).exp())).alias("W_noacc"),
-            ])
+            df_scaled = df_scaled.with_columns(
+                [
+                    (
+                        pl.col("exp_value") * ((-pl.col("dG_scaled") / self._RT).exp())
+                    ).alias("W"),
+                    (
+                        pl.col("exp_value")
+                        * ((-pl.col("dG_scaled_noacc") / self._RT).exp())
+                    ).alias("W_noacc"),
+                ]
+            )
 
-            df_agg = df_scaled.group_by(["chrom", "transcript_id"]).agg([
-                pl.col("W").sum().alias("W_transcript"),
-                pl.col("W_noacc").sum().alias("W_transcript_noacc"),
-            ])
+            df_agg = df_scaled.group_by(["chrom", "transcript_id"]).agg(
+                [
+                    pl.col("W").sum().alias("W_transcript"),
+                    pl.col("W_noacc").sum().alias("W_transcript_noacc"),
+                ]
+            )
 
             z_off = df_agg["W_transcript"].sum()
             z_off_noacc = df_agg["W_transcript_noacc"].sum()
@@ -547,7 +641,9 @@ class ProbabilityService:
             p_on = w_on / z_total if z_total > 0 else 0.0
             p_off_total = z_off / z_total if z_total > 0 else 0.0
             p_on_noacc = w_on_noacc / z_total_noacc if z_total_noacc > 0 else 0.0
-            p_off_total_noacc = z_off_noacc / z_total_noacc if z_total_noacc > 0 else 0.0
+            p_off_total_noacc = (
+                z_off_noacc / z_total_noacc if z_total_noacc > 0 else 0.0
+            )
 
             on_target_stats[(alpha, gamma)] = {
                 "Pon": p_on,
@@ -560,14 +656,18 @@ class ProbabilityService:
                 "Zoff_noacc": z_off_noacc,
             }
 
-            df_agg = df_agg.with_columns([
-                (pl.col("W_transcript") / z_total).alias("P_transcript")
-                if z_total > 0
-                else pl.lit(0.0).alias("P_transcript"),
-                (pl.col("W_transcript_noacc") / z_total_noacc).alias("P_transcript_noacc")
-                if z_total_noacc > 0
-                else pl.lit(0.0).alias("P_transcript_noacc"),
-            ])
+            df_agg = df_agg.with_columns(
+                [
+                    (pl.col("W_transcript") / z_total).alias("P_transcript")
+                    if z_total > 0
+                    else pl.lit(0.0).alias("P_transcript"),
+                    (pl.col("W_transcript_noacc") / z_total_noacc).alias(
+                        "P_transcript_noacc"
+                    )
+                    if z_total_noacc > 0
+                    else pl.lit(0.0).alias("P_transcript_noacc"),
+                ]
+            )
 
             results_by_ag[(alpha, gamma)] = df_agg
 
@@ -594,20 +694,32 @@ class ProbabilityService:
             lines.append("\t".join(header_parts))
 
             first_ag = alpha_gamma_pairs[0]
-            merged = results_by_ag[first_ag].select(
-                ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
-            ).rename({
-                "P_transcript": f"P_{first_ag[0]}_{first_ag[1]}",
-                "P_transcript_noacc": f"P_{first_ag[0]}_{first_ag[1]}_noacc",
-            })
+            merged = (
+                results_by_ag[first_ag]
+                .select(
+                    ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
+                )
+                .rename(
+                    {
+                        "P_transcript": f"P_{first_ag[0]}_{first_ag[1]}",
+                        "P_transcript_noacc": f"P_{first_ag[0]}_{first_ag[1]}_noacc",
+                    }
+                )
+            )
 
             for ag in alpha_gamma_pairs[1:]:
-                other = results_by_ag[ag].select(
-                    ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
-                ).rename({
-                    "P_transcript": f"P_{ag[0]}_{ag[1]}",
-                    "P_transcript_noacc": f"P_{ag[0]}_{ag[1]}_noacc",
-                })
+                other = (
+                    results_by_ag[ag]
+                    .select(
+                        ["chrom", "transcript_id", "P_transcript", "P_transcript_noacc"]
+                    )
+                    .rename(
+                        {
+                            "P_transcript": f"P_{ag[0]}_{ag[1]}",
+                            "P_transcript_noacc": f"P_{ag[0]}_{ag[1]}_noacc",
+                        }
+                    )
+                )
                 merged = merged.join(other, on=["chrom", "transcript_id"], how="outer")
 
             merged = merged.sort(["chrom", "transcript_id"])
@@ -616,7 +728,9 @@ class ProbabilityService:
                 parts = [row["chrom"], row["transcript_id"]]
                 for ag in alpha_gamma_pairs:
                     parts.append(f"{row.get(f'P_{ag[0]}_{ag[1]}', 0.0) or 0.0:.12g}")
-                    parts.append(f"{row.get(f'P_{ag[0]}_{ag[1]}_noacc', 0.0) or 0.0:.12g}")
+                    parts.append(
+                        f"{row.get(f'P_{ag[0]}_{ag[1]}_noacc', 0.0) or 0.0:.12g}"
+                    )
                 lines.append("\t".join(parts))
 
             lines.append("## End of off-target info")
@@ -629,7 +743,9 @@ class ProbabilityService:
             return df
 
         if not all(c in df.columns for c in ["chrom", "start", "end", "strand"]):
-            logger.warning("Missing coordinate or strand columns. Cannot lookup accessibility.")
+            logger.warning(
+                "Missing coordinate or strand columns. Cannot lookup accessibility."
+            )
             return df
 
         if self.precomputed_accessibility is not None:
@@ -643,7 +759,9 @@ class ProbabilityService:
                 result = result.with_columns(pl.col("opening_energy").fill_null(10.0))
             else:
                 result = result.with_columns(pl.lit(10.0).alias("opening_energy"))
-            logger.info(f"Annotated {result.height} rows with precomputed accessibility")
+            logger.info(
+                f"Annotated {result.height} rows with precomputed accessibility"
+            )
             return result
 
         if not self.accessibility_service:
@@ -674,7 +792,9 @@ class ProbabilityService:
         if risearch_path:
             dG_hyb, t_start, t_end, strand = self._parse_risearch_file(risearch_path)
         else:
-            dG_hyb, t_start, t_end, strand = self._run_risearch_binary(query_path, on_target_path)
+            dG_hyb, t_start, t_end, strand = self._run_risearch_binary(
+                query_path, on_target_path
+            )
 
         # 2. Accessibility Energy
         dG_open = 0.0
@@ -688,7 +808,11 @@ class ProbabilityService:
                     .sort("position")
                 )
                 u_cols = sorted(
-                    [c for c in df_acc.columns if c.startswith("u") and c[1:].isdigit()],
+                    [
+                        c
+                        for c in df_acc.columns
+                        if c.startswith("u") and c[1:].isdigit()
+                    ],
                     key=lambda x: int(x[1:]),
                 )
                 max_pos = int(df_acc["position"].max())
@@ -706,14 +830,14 @@ class ProbabilityService:
                     col_idx = 0
                 target_idx = (t_end - 1) if strand == "+" else start0
                 if 0 <= target_idx < profile.shape[0]:
-                    dG_open = int(round(float(profile[target_idx, col_idx]) * 10.0)) / 10.0
+                    dG_open = (
+                        int(round(float(profile[target_idx, col_idx]) * 10.0)) / 10.0
+                    )
                 else:
                     dG_open = 10.0
 
             except Exception as e:
-                logger.error(
-                    f"Failed to read on-target accessibility parquet: {e}"
-                )
+                logger.error(f"Failed to read on-target accessibility parquet: {e}")
                 dG_open = 0.0
 
         elif t_end > 0:
@@ -725,7 +849,9 @@ class ProbabilityService:
                     break
 
                 if sequence:
-                    logger.info(f"Computing on-target accessibility on-the-fly (len={len(sequence)})")
+                    logger.info(
+                        f"Computing on-target accessibility on-the-fly (len={len(sequence)})"
+                    )
 
                     with tempfile.TemporaryDirectory() as tmpdir:
                         temp_service = GenomeAccessibilityService(Path(tmpdir))
@@ -742,15 +868,21 @@ class ProbabilityService:
 
                             if 0 <= target_idx < profile.shape[0]:
                                 dG_open = float(profile[target_idx, col_idx])
-                                logger.info(f"On-target opening energy: {dG_open:.2f} kcal/mol")
+                                logger.info(
+                                    f"On-target opening energy: {dG_open:.2f} kcal/mol"
+                                )
                             else:
-                                logger.warning(f"Binding site index {target_idx} out of bounds (len={profile.shape[0]})")
+                                logger.warning(
+                                    f"Binding site index {target_idx} out of bounds (len={profile.shape[0]})"
+                                )
                                 dG_open = 10.0
                         else:
                             logger.warning("Empty or 1D profile from ViennaRNA")
                             dG_open = 10.0
                 else:
-                    logger.warning(f"No sequence found in on-target FASTA: {on_target_path}")
+                    logger.warning(
+                        f"No sequence found in on-target FASTA: {on_target_path}"
+                    )
 
             except Exception as e:
                 logger.error(f"Failed to compute on-target accessibility: {e}")
@@ -779,7 +911,14 @@ class ProbabilityService:
                     parts = line.split()
                     if len(parts) >= 8:
                         try:
-                            energies.append((float(parts[7]), int(parts[4]), int(parts[5]), parts[6]))
+                            energies.append(
+                                (
+                                    float(parts[7]),
+                                    int(parts[4]),
+                                    int(parts[5]),
+                                    parts[6],
+                                )
+                            )
                         except ValueError:
                             pass
         except Exception as e:

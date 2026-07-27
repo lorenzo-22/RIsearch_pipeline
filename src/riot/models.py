@@ -14,6 +14,7 @@ class PredictionsMode(StrEnum):
     GW = "gw"
     TW = "tw"
 
+
 # RIsearch2 output TSV schema (tab-separated, no header)
 # Columns: siRNA_id, si_start, si_end, chrom, start, end, strand, energy, structure, query_seq, left_flank, right_flank
 RISEARCH_COLUMNS = [

@@ -5,8 +5,13 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 from rich.progress import (
-    Progress, SpinnerColumn, TextColumn, BarColumn,
-    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
 
 from riot.services.accessibility import GenomeAccessibilityService
@@ -28,7 +33,9 @@ def _make_progress(console):
 def run(
     genome: Annotated[
         Optional[Path],
-        typer.Option("--fasta", "-f", help="Path to genome or transcriptome FASTA file"),
+        typer.Option(
+            "--fasta", "-f", help="Path to genome or transcriptome FASTA file"
+        ),
     ] = None,
     output: Annotated[
         Path,
@@ -49,7 +56,9 @@ def run(
     ] = 30,
     temperature: Annotated[
         float,
-        typer.Option("--temperature", "-T", help="Folding temperature in °C (default 37.0)."),
+        typer.Option(
+            "--temperature", "-T", help="Folding temperature in °C (default 37.0)."
+        ),
     ] = 37.0,
     workers: Annotated[
         int,
@@ -60,7 +69,8 @@ def run(
         ),
     ] = 1,
     verbose: Annotated[
-        bool, typer.Option("--verbose", "-v", help="Show detailed progress information.")
+        bool,
+        typer.Option("--verbose", "-v", help="Show detailed progress information."),
     ] = False,
 ):
     """
