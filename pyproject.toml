@@ -57,7 +57,9 @@ riot = "riot.cli:entrypoint"
 [dependency-groups]
 dev = [
   "pre-commit",
-  "pyrefly",
+  # Pinned: pyrefly is the blocking type-check gate; an unpinned upgrade could
+  # flag new errors and redden CI on an unrelated `uv lock`. Bump deliberately.
+  "pyrefly==0.64.1",
   "pytest",
   "ruff",
   "scalene>=2.1.3",
