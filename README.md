@@ -104,7 +104,7 @@ hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
 
 ## Installation
 
-Requires **Python ≥ 3.14** and **ViennaRNA 2.7.2**.
+Requires **Python ≥ 3.11** (tested on 3.11–3.14) and **ViennaRNA 2.7.2**.
 
 ```bash
 git clone git@github.com:lorenzo-22/RIOT.git
