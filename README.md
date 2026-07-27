@@ -112,8 +112,14 @@ cd RIOT
 
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
-uv sync
+uv sync                       # core: off-targets + accessibility
+uv sync --extra risearch      # add the in-process index/search commands (needs the private risearch repo)
 ```
+
+`risearch` is an **optional extra**. Plain `uv sync` installs everything needed
+for `off-targets` and `accessibility` on pre-computed predictions — no SSH access
+or Rust toolchain required. Add `--extra risearch` only if you need the
+in-process `index` / `search` commands (see [The `risearch` dependency](#the-risearch-dependency)).
 
 ### Publishing / PyPI
 
@@ -134,7 +140,8 @@ core off-target analysis — `off-targets` and `accessibility` running on
 `risearch` installed; it is imported lazily.
 
 `risearch` is currently fetched from a **private** repository over SSH and is
-**not yet on PyPI**, so `uv sync` requires SSH access to that repo:
+**not yet on PyPI**, so installing the extra (`uv sync --extra risearch`)
+requires SSH access to that repo (plain `uv sync` does not):
 
 ```
 git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python

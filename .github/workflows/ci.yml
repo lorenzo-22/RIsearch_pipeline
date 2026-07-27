@@ -1,0 +1,46 @@
+name: CI
+
+# When to run: on every pull request, and on direct pushes to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# If new commits arrive on the same PR/branch while a run is in progress,
+# cancel the older run — no point testing superseded code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      # Core install only (no `--extra risearch`) — no SSH key or Rust toolchain
+      # needed. --frozen installs exactly what uv.lock pins.
+      - run: uv sync --frozen
+      - name: Ruff lint
+        run: uv run ruff check src/ tests/
+      - name: Ruff format check
+        run: uv run ruff format --check src/ tests/
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # risearch-dependent tests auto-skip (pytest.importorskip) since the
+      # optional `risearch` extra is not installed here.
+      - name: Pytest
+        run: uv run pytest -q

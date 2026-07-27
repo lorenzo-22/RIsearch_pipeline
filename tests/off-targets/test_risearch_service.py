@@ -6,7 +6,11 @@ import tempfile
 import polars as pl
 import pytest
 
-from riot.services.risearch_service import RIsearchService, RIsearchError
+# The `risearch` PyO3 bindings are an optional extra (`uv sync --extra risearch`).
+# When absent — e.g. in CI, which installs core only — skip this whole module.
+pytest.importorskip("risearch")
+
+from riot.services.risearch_service import RIsearchService  # noqa: E402
 
 
 @pytest.fixture
@@ -117,9 +121,9 @@ class TestRunSearch:
             result = service.run_search(sirna_single_path, index_path)
 
             assert isinstance(result, pl.DataFrame)
-            assert set(["sirna_id", "chrom", "start", "end", "strand", "energy"]).issubset(
-                set(result.columns)
-            )
+            assert set(
+                ["sirna_id", "chrom", "start", "end", "strand", "energy"]
+            ).issubset(set(result.columns))
 
 
 class TestSearchSingleSirna:

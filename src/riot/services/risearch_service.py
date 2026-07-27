@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
-import risearch
 from Bio import SeqIO
 from loguru import logger
+
+# NOTE: `risearch` (the PyO3 bindings) is imported lazily inside the methods that
+# use it (index_target / run_search), not at module top. This keeps `import riot`
+# and all non-RIsearch code paths (off-targets, accessibility) working when the
+# optional `risearch` extra is not installed.
 
 
 class RIsearchError(Exception):
@@ -47,7 +51,9 @@ class RIsearchService:
         logger.info(f"Validated {len(ids)} siRNA(s) from {path.name}")
         return ids
 
-    def index_target(self, target_path: Path, index_path: Optional[Path] = None) -> Path:
+    def index_target(
+        self, target_path: Path, index_path: Optional[Path] = None
+    ) -> Path:
         """Create or reuse a RIsearch index for a target FASTA.
 
         Registers target_path so run_search() can resolve sequence names.
@@ -68,8 +74,12 @@ class RIsearchService:
             logger.info(f"Index outdated, rebuilding: {index_path}")
 
         try:
+            import risearch
+
             risearch.index(target_path, index_path)
-            logger.info(f"Created index: {index_path} ({index_path.stat().st_size} bytes)")
+            logger.info(
+                f"Created index: {index_path} ({index_path.stat().st_size} bytes)"
+            )
             return index_path
         except Exception as e:
             raise RIsearchError(f"RIsearch index failed: {e}") from e
@@ -102,6 +112,8 @@ class RIsearchService:
             )
 
         try:
+            import risearch
+
             store = risearch.TargetStore.open(index_path)
             raw = risearch.search(
                 query_path,
@@ -116,18 +128,26 @@ class RIsearchService:
         if raw.is_empty():
             logger.info("Search complete: 0 hits")
             return pl.DataFrame(
-                schema={"sirna_id": pl.Utf8, "chrom": pl.Utf8, "start": pl.Int32,
-                        "end": pl.Int32, "strand": pl.Utf8, "energy": pl.Float32}
+                schema={
+                    "sirna_id": pl.Utf8,
+                    "chrom": pl.Utf8,
+                    "start": pl.Int32,
+                    "end": pl.Int32,
+                    "strand": pl.Utf8,
+                    "energy": pl.Float32,
+                }
             )
 
         query_names = pl.Series(_fasta_names(str(query_path)), dtype=pl.Utf8)
         target_names = pl.Series(_fasta_names(str(resolved_target)), dtype=pl.Utf8)
 
         df = (
-            raw.with_columns([
-                query_names.gather(raw["query_idx"]).alias("sirna_id"),
-                target_names.gather(raw["target_idx"]).alias("chrom"),
-            ])
+            raw.with_columns(
+                [
+                    query_names.gather(raw["query_idx"]).alias("sirna_id"),
+                    target_names.gather(raw["target_idx"]).alias("chrom"),
+                ]
+            )
             .rename({"t_start": "start", "t_end": "end"})
             .select(["sirna_id", "chrom", "start", "end", "strand", "energy"])
             .cast({"start": pl.Int32, "end": pl.Int32, "energy": pl.Float32})
@@ -150,11 +170,16 @@ class RIsearchService:
             fasta_path.write_text(f">{sirna_id}\n{seq_dna}\n")
             self.index_target(fasta_path, index_path)
             df = self.run_search(
-                fasta_path, index_path, target_fasta=fasta_path,
-                seed_length=len(seq_dna) - 1, energy_threshold=0.0,
+                fasta_path,
+                index_path,
+                target_fasta=fasta_path,
+                seed_length=len(seq_dna) - 1,
+                energy_threshold=0.0,
             )
             if df.is_empty():
-                logger.warning(f"No self-hybridisation hits for {sirna_id}, using E_min=0.0")
+                logger.warning(
+                    f"No self-hybridisation hits for {sirna_id}, using E_min=0.0"
+                )
                 return 0.0
             emin = float(df["energy"].min())
             logger.debug(f"Self-hyb E_min {sirna_id}: {emin:.4f} kcal/mol")
@@ -170,12 +195,16 @@ class RIsearchService:
             raise FileNotFoundError(f"siRNA FASTA not found: {fasta_path}")
 
         records = list(SeqIO.parse(fasta_path, "fasta"))
-        logger.info(f"Computing self-hybridisation E_min for {len(records)} siRNA(s)...")
+        logger.info(
+            f"Computing self-hybridisation E_min for {len(records)} siRNA(s)..."
+        )
         result = {r.id: self.self_hybridization_emin(str(r.seq), r.id) for r in records}
         logger.info(f"Self-hybridisation complete: {len(result)} siRNA(s) processed")
         return result
 
-    def search_single_sirna(self, query_path: Path, target_path: Path) -> Tuple[float, int, int, str]:
+    def search_single_sirna(
+        self, query_path: Path, target_path: Path
+    ) -> Tuple[float, int, int, str]:
         """Run RIsearch for a single siRNA and return (energy, start, end, strand) of the best hit.
 
         Returns (0.0, 0, 0, "+") if no hits found or search fails.
@@ -189,7 +218,12 @@ class RIsearchService:
                     logger.warning("No valid hits found")
                     return 0.0, 0, 0, "+"
                 best = df.sort("energy").row(0, named=True)
-                return float(best["energy"]), int(best["start"]), int(best["end"]), str(best["strand"])
+                return (
+                    float(best["energy"]),
+                    int(best["start"]),
+                    int(best["end"]),
+                    str(best["strand"]),
+                )
             except RIsearchError as e:
                 logger.error(f"RIsearch failed: {e}")
                 return 0.0, 0, 0, "+"
