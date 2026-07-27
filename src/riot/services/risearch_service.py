@@ -7,7 +7,7 @@ intermediate TSV files.
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import polars as pl
 from Bio import SeqIO
@@ -181,7 +181,7 @@ class RIsearchService:
                     f"No self-hybridisation hits for {sirna_id}, using E_min=0.0"
                 )
                 return 0.0
-            emin = float(df["energy"].min())
+            emin = cast(float, df["energy"].min())
             logger.debug(f"Self-hyb E_min {sirna_id}: {emin:.4f} kcal/mol")
             return emin
 

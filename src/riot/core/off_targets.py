@@ -27,7 +27,7 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, Optional, cast
 
 import polars as pl
 from loguru import logger
@@ -296,6 +296,8 @@ def compute_off_targets_single(
     # --- Acquire predictions ---
     if is_running_risearch:
         # Mode 1: integrated RIsearch execution
+        # Guaranteed by is_running_risearch + the target_fasta check above.
+        assert sirna_fasta is not None and target_fasta is not None
         risearch_service = RIsearchService()
         risearch_service.validate_sirna_fasta(sirna_fasta)  # raises ValueError on dups
         index_path = (
@@ -310,6 +312,8 @@ def compute_off_targets_single(
         )
     else:
         # Mode 2: pre-computed RIsearch file
+        # In this branch risearch_file is non-None (else the checks above raised).
+        assert risearch_file is not None
         with profiler.stage("Load predictions") as _s:
             df = risearch_parser.load(Path(risearch_file))
             _s.rows_out = df.height
@@ -570,7 +574,9 @@ def compute_off_targets_directory(
                 if arrow_table is None:
                     continue
 
-                df_chunk = pl.from_arrow(arrow_table)
+                # arrow_table is a pyarrow Table, so from_arrow returns a DataFrame
+                # (not a Series).
+                df_chunk = cast(pl.DataFrame, pl.from_arrow(arrow_table))
                 del arrow_table  # Arrow copy no longer needed; Polars owns the data
                 yield df_chunk, batch_metadata
     finally:

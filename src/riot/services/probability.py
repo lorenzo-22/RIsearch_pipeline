@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, cast
 
 import numpy as np
 import polars as pl
@@ -70,7 +70,7 @@ class ProbabilityService:
                 "boltzmann_weight"
             )
         )
-        z_partial = df["boltzmann_weight"].sum()
+        z_partial = cast(float, df["boltzmann_weight"].sum())
 
         w_on = 0.0
         dG_total_on = 0.0
@@ -86,7 +86,7 @@ class ProbabilityService:
                 on_target_risearch_path,
             )
             dG_total_on = dG_hyb_on + dG_open_on
-            w_on = on_target_expression * np.exp(-dG_total_on / self._RT)
+            w_on = on_target_expression * cast(float, np.exp(-dG_total_on / self._RT))
             logger.info(f"On-Target dG_total={dG_total_on:.2f}, Weight={w_on:.2e}")
 
         z_total = z_partial + w_on
@@ -242,7 +242,11 @@ class ProbabilityService:
                 f"In-predictions on-target mode: tagged {n_on} rows as on-target (from {len(local_map)} mappings)"
             )
 
-        elif use_fasta_mode and on_target_map and "transcript_id" in df.columns:
+        elif (
+            on_target_fasta_data is not None
+            and on_target_map
+            and "transcript_id" in df.columns
+        ):
             on_target_data_fasta = on_target_fasta_data
 
             exclude_conditions = [
@@ -396,7 +400,8 @@ class ProbabilityService:
 
         elif on_target_data_fasta:
             min_e_dict = {
-                row["sirna_id"]: row["E_min"] for row in min_energies.to_dicts()
+                row["sirna_id"]: cast(float, row["E_min"])
+                for row in min_energies.to_dicts()
             }
             z_modifications = []
 
@@ -503,7 +508,8 @@ class ProbabilityService:
         lines = []
         lines.append(f"# On-target info for {sirna_id} #")
 
-        suffixes = [("", 1.0, 1.0)]
+        # third element (gamma) is None in theta mode, which has no gamma
+        suffixes: list[tuple[str, float, float | None]] = [("", 1.0, 1.0)]
         for theta in theta_values or []:
             suffixes.append((f":theta={theta}", theta, None))
         for alpha, gamma in alpha_gamma_pairs or []:
@@ -582,7 +588,7 @@ class ProbabilityService:
         # Min energy anchors clamping; includes on-target energy per old pipeline behavior
         current_min = dG_hyb_on if (on_target_path and query_path) else 0.0
         if df.height > 0:
-            off_min = df["energy"].min()
+            off_min = cast(float, df["energy"].min())
             if off_min < current_min:
                 current_min = off_min
         min_energy = current_min
@@ -622,8 +628,8 @@ class ProbabilityService:
                 ]
             )
 
-            z_off = df_agg["W_transcript"].sum()
-            z_off_noacc = df_agg["W_transcript_noacc"].sum()
+            z_off = cast(float, df_agg["W_transcript"].sum())
+            z_off_noacc = cast(float, df_agg["W_transcript_noacc"].sum())
 
             if dG_hyb_on < alpha * min_energy:
                 dG_total_on = gamma * min_energy + dG_open_on
@@ -632,8 +638,10 @@ class ProbabilityService:
                 dG_total_on = dG_hyb_on + dG_open_on
                 dG_on_noacc = dG_hyb_on
 
-            w_on = on_target_expression * np.exp(-dG_total_on / self._RT)
-            w_on_noacc = on_target_expression * np.exp(-dG_on_noacc / self._RT)
+            w_on = on_target_expression * cast(float, np.exp(-dG_total_on / self._RT))
+            w_on_noacc = on_target_expression * cast(
+                float, np.exp(-dG_on_noacc / self._RT)
+            )
 
             z_total = z_off + w_on
             z_total_noacc = z_off_noacc + w_on_noacc
@@ -815,7 +823,7 @@ class ProbabilityService:
                     ],
                     key=lambda x: int(x[1:]),
                 )
-                max_pos = int(df_acc["position"].max())
+                max_pos = cast(int, df_acc["position"].max())
                 n_u = len(u_cols)
                 profile = np.full((max_pos, n_u), 25.5, dtype=np.float32)
                 pos_0 = df_acc["position"].to_numpy() - 1
