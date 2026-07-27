@@ -30,6 +30,21 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check src/ tests/
 
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # pyrefly config lives in [tool.pyrefly] (checks src/, treats the optional
+      # `risearch` extra as Any so this passes without it installed).
+      - name: Pyrefly type check
+        run: uv run pyrefly check
+
   test:
     runs-on: ubuntu-latest
     steps:

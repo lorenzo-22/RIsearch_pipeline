@@ -32,7 +32,7 @@ Notes:
 """
 
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Iterator, Optional, Union, cast
 
 import polars as pl
 
@@ -157,7 +157,7 @@ def accessibility(
     Writes no files. Raises ``FileNotFoundError`` if *genome* does not exist.
     """
     return _accessibility.compute_accessibility(
-        _p(genome),
+        cast(Path, _p(genome)),  # genome is required, so _p never returns None
         window_size=window_size,
         max_span=max_span,
         unpaired_prob=unpaired_prob,
@@ -170,7 +170,7 @@ def index(
     output: Optional[Union[str, Path]] = None,
 ) -> Path:
     """Build (or reuse) a RIsearch index and return its :class:`~pathlib.Path`."""
-    return _risearch.build_index(_p(target), _p(output))
+    return _risearch.build_index(cast(Path, _p(target)), _p(output))
 
 
 def search(
@@ -183,8 +183,8 @@ def search(
 ) -> pl.DataFrame:
     """Run a RIsearch search and return the hits as a :class:`polars.DataFrame`."""
     return _risearch.run_search(
-        query=_p(query),
-        index=_p(index),
+        query=cast(Path, _p(query)),
+        index=cast(Path, _p(index)),
         target=_p(target),
         seed_length=seed_length,
         max_extension=max_extension,

@@ -1,7 +1,7 @@
 import math
 from collections import OrderedDict, defaultdict
 from pathlib import Path
-from typing import Dict
+from typing import Dict, cast
 
 import numpy as np
 import polars as pl
@@ -57,7 +57,7 @@ def fold_sequence(
         md.window_size = w
         md.max_bp_span = max_span_adj
         fc = RNA.fold_compound(rna_seq, md, RNA.OPTION_WINDOW)
-        probs_matrix = [None] * (seq_len + 2)
+        probs_matrix: list[list[float] | None] = [None] * (seq_len + 2)
 
         def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
             if (what & RNA.PROBS_WINDOW_UP) and v is not None:
@@ -65,12 +65,14 @@ def fold_sequence(
 
         fc.probs_window(unpaired_prob, RNA.PROBS_WINDOW_UP, _cb)
         for i in range(1, seq_len + 1):
-            if i < len(probs_matrix) and probs_matrix[i] is not None:
-                for u in range(1, unpaired_prob + 1):
-                    if u < len(probs_matrix[i]):
-                        p = probs_matrix[i][u]
-                        if p is not None and p > 0:
-                            profile[i - 1, u - 1] = -RT * np.log(p)
+            if i < len(probs_matrix):
+                row = probs_matrix[i]
+                if row is not None:
+                    for u in range(1, unpaired_prob + 1):
+                        if u < len(row):
+                            p = row[u]
+                            if p is not None and p > 0:
+                                profile[i - 1, u - 1] = -RT * np.log(p)
 
         logger.debug(f"Computed accessibility for sequence of length {seq_len}")
     except Exception as e:
@@ -125,9 +127,13 @@ def _fold_full_chromosome(
                 md.window_size = w
                 md.max_bp_span = l_adj
                 fc = RNA.fold_compound(chunk_seq, md, RNA.OPTION_WINDOW)
-                probs_matrix = [None] * (chunk_len + 2)
+                probs_matrix: list[list[float] | None] | None = [None] * (chunk_len + 2)
 
-                def _cb(v, v_size, i, maxsize, what, data, _pm=probs_matrix):
+                # `probs_matrix` is non-None here (just assigned); cast the
+                # default so the callback param is a list, not `list | None`.
+                def _cb(
+                    v, v_size, i, maxsize, what, data, _pm=cast(list, probs_matrix)
+                ):
                     if (what & RNA.PROBS_WINDOW_UP) and v is not None:
                         _pm[i] = list(v)
 
@@ -141,7 +147,7 @@ def _fold_full_chromosome(
             positions = np.arange(pos + 1, pos + n_pos + 1, dtype=np.int32)
             u_matrix = np.full((n_pos, unpaired_prob), 25.5, dtype=np.float32)
 
-            if probs_ok:
+            if probs_ok and probs_matrix is not None:
                 for i in range(n_pos):
                     chunk_pos_1based = data_start_in_chunk + i + 1
                     if chunk_pos_1based >= len(probs_matrix):
@@ -353,7 +359,7 @@ class GenomeAccessibilityService:
             [c for c in df.columns if c.startswith("u") and c[1:].isdigit()],
             key=lambda x: int(x[1:]),
         )
-        max_pos = int(df["position"].max())
+        max_pos = int(cast(int, df["position"].max()))
         n_u = len(u_cols)
         arr = np.full((max_pos, n_u), 25.5, dtype=np.float32)
         pos_0 = df["position"].to_numpy() - 1  # 1-based → 0-based

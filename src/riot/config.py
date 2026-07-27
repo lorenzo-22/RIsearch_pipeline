@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 from omegaconf import MISSING, OmegaConf, DictConfig
 
@@ -66,7 +66,9 @@ class PipelineConfig:
 def load_config(config_path: Path) -> DictConfig:
     """Load and validate a YAML config file, resolving relative paths."""
     schema = OmegaConf.structured(PipelineConfig)
-    cfg = OmegaConf.merge(schema, OmegaConf.load(config_path))
+    # merge() is typed DictConfig | ListConfig; merging into a structured
+    # (dict) schema always yields a DictConfig.
+    cfg = cast(DictConfig, OmegaConf.merge(schema, OmegaConf.load(config_path)))
 
     if cfg.command not in ("off-targets", "accessibility"):
         raise ValueError(
@@ -111,7 +113,8 @@ def _resolve_paths(cfg: DictConfig, base_dir: Path) -> DictConfig:
 def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
     """Convert OmegaConf section to kwargs dict for the given command function."""
     section = getattr(cfg, command.replace("-", "_"))
-    kwargs = OmegaConf.to_container(section, resolve=True)
+    # section is a DictConfig, so to_container() returns a plain dict here.
+    kwargs = cast(dict[str, Any], OmegaConf.to_container(section, resolve=True))
 
     for key in [
         "risearch_file",

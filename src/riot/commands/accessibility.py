@@ -44,7 +44,7 @@ def run(
             "-o",
             help="Output directory — one {chrom}.accessibility.parquet per chromosome is written here",
         ),
-    ] = ...,  # ty: ignore[invalid-parameter-default]  # Typer required-option idiom (Ellipsis); kept required, must follow defaulted `genome`
+    ] = ...,  # ty: ignore[invalid-parameter-default]  # pyrefly: ignore[bad-function-definition]  # Typer required-option idiom (Ellipsis); kept required, must follow defaulted `genome`
     window_size: Annotated[
         int, typer.Option("--window", "-W", help="Window size (W)")
     ] = 80,
