@@ -37,6 +37,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ── Per-file worker (runs in subprocess — writes to disk, returns nothing big) ─
 
+
 def _convert_one(src: str, dst: str) -> tuple[str, int]:
     """Convert one .out.gz to .parquet. Returns (dst_path, row_count)."""
     # Must be set before polars is imported so the thread pool is sized correctly
@@ -51,11 +52,11 @@ def _convert_one(src: str, dst: str) -> tuple[str, int]:
         new_columns=["sirna_id", "chrom", "start", "end", "strand", "energy"],
         schema_overrides={
             "sirna_id": pl.Utf8,
-            "chrom":    pl.Utf8,
-            "start":    pl.Int32,
-            "end":      pl.Int32,
-            "strand":   pl.Utf8,
-            "energy":   pl.Float32,
+            "chrom": pl.Utf8,
+            "start": pl.Int32,
+            "end": pl.Int32,
+            "strand": pl.Utf8,
+            "energy": pl.Float32,
         },
         truncate_ragged_lines=True,
     ).filter(pl.col("sirna_id").is_not_null())
@@ -72,27 +73,41 @@ def _convert_one(src: str, dst: str) -> tuple[str, int]:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("input_dir", type=Path,
-                        help="Directory containing risearch_*.out.gz files")
-    parser.add_argument("--out-dir", type=Path, default=None,
-                        help="Output directory (default: same as input_dir)")
-    parser.add_argument("--workers", type=int, default=16,
-                        help="Parallel workers (default: 16)")
-    parser.add_argument("--ids-file", type=Path, default=None,
-                        help="File with siRNA IDs to convert (one per line); "
-                             "if omitted all risearch_*.out.gz files are converted")
-    parser.add_argument("--skip-existing", action="store_true",
-                        help="Skip files whose .parquet already exists")
+    parser.add_argument(
+        "input_dir", type=Path, help="Directory containing risearch_*.out.gz files"
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: same as input_dir)",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=16, help="Parallel workers (default: 16)"
+    )
+    parser.add_argument(
+        "--ids-file",
+        type=Path,
+        default=None,
+        help="File with siRNA IDs to convert (one per line); "
+        "if omitted all risearch_*.out.gz files are converted",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip files whose .parquet already exists",
+    )
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir
-    out_dir: Path   = args.out_dir or input_dir
-    n_workers: int  = args.workers
+    out_dir: Path = args.out_dir or input_dir
+    n_workers: int = args.workers
 
     if not input_dir.is_dir():
         sys.exit(f"Error: {input_dir} is not a directory")
@@ -102,9 +117,14 @@ def main() -> None:
     if args.ids_file is not None:
         if not args.ids_file.exists():
             sys.exit(f"Error: --ids-file {args.ids_file} not found")
-        ids = [line.strip() for line in args.ids_file.read_text().splitlines() if line.strip()]
+        ids = [
+            line.strip()
+            for line in args.ids_file.read_text().splitlines()
+            if line.strip()
+        ]
         files = sorted(
-            f for sid in ids
+            f
+            for sid in ids
             for f in [input_dir / f"risearch_{sid}.out.gz"]
             if f.exists()
         )
@@ -126,8 +146,10 @@ def main() -> None:
         pairs.append((str(f), str(dst)))
 
     skipped = len(files) - len(pairs)
-    print(f"Converting {len(pairs)} files → {out_dir}"
-          + (f"  ({skipped} skipped)" if skipped else ""))
+    print(
+        f"Converting {len(pairs)} files → {out_dir}"
+        + (f"  ({skipped} skipped)" if skipped else "")
+    )
     print(f"  workers={n_workers}  compression=zstd:3")
 
     t0 = time.perf_counter()
@@ -150,12 +172,17 @@ def main() -> None:
             if done % 100 == 0 or done == len(pairs):
                 elapsed = time.perf_counter() - t0
                 rate = done / elapsed
-                print(f"  {done}/{len(pairs)}  ({rate:.0f} files/s)  {errors} errors",
-                      end="\r", flush=True)
+                print(
+                    f"  {done}/{len(pairs)}  ({rate:.0f} files/s)  {errors} errors",
+                    end="\r",
+                    flush=True,
+                )
 
     elapsed = time.perf_counter() - t0
-    print(f"\nDone in {elapsed:.1f}s  "
-          f"({len(pairs)} files, {total_rows:,} rows, {errors} errors)")
+    print(
+        f"\nDone in {elapsed:.1f}s  "
+        f"({len(pairs)} files, {total_rows:,} rows, {errors} errors)"
+    )
 
 
 if __name__ == "__main__":

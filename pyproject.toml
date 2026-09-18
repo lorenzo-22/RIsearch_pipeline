@@ -83,7 +83,10 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.pyrefly]
-project-includes = ["src"]
+# scripts/ is not packaged (no console script, excluded from the wheel), but it is
+# user-facing orchestration and was previously outside every gate — type-checked
+# here so it cannot drift.
+project-includes = ["src", "scripts"]
 # Type-check against the lowest supported version to catch newer-stdlib usage.
 python-version = "3.11"
 # `risearch` is an optional dependency group (`uv sync --group risearch`), imported lazily.
