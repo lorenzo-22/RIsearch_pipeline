@@ -107,8 +107,8 @@ hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
 Requires **Python ≥ 3.11** (tested on 3.11–3.14) and **ViennaRNA 2.7.2**.
 
 ```bash
-git clone git@github.com:lorenzo-22/RIOT.git
-cd RIOT
+git clone git@github.com:lorenzo-22/RIsearch_pipeline.git
+cd RIsearch_pipeline
 
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate

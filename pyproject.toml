@@ -36,9 +36,9 @@ dependencies = [
 ]
 
 [project.urls]
-# TODO: confirm final GitHub repo name
-Homepage = "https://github.com/lorenzo-22/RIOT"
-Repository = "https://github.com/lorenzo-22/RIOT"
+Homepage = "https://github.com/lorenzo-22/RIsearch_pipeline"
+Repository = "https://github.com/lorenzo-22/RIsearch_pipeline"
+Issues = "https://github.com/lorenzo-22/RIsearch_pipeline/issues"
 
 [project.scripts]
 riot = "riot.cli:entrypoint"
