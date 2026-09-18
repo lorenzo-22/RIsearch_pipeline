@@ -51,7 +51,7 @@ flowchart TD
 | `-r / --risearch-file` | Pre-computed predictions (TSV, `.out.gz`, or directory of Parquet files — directory triggers parallel per-siRNA mode) |
 | `-s / --sirna-fasta` | siRNA FASTA — runs RIsearch in-process via PyO3 bindings |
 | `--target-fasta / --genome` | Target FASTA for in-process RIsearch |
-| `-t / --transcriptome` | GTF/GFF3 or BED annotation file |
+| `-t / --transcriptome` | GTF, GFF3, BED6 or BED7 annotation file |
 | `-a / --accessibility-dir` | Directory of per-chromosome accessibility Parquet files (from `accessibility` command) |
 | `--expression-metric` | GTF attribute for expression weighting (default: `RPKM`) |
 | `--type` | `gw` (genome-wide) or `tw` (transcriptome-wide, default: `gw`) |

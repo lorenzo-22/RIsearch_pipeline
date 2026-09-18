@@ -59,14 +59,18 @@ class TestAnnotationParser:
         assert row["transcript_id"] == "transcript_21"
         assert row["exp_value"] == 1000.0
 
-    def test_load_gtf_custom_score_column(
+    def test_load_gtf_unknown_score_column_raises(
         self, parser: AnnotationParser, test_gtf_path: Path
     ) -> None:
-        """Parser can use a different attribute for score."""
-        # Using RPKM as default, which works.
-        # If we asked for FPKM (which isn't there), it should return nulls or 0.0
-        df = parser.load_gtf(test_gtf_path, score_col="NONEXISTENT")
-        assert (df["exp_value"] == 0.0).all()
+        """A score attribute that matches no row is an error, not silently 0.0.
+
+        This previously asserted `(df["exp_value"] == 0.0).all()`. That encoded the
+        silent-wrong-answer path: a misnamed score column zeroed every weight in
+        ``W_i = Expression_i * exp(-dG/RT)`` while the run exited 0. Total
+        extraction failure now raises; partial nulls still fill to 0.0.
+        """
+        with pytest.raises(ValueError, match="NONEXISTENT"):
+            parser.load_gtf(test_gtf_path, score_col="NONEXISTENT")
 
     def test_load_gtf_missing_file(self, parser: AnnotationParser) -> None:
         """Parser raises FileNotFoundError for missing file."""

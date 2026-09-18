@@ -115,7 +115,7 @@ def run(
         str,
         typer.Option(
             "--transcriptome-format",
-            help="Transcriptome file format: auto, bed6, bed7, or gtf (default: auto-detect).",
+            help="Transcriptome file format: auto, gtf, gff3, bed6, or bed7 (default: auto-detect; gtf vs gff3 is detected from the attribute column).",
         ),
     ] = "auto",
     accessibility_dir: Annotated[

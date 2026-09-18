@@ -38,8 +38,10 @@ off_targets:
   # Join predictions to gene/transcript features and expression values.
   transcriptome: ../tests/off-targets/data/expression_data.gtf
 
-  # File format for the transcriptome file. Default: "auto" (detected by extension).
-  # Options: "auto" | "gtf" | "bed6" | "bed7"
+  # File format for the transcriptome file. Default: "auto".
+  # Options: "auto" | "gtf" | "gff3" | "bed6" | "bed7"
+  # "auto" picks BED by extension, then distinguishes GTF from GFF3 by the
+  # attribute column: GTF writes `key "value";`, GFF3 writes `key=value;`.
   transcriptome_format: gtf
 
   # Feature type to extract from GTF/GFF3 (ignored for BED). Default: "exon"
