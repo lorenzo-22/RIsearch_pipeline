@@ -9,7 +9,6 @@ with the installed distribution the moment one is bumped without the other, and
 a version report that lies is worse than none.
 """
 
-import re
 import subprocess
 import sys
 
@@ -21,41 +20,27 @@ from riot.cli import app
 
 runner = CliRunner()
 
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _plain(text: str) -> str:
-    """Strip ANSI styling before matching on rendered output.
-
-    Rich colorizes when it detects a capable terminal — which CI has and a local
-    run often does not. It styles the leading dash of an option separately
-    (`\x1b[1;36m-\x1b[0m\x1b[1;36m-verbose\x1b[0m`), so the literal "--version"
-    is absent from the raw stream even though the option is displayed. Asserting
-    on raw stdout therefore passes locally and fails in CI.
-    """
-    return _ANSI.sub("", text)
-
 
 class TestVersionFlag:
-    def test_prints_the_version_and_exits_cleanly(self):
+    def test_prints_the_version_and_exits_cleanly(self, plain):
         result = runner.invoke(app, ["--version"])
 
         assert result.exit_code == 0
-        assert riot.__version__ in _plain(result.stdout)
+        assert riot.__version__ in plain(result.stdout)
 
-    def test_output_names_the_tool_not_just_a_bare_number(self):
+    def test_output_names_the_tool_not_just_a_bare_number(self, plain):
         """A bare '0.1.0' in a bug report is ambiguous about what produced it."""
         result = runner.invoke(app, ["--version"])
 
-        assert "riot" in _plain(result.stdout).lower()
+        assert "riot" in plain(result.stdout).lower()
 
-    def test_works_without_a_subcommand(self):
+    def test_works_without_a_subcommand(self, plain):
         """It must not require a subcommand, and must not print the help text."""
         result = runner.invoke(app, ["--version"])
 
-        assert "Usage:" not in _plain(result.stdout)
+        assert "Usage:" not in plain(result.stdout)
 
-    def test_answers_even_when_another_option_would_fail_validation(self):
+    def test_answers_even_when_another_option_would_fail_validation(self, plain):
         """`--config` has `exists=True`, so a missing path would fail parsing.
 
         Asking for the version must not be defeated by an unrelated bad argument
@@ -68,15 +53,15 @@ class TestVersionFlag:
         """
         result = runner.invoke(app, ["--version", "--config", "/does/not/exist.yaml"])
 
-        assert result.exit_code == 0, _plain(result.stdout)
-        assert riot.__version__ in _plain(result.stdout)
+        assert result.exit_code == 0, plain(result.stdout)
+        assert riot.__version__ in plain(result.stdout)
 
-    def test_it_is_advertised_in_the_help(self):
+    def test_it_is_advertised_in_the_help(self, plain):
         result = runner.invoke(app, ["--help"])
 
-        assert "--version" in _plain(result.stdout)
+        assert "--version" in plain(result.stdout)
 
-    def test_reaches_the_real_console_script(self):
+    def test_reaches_the_real_console_script(self, plain):
         """Guards the installed entry point, not just the in-process app object."""
         result = subprocess.run(
             [sys.executable, "-m", "riot.cli", "--version"],
@@ -85,11 +70,11 @@ class TestVersionFlag:
         )
 
         assert result.returncode == 0, result.stderr
-        assert riot.__version__ in _plain(result.stdout)
+        assert riot.__version__ in plain(result.stdout)
 
 
 class TestVersionIsTrue:
-    def test_matches_the_installed_distribution_metadata(self):
+    def test_matches_the_installed_distribution_metadata(self, plain):
         """`__version__` must not drift from what was actually installed."""
         from importlib.metadata import PackageNotFoundError, version
 
@@ -100,7 +85,7 @@ class TestVersionIsTrue:
 
         assert riot.__version__ == installed
 
-    def test_matches_the_version_declared_in_pyproject(self):
+    def test_matches_the_version_declared_in_pyproject(self, plain):
         import re
         from pathlib import Path
 
