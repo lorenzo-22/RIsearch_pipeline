@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use RIOT, please cite the following reference."
+title: RIOT
+abstract: >-
+  RIOT (riot-sirna) — an siRNA off-target discovery pipeline for analyzing
+  RIsearch2 predictions.
+type: software
+license: MIT
+version: 0.1.0
+repository-code: "https://github.com/lorenzo-22/RIsearch_pipeline"
+authors:
+  - family-names: Roncelli
+    given-names: Stefano
+    orcid: "https://orcid.org/0009-0001-4830-202X"
+  - family-names: Favaro
+    given-names: Lorenzo
+    orcid: "https://orcid.org/0009-0002-8879-0555"
+  - family-names: Anthon
+    given-names: Christian
+    orcid: "https://orcid.org/0000-0002-4336-1688"
+  - family-names: Gorodkin
+    given-names: Jan
+    orcid: "https://orcid.org/0000-0001-5823-4000"
+preferred-citation:
+  type: article
+  title: >-
+    RIsearch and RIOT: An integrated, high-performance framework for RNA-RNA
+    interaction and siRNA off-target prediction
+  # Venue and DOI are deliberately omitted: the manuscript is not yet accepted.
+  # Add `journal:`, `year:`, `volume:`, `pages:` and `doi:` on acceptance.
+  notes: Submission pending.
+  authors:
+    - family-names: Roncelli
+      given-names: Stefano
+      orcid: "https://orcid.org/0009-0001-4830-202X"
+    - family-names: Favaro
+      given-names: Lorenzo
+      orcid: "https://orcid.org/0009-0002-8879-0555"
+    - family-names: Anthon
+      given-names: Christian
+      orcid: "https://orcid.org/0000-0002-4336-1688"
+    - family-names: Gorodkin
+      given-names: Jan
+      orcid: "https://orcid.org/0000-0001-5823-4000"

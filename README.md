@@ -407,6 +407,22 @@ no subprocess, no intermediate TSV. Features:
 
 ---
 
+## Citation
+
+If you use RIOT in published work, please cite:
+
+> Roncelli S, Favaro L, Anthon C, Gorodkin J. *RIsearch and RIOT: An integrated,
+> high-performance framework for RNA-RNA interaction and siRNA off-target
+> prediction.* Submission pending.
+
+Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
+
+Note that if you install the optional `risearch` dependency, citation is not
+merely requested but a **term of its BUSL-1.1 licence** for any production use —
+see [License](#license).
+
+---
+
 ## License
 
 RIOT (`riot-sirna`) is released under the **MIT License** — see [LICENSE](LICENSE).
