@@ -9,6 +9,7 @@ with the installed distribution the moment one is bumped without the other, and
 a version report that lies is worse than none.
 """
 
+import re
 import subprocess
 import sys
 
@@ -20,25 +21,39 @@ from riot.cli import app
 
 runner = CliRunner()
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling before matching on rendered output.
+
+    Rich colorizes when it detects a capable terminal — which CI has and a local
+    run often does not. It styles the leading dash of an option separately
+    (`\x1b[1;36m-\x1b[0m\x1b[1;36m-verbose\x1b[0m`), so the literal "--version"
+    is absent from the raw stream even though the option is displayed. Asserting
+    on raw stdout therefore passes locally and fails in CI.
+    """
+    return _ANSI.sub("", text)
+
 
 class TestVersionFlag:
     def test_prints_the_version_and_exits_cleanly(self):
         result = runner.invoke(app, ["--version"])
 
         assert result.exit_code == 0
-        assert riot.__version__ in result.stdout
+        assert riot.__version__ in _plain(result.stdout)
 
     def test_output_names_the_tool_not_just_a_bare_number(self):
         """A bare '0.1.0' in a bug report is ambiguous about what produced it."""
         result = runner.invoke(app, ["--version"])
 
-        assert "riot" in result.stdout.lower()
+        assert "riot" in _plain(result.stdout).lower()
 
     def test_works_without_a_subcommand(self):
         """It must not require a subcommand, and must not print the help text."""
         result = runner.invoke(app, ["--version"])
 
-        assert "Usage:" not in result.stdout
+        assert "Usage:" not in _plain(result.stdout)
 
     def test_answers_even_when_another_option_would_fail_validation(self):
         """`--config` has `exists=True`, so a missing path would fail parsing.
@@ -53,13 +68,13 @@ class TestVersionFlag:
         """
         result = runner.invoke(app, ["--version", "--config", "/does/not/exist.yaml"])
 
-        assert result.exit_code == 0, result.stdout
-        assert riot.__version__ in result.stdout
+        assert result.exit_code == 0, _plain(result.stdout)
+        assert riot.__version__ in _plain(result.stdout)
 
     def test_it_is_advertised_in_the_help(self):
         result = runner.invoke(app, ["--help"])
 
-        assert "--version" in result.stdout
+        assert "--version" in _plain(result.stdout)
 
     def test_reaches_the_real_console_script(self):
         """Guards the installed entry point, not just the in-process app object."""
@@ -70,7 +85,7 @@ class TestVersionFlag:
         )
 
         assert result.returncode == 0, result.stderr
-        assert riot.__version__ in result.stdout
+        assert riot.__version__ in _plain(result.stdout)
 
 
 class TestVersionIsTrue:
