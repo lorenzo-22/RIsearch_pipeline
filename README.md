@@ -84,8 +84,8 @@ import riot
 # Off-target analysis on a pre-computed predictions file → polars.DataFrame
 df = riot.off_targets(risearch_file="predictions.tsv", gtf_file="annotations.gtf")
 
-# Pre-compute per-chromosome accessibility profiles → dict[chrom -> Path]
-profiles = riot.accessibility(genome="genome.fa", output="acc_dir/")
+# Pre-compute per-chromosome accessibility profiles → dict[chrom -> polars.DataFrame]
+profiles = riot.accessibility(genome="genome.fa")
 
 # Build a RIsearch index → Path (needs the external 'risearch' package)
 idx = riot.index("target.fa")
@@ -96,8 +96,9 @@ hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
 
 **Notes**
 
-- `riot.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it streams results to disk and returns a summary `dict` (output paths + row/summary counts) instead.
-- On error the underlying command raises `typer.Exit` (a Click exception).
+- `riot.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it returns a **generator** yielding one `polars.DataFrame` per siRNA; iterate it to consume the results. Neither form writes files — the API layer returns results in memory, and writing output is the CLI's job.
+- `riot.accessibility` likewise writes nothing: it returns `dict[chrom -> polars.DataFrame]`. Use the `accessibility` CLI command (or `riot -c <config>`) if you want `{chrom}.accessibility.parquet` files on disk.
+- On bad input the API functions raise ordinary Python exceptions — `FileNotFoundError` or `ValueError` — not `typer.Exit`. `typer.Exit` is raised only by the CLI layer for its own argument validation.
 - `riot.index` / `riot.search` require the external `risearch` package — the same dependency the CLI's `index`/`search` commands need.
 
 ---
