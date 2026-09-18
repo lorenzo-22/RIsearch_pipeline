@@ -92,11 +92,31 @@ class RIsearchService:
         seed_length: int = 6,
         max_extension: int = 20,
         energy_threshold: float = -10.0,
+        seed_start: Optional[int] = None,
+        seed_end: Optional[int] = None,
+        seed_wobble: bool = True,
+        matrix: str = "t04",
     ) -> pl.DataFrame:
         """Run RIsearch and return hits as a DataFrame (sirna_id, chrom, start, end, strand, energy).
 
         target_fasta is required when the index was not built in this session
         via index_target() — needed to resolve integer target indices to names.
+
+        Seed geometry and energy-model parameters mirror the RIsearch2 CLI:
+
+        ``seed_start``/``seed_end``/``seed_length``
+            The ``-s n:m/l`` seed specification — the seed must fall within query
+            positions ``n..m`` and be ``l`` nt long. Leaving start/end as ``None``
+            constrains length only, which is RIsearch's default behaviour.
+        ``seed_wobble``
+            ``False`` is the CLI's ``--noGUseed``: forbid G:U wobble pairs *inside
+            the seed*. This affects seed location only, not the energy model, so it
+            is a candidate-generation knob rather than a rescoring one. Measured on
+            3,826 fly S2 3'UTRs x 10 miRNAs it removes **84.7%** of hits
+            (783,836 -> 119,928).
+        ``matrix``
+            ``t04`` (default) or ``t99`` — the ``-z`` nearest-neighbour energy
+            parameter set.
         """
 
         if not query_path.exists():
@@ -111,6 +131,29 @@ class RIsearchService:
                 "build the index via index_target() first."
             )
 
+        if matrix not in ("t04", "t99"):
+            raise RIsearchError(f"matrix must be 't04' or 't99', got {matrix!r}")
+        if (seed_start is None) != (seed_end is None):
+            raise RIsearchError(
+                "seed_start and seed_end must be given together (the '-s n:m/l' form)"
+            )
+        if seed_start is not None and seed_end is not None:
+            if seed_start < 1:
+                raise RIsearchError(f"seed_start is 1-based, got {seed_start}")
+            if seed_end < seed_start:
+                raise RIsearchError(f"seed_end {seed_end} < seed_start {seed_start}")
+            # Catch the RIsearch2 '-s 2:8/8' case up front. The C binary prints
+            # "Invalid seed length (exceeds interval)" and then raises SIGABRT rather
+            # than exiting cleanly; the Rust bindings raise, but only per query and
+            # only once the search is already under way.
+            window = seed_end - seed_start + 1
+            if seed_length > window:
+                raise RIsearchError(
+                    f"seed length {seed_length} exceeds the {window}-nt window "
+                    f"{seed_start}:{seed_end} — positions {seed_start}-{seed_end} "
+                    f"span {window} nt"
+                )
+
         try:
             import risearch
 
@@ -119,8 +162,12 @@ class RIsearchService:
                 query_path,
                 store,
                 seed_length=seed_length,
+                seed_start=seed_start,
+                seed_end=seed_end,
                 max_extension=max_extension,
                 energy_threshold=energy_threshold,
+                seed_wobble=seed_wobble,
+                matrix=matrix,
             )
         except Exception as e:
             raise RIsearchError(f"RIsearch search failed: {e}") from e
