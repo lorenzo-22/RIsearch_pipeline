@@ -38,8 +38,17 @@ def off_targets_config(tmp_path: Path) -> Path:
         lambda m: f"{m.group(1)}{(EXAMPLE_DIR / m.group(2)).resolve()}",
         text,
     )
-    text = text.replace(
-        "output: ./riot_example_output.tsv", f"output: {tmp_path / 'out.tsv'}"
+    # Redirect by matching the key rather than a literal path: a hardcoded path
+    # silently stops matching when the config is edited, and the redirect then
+    # no-ops into the repo instead of tmp_path.
+    text, redirected = re.subn(
+        r"(?m)^(\s*output:\s*)\./[\w./-]+\.tsv\s*$",
+        lambda m: f"{m.group(1)}{tmp_path / 'out.tsv'}",
+        text,
+    )
+    assert redirected == 1, (
+        f"expected exactly one relative .tsv output key to redirect, found {redirected} — "
+        "the example config's output key changed shape"
     )
 
     config = tmp_path / "off-targets.yaml"

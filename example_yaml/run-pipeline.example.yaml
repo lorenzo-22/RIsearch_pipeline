@@ -10,7 +10,7 @@
 # This example points at the bundled test data so it can be run directly.
 # =============================================================================
 
-# Steps to run in order.  index and convert are optional pre-processing steps.
+# Steps to run in order.  index is an optional pre-processing step.
 # Default when omitted: [accessibility, off-targets]
 steps:
   - accessibility
@@ -24,8 +24,8 @@ steps:
 # =============================================================================
 # Top-level keys (partition, account) apply to all steps.
 # Per-step sub-sections (snake_case) override the built-in resource defaults.
-# Built-in defaults: index 1h/8G/4cpu  convert 2h/16G/16cpu
-#                    accessibility 8h/32G/8cpu  off_targets 4h/64G/16cpu
+# Built-in defaults: index 1h/8G/4cpu  accessibility 8h/32G/8cpu
+#                    off_targets 4h/64G/16cpu
 slurm:
   partition: batch
   account: myaccount
@@ -45,24 +45,13 @@ slurm:
 #   target: ../data/genome.fa
 #   output: ../data/genome.idx   # default: <target>.idx
 
-# =============================================================================
-# Step: convert  (optional — convert .out.gz files to per-siRNA Parquet)
-# convert and accessibility are independent; Slurm submits them in parallel.
-# off-targets waits for both.
-# =============================================================================
-# convert:
-#   input_dir: ../data/raw_risearch/
-#   out_dir: ../data/parquet/          # default: same as input_dir
-#   ids_file: ../data/sirna_ids.txt    # optional: process only listed IDs
-#   workers: 32
-#   skip_existing: false
 
 # =============================================================================
 # Step: accessibility  (pre-compute per-chromosome accessibility profiles)
 # =============================================================================
 accessibility:
   fasta: ../tests/off-targets/data/genome.fa
-  output: ./riot_example_accessibility/
+  output: ./riot_example_out/accessibility/
   window: 80
   span: 40
   unpaired: 30
@@ -79,8 +68,8 @@ off_targets:
   feature: exon
   expression_metric: RPKM
   # accessibility_dir populated by the accessibility step above
-  accessibility_dir: /tmp/risearch_pipeline_test_accessibility/
-  output: ./riot_example_output.tsv
+  accessibility_dir: ./riot_example_out/accessibility/
+  output: ./riot_example_out/off_targets.tsv
   type: gw
   alpha: "1.0"
   gamma: "1.0"
@@ -96,7 +85,7 @@ off_targets:
 # parallel (each group's off-targets waits only on its OWN upstream jobs). The
 # off-target math (Z_s) is unchanged; groups never mix.
 #
-# The top-level off_targets/accessibility/convert blocks above act as SHARED
+# The top-level off_targets/accessibility blocks above act as SHARED
 # DEFAULTS; each group overrides only its per-group fields:
 #   off_targets:            <- shared defaults (alpha/gamma/theta, window/span,
 #     alpha: "0.8;1.0"         temperature, on-target config, type, ...)

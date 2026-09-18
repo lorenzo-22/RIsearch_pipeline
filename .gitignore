@@ -222,7 +222,7 @@ logs/
 CLAUDE.md
 
 
-# Artifacts produced by running the shipped example configs
-example_yaml/riot_example_output.tsv
-example_yaml/riot_example_accessibility/
-example_yaml/*.summary
+# Artifacts produced by running the shipped example configs. The configs write
+# everything under one directory so a run leaves nothing loose beside them —
+# .summary files land next to the output file, which is why it has its own dir.
+example_yaml/riot_example_out/
