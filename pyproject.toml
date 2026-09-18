@@ -60,6 +60,10 @@ riot = "riot.cli:entrypoint"
 # `risearch` is licensed BUSL-1.1 (source-available, not open source) — see the
 # License section of README.md. Swap this for a normal PyPI version pin if it is
 # ever published there.
+#
+# The commit is pinned rather than tracking a branch so installs are
+# reproducible; bump it deliberately, after verifying the bindings still match
+# and that search results have not changed.
 risearch = [
   "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
 ]

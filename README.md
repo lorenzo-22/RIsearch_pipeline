@@ -158,9 +158,10 @@ SSH access to that repo (plain `uv sync` does not):
 git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python
 ```
 
-The commit is pinned because a later commit (`69aa6d7`) removed `from_fastas`
-from the Rust core without updating the Python bindings, breaking compilation.
-Update the pin only when upstream fixes the mismatch.
+The commit is pinned rather than tracking a branch so that installs are
+reproducible: `risearch` is a fast-moving repository whose public API and search
+results have both changed across releases, so the pin is bumped deliberately and
+verified, not automatically.
 
 > **PyPI:** Because this `git+ssh` dependency is a direct URL, the package
 > cannot be published to PyPI as-is. Once `risearch` is released to PyPI, swap
@@ -408,4 +409,29 @@ no subprocess, no intermediate TSV. Features:
 
 ## License
 
-MIT
+RIOT (`riot-sirna`) is released under the **MIT License** — see [LICENSE](LICENSE).
+
+**The optional `risearch` dependency is licensed differently.** `risearch` is
+distributed under the **Business Source License 1.1 (BUSL-1.1)**, which is
+*source-available, not open source* and is not OSI-approved. If you install it
+(`uv sync --group risearch`) to use the in-process `index` / `search` commands,
+that code is governed by BUSL-1.1, not by RIOT's MIT licence:
+
+- **No hosted services.** You may not use it to provide SaaS, PaaS or any other
+  hosted or cloud-based service to third parties — commercial *or*
+  non-commercial — except where such services are provided exclusively to
+  accredited academic institutions, or individuals affiliated with them, for
+  non-commercial research or educational purposes.
+- **Citation is a licence term.** Any production use must cite the work; see
+  [Citation](#citation).
+- **Converts to Apache-2.0 on 14 September 2030.**
+- Licensor: RTH, University of Copenhagen. Commercial licensing enquiries:
+  <software@rth.dk>.
+
+RIOT's core `off-targets` and `accessibility` commands run on **pre-computed**
+RIsearch output and do **not** require `risearch`. Used that way — which is the
+default `uv sync` install, and what you get from PyPI — RIOT is purely MIT and
+none of the above applies.
+
+Refer to the `risearch` repository for the authoritative licence text; the
+summary above is provided for orientation only.
