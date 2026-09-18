@@ -326,7 +326,7 @@ Z_s  = Σ W_i  (all off-targets of siRNA s)  +  W_on-target
 P(off-target_i | siRNA_s) = W_i / Z_s
 ```
 
-- **ΔG_hybridization**: RNA-RNA interaction energy from RIsearch (Turner 2004 parameters).
+- **ΔG_hybridization**: duplex interaction energy from RIsearch. The nearest-neighbour parameter set is selectable with `riot search -z/--matrix` (default Turner 2004).
 - **ΔG_opening**: Accessibility penalty — cost to unfold the target region, retrieved from pre-computed `RNA.pfl_fold_up` profiles.
 - **Expression weighting**: annotation-derived RPKM/TPM values scale each site's contribution.
 - **Per-siRNA normalization**: Partition functions are computed independently per siRNA; mixing them is biologically incorrect.
@@ -404,7 +404,7 @@ Python bindings, installed as the `risearch` dependency (see
 no subprocess, no intermediate TSV. Features:
 
 - Suffix-array based seed-and-extend search
-- Turner 2004 thermodynamic parameters
+- Selectable nearest-neighbour parameter sets: Turner 2004 (default) and 1999 for RNA-RNA, SantaLucia-Hicks 2004 for DNA-DNA, and Sugimoto 1995 for RNA/DNA hybrids
 - Multi-threaded parallel search via Rayon
 - SIMD-optimized alignment kernels
 

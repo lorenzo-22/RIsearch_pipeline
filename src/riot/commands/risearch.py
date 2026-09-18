@@ -79,7 +79,12 @@ def search(
         typer.Option(
             "--matrix",
             "-z",
-            help="Nearest-neighbour energy parameter set: 't04' or 't99'.",
+            help=(
+                "Nearest-neighbour energy parameter set: 't04' (Turner 2004, "
+                "RNA-RNA), 't99' (Turner 1999, RNA-RNA), 'slh04' "
+                "(SantaLucia-Hicks 2004, DNA-DNA), 's95-rna-dna' or "
+                "'s95-dna-rna' (Sugimoto 1995, RNA/DNA hybrids)."
+            ),
         ),
     ] = "t04",
     max_extension: Annotated[

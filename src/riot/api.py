@@ -180,8 +180,20 @@ def search(
     seed_length: int = 6,
     max_extension: int = 20,
     energy_threshold: float = -10.0,
+    seed_start: Optional[int] = None,
+    seed_end: Optional[int] = None,
+    seed_wobble: bool = True,
+    matrix: str = "t04",
 ) -> pl.DataFrame:
-    """Run a RIsearch search and return the hits as a :class:`polars.DataFrame`."""
+    """Run a RIsearch search and return the hits as a :class:`polars.DataFrame`.
+
+    ``seed_start``/``seed_end``/``seed_length`` are the ``-s n:m/l`` seed spec and
+    ``seed_wobble=False`` is ``--noGUseed``; both affect where seeds may be placed,
+    not the energy model. ``matrix`` (``-z``) selects the nearest-neighbour
+    parameter set — see :data:`riot.services.risearch_service.VALID_DSM_IDS` for
+    the models risearch ships. These mirror the ``riot search`` CLI options; the
+    defaults reproduce its behaviour.
+    """
     return _risearch.run_search(
         query=cast(Path, _p(query)),
         index=cast(Path, _p(index)),
@@ -189,4 +201,8 @@ def search(
         seed_length=seed_length,
         max_extension=max_extension,
         energy_threshold=energy_threshold,
+        seed_start=seed_start,
+        seed_end=seed_end,
+        seed_wobble=seed_wobble,
+        matrix=matrix,
     )

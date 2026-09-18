@@ -74,7 +74,8 @@ class TestSeedSpecValidation:
         with pytest.raises(RIsearchError, match="< seed_start"):
             self._run(seed_start=8, seed_end=2, seed_length=2)
 
-    @pytest.mark.parametrize("bad", ["t05", "T04", "", "turner"])
+    @pytest.mark.parametrize("bad", ["t05", "T04", "", "turner", "s95"])
     def test_rejects_unknown_matrix(self, bad):
-        with pytest.raises(RIsearchError, match="must be 't04' or 't99'"):
+        """Ids are matched exactly: 'T04' and the bare directory name 's95' are not ids."""
+        with pytest.raises(RIsearchError, match="unknown matrix"):
             self._run(matrix=bad)

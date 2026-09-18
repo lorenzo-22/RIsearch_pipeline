@@ -25,6 +25,22 @@ class RIsearchError(Exception):
     pass
 
 
+# Nearest-neighbour scoring models (DSM ids) bundled with risearch, as listed in
+# its data/dsm/manifest.toml. The manifest is compiled into the extension module
+# and not readable at runtime, so the set is mirrored here to fail early with a
+# useful message; risearch is still the final authority and raises
+# "unknown DSM id" for anything it does not know.
+#
+#   t04          Turner 2004            RNA-RNA (default)
+#   t99          Turner 1999            RNA-RNA
+#   slh04        SantaLucia-Hicks 2004  DNA-DNA
+#   s95-rna-dna  Sugimoto 1995          RNA query / DNA target
+#   s95-dna-rna  Sugimoto 1995          DNA query / RNA target
+#
+# Note `s95` alone is the data directory, not an id — risearch rejects it.
+VALID_DSM_IDS = frozenset({"t04", "t99", "slh04", "s95-rna-dna", "s95-dna-rna"})
+
+
 class RIsearchService:
     """Wrapper for the risearch PyO3 bindings.
 
@@ -131,8 +147,11 @@ class RIsearchService:
                 "build the index via index_target() first."
             )
 
-        if matrix not in ("t04", "t99"):
-            raise RIsearchError(f"matrix must be 't04' or 't99', got {matrix!r}")
+        if matrix not in VALID_DSM_IDS:
+            raise RIsearchError(
+                f"unknown matrix {matrix!r}; expected one of "
+                f"{', '.join(sorted(VALID_DSM_IDS))}"
+            )
         if (seed_start is None) != (seed_end is None):
             raise RIsearchError(
                 "seed_start and seed_end must be given together (the '-s n:m/l' form)"
