@@ -62,7 +62,7 @@ slurm:
 # =============================================================================
 accessibility:
   fasta: ../tests/off-targets/data/genome.fa
-  output: /tmp/risearch_pipeline_test_accessibility/
+  output: ./riot_example_accessibility/
   window: 80
   span: 40
   unpaired: 30
@@ -73,14 +73,14 @@ accessibility:
 # Step: off-targets  (main off-target analysis)
 # =============================================================================
 off_targets:
-  risearch_file: ../tests/off-targets/data/risearch_siRNAID.out
+  risearch_file: ../tests/off-targets/data/risearch_genome_example.out
   transcriptome: ../tests/off-targets/data/expression_data.gtf
   transcriptome_format: gtf
   feature: exon
   expression_metric: RPKM
   # accessibility_dir populated by the accessibility step above
   accessibility_dir: /tmp/risearch_pipeline_test_accessibility/
-  output: /tmp/risearch_pipeline_test_output.tsv
+  output: ./riot_example_output.tsv
   type: gw
   alpha: "1.0"
   gamma: "1.0"

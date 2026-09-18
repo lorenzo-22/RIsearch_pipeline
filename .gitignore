@@ -221,3 +221,8 @@ logs/
 .claude/
 CLAUDE.md
 
+
+# Artifacts produced by running the shipped example configs
+example_yaml/riot_example_output.tsv
+example_yaml/riot_example_accessibility/
+example_yaml/*.summary
