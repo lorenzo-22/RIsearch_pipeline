@@ -35,20 +35,6 @@ dependencies = [
   "viennaRNA==2.7.2",
 ]
 
-[project.optional-dependencies]
-# The `risearch` PyO3 bindings are only needed for the in-process `index` /
-# `search` commands. Core off-targets/accessibility work without them, so this is
-# an optional extra: `uv sync` installs core; `uv sync --extra risearch` adds it.
-#
-# NOTE: PyPI upload is blocked while this is a git/URL dep; PyPI rejects direct
-# git/URL deps. Swap to a normal version pin (e.g. "risearch>=X.Y") once published.
-# Pin to last buildable commit on feature/polars-lts-support; 69aa6d7 removed
-# from_fastas from core without updating risearch-python/src/lib.rs (compilation
-# bug). Update when upstream fixes.
-risearch = [
-  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
-]
-
 [project.urls]
 # TODO: confirm final GitHub repo name
 Homepage = "https://github.com/lorenzo-22/RIOT"
@@ -58,6 +44,25 @@ Repository = "https://github.com/lorenzo-22/RIOT"
 riot = "riot.cli:entrypoint"
 
 [dependency-groups]
+# The `risearch` PyO3 bindings are only needed for the in-process `index` /
+# `search` commands. Core off-targets/accessibility work without them.
+#
+# This is a PEP 735 dependency group, NOT an optional extra, and deliberately so:
+# a `git+ssh` direct reference inside `[project.optional-dependencies]` is copied
+# verbatim into the wheel/sdist `Requires-Dist`, and PyPI rejects distributions
+# whose metadata carries a direct URL. A dependency group is resolver-only — it
+# never reaches published metadata — so the core package stays PyPI-publishable
+# while this dependency remains a private git repo.
+#
+#   uv sync                   -> core only (no SSH key, no Rust toolchain)
+#   uv sync --group risearch  -> adds the in-process index/search bindings
+#
+# `risearch` is licensed BUSL-1.1 (source-available, not open source) — see the
+# License section of README.md. Swap this for a normal PyPI version pin if it is
+# ever published there.
+risearch = [
+  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
+]
 dev = [
   "pre-commit",
   # Pinned: pyrefly is the blocking type-check gate; an unpinned upgrade could
@@ -77,18 +82,12 @@ testpaths = ["tests"]
 project-includes = ["src"]
 # Type-check against the lowest supported version to catch newer-stdlib usage.
 python-version = "3.11"
-# `risearch` is an optional extra (`uv sync --extra risearch`), imported lazily.
+# `risearch` is an optional dependency group (`uv sync --group risearch`), imported lazily.
 # Treat it as `Any` so type-checking passes whether or not it is installed.
 replace-imports-with-any = ["risearch"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riot"]
-
-# Allows the local `uv build` to succeed while `risearch` is a git+ssh direct
-# reference. PyPI still rejects direct refs on upload — remove this (and swap the
-# dep for a PyPI version pin) once risearch is published.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.uv]
 package = true

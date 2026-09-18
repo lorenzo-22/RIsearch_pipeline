@@ -113,20 +113,30 @@ cd RIOT
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
 uv sync                       # core: off-targets + accessibility
-uv sync --extra risearch      # add the in-process index/search commands (needs the private risearch repo)
+uv sync --group risearch      # add the in-process index/search commands (needs the private risearch repo)
 ```
 
-`risearch` is an **optional extra**. Plain `uv sync` installs everything needed
-for `off-targets` and `accessibility` on pre-computed predictions — no SSH access
-or Rust toolchain required. Add `--extra risearch` only if you need the
+`risearch` is an **optional dependency group**. Plain `uv sync` installs everything
+needed for `off-targets` and `accessibility` on pre-computed predictions — no SSH
+access or Rust toolchain required. Add `--group risearch` only if you need the
 in-process `index` / `search` commands (see [The `risearch` dependency](#the-risearch-dependency)).
 
 ### Publishing / PyPI
 
 The PyPI distribution name is **`riot-sirna`** (plain `riot` is already taken on
-PyPI). Installing from PyPI with `pip install riot-sirna` is **pending
-publication of the upstream `risearch` dependency** (currently a `git+ssh`
-direct URL — see below) — until then, install from source / git as shown above.
+PyPI).
+
+`risearch` is declared as a [PEP 735](https://peps.python.org/pep-0735/)
+dependency group rather than an optional extra, and deliberately so: a `git+ssh`
+direct reference inside `[project.optional-dependencies]` is copied verbatim into
+the published `Requires-Dist` metadata, and PyPI rejects distributions carrying a
+direct URL. A dependency group is resolver-only and never reaches that metadata,
+so the core package is publishable to PyPI while `risearch` remains private.
+
+Users installing `riot-sirna` from PyPI get the full `off-targets` /
+`accessibility` pipeline. The in-process `index` / `search` commands additionally
+need `risearch`, which must be installed from git (see below) — it is not
+available from PyPI.
 
 > **Note:** the import name `riot` could collide with Datadog's PyPI `riot`
 > package if both are installed in the same environment.
@@ -140,8 +150,8 @@ core off-target analysis — `off-targets` and `accessibility` running on
 `risearch` installed; it is imported lazily.
 
 `risearch` is currently fetched from a **private** repository over SSH and is
-**not yet on PyPI**, so installing the extra (`uv sync --extra risearch`)
-requires SSH access to that repo (plain `uv sync` does not):
+**not on PyPI**, so installing the group (`uv sync --group risearch`) requires
+SSH access to that repo (plain `uv sync` does not):
 
 ```
 git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python
