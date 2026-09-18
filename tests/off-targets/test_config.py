@@ -1,7 +1,11 @@
 """Tests for config module."""
 
+import inspect
+
 import pytest
 from omegaconf import MissingMandatoryValue
+from riot.commands.accessibility import run as accessibility_run
+from riot.commands.off_targets import run as off_targets_run
 from riot.config import load_config, config_to_kwargs
 
 
@@ -81,5 +85,38 @@ accessibility:
 
         assert "genome" in kwargs
         assert kwargs["genome"] == tmp_path / "genome.fa"
-        assert "output_dir" in kwargs
+        assert "output" in kwargs
         assert "fasta" not in kwargs
+
+    @pytest.mark.parametrize(
+        ("command", "yaml_body", "run_fn"),
+        [
+            (
+                "accessibility",
+                "accessibility:\n  fasta: genome.fa\n  output: out\n",
+                accessibility_run,
+            ),
+            (
+                "off-targets",
+                "off_targets:\n  risearch_file: test.tsv\n  transcriptome: ann.gtf\n",
+                off_targets_run,
+            ),
+        ],
+    )
+    def test_config_to_kwargs_binds_to_command_signature(
+        self, tmp_path, command, yaml_body, run_fn
+    ):
+        """Every key config_to_kwargs emits must be a real parameter of the command.
+
+        Regression guard: this previously asserted on the returned dict only, so a
+        mapping of `output` -> `output_dir` passed the test while making
+        `riot -c <accessibility config>` fail with TypeError on every run. Binding
+        against the real signature is what actually catches that.
+        """
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"command: {command}\n{yaml_body}")
+
+        kwargs = config_to_kwargs(load_config(config_file), command)
+
+        # Raises TypeError if any key is not a parameter of the target function.
+        inspect.signature(run_fn).bind_partial(**kwargs)
