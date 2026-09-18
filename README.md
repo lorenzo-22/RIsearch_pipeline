@@ -163,10 +163,11 @@ reproducible: `risearch` is a fast-moving repository whose public API and search
 results have both changed across releases, so the pin is bumped deliberately and
 verified, not automatically.
 
-> **PyPI:** Because this `git+ssh` dependency is a direct URL, the package
-> cannot be published to PyPI as-is. Once `risearch` is released to PyPI, swap
-> the dependency in `pyproject.toml` for a normal version pin and the package
-> becomes publishable / `pip`-installable.
+> **PyPI:** this direct URL no longer blocks publication — `risearch` is declared
+> as a PEP 735 dependency group, which never reaches published metadata, so
+> `riot-sirna` is publishable with its core dependencies. `risearch` itself still
+> has to be installed from git; if it is ever released to PyPI, swap this for a
+> normal version pin.
 
 ```bash
 # Verify
