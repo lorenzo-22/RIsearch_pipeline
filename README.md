@@ -44,6 +44,16 @@ flowchart TD
 
 ## CLI Reference
 
+### Global options
+
+Available on `riot` itself, before any subcommand.
+
+| Flag | Description |
+|------|-------------|
+| `-c / --config` | Path to a YAML config file; runs the command named in it. Top-level only — `riot -c cfg.yaml`, not `riot off-targets -c cfg.yaml` |
+| `-v / --verbose` | Enable DEBUG-level logging |
+| `--version` | Print the installed version and exit (long form only — `-v` is `--verbose`) |
+
 ### `off-targets`
 
 | Flag | Description |

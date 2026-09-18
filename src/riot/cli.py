@@ -5,6 +5,7 @@ from typing import Optional
 
 import typer
 
+from riot import __version__
 from riot._logging import setup_logging
 from riot.commands import accessibility, off_targets, risearch
 from riot.config import load_config, config_to_kwargs
@@ -19,6 +20,13 @@ app.command(name="accessibility")(accessibility.run)
 app.command(name="off-targets")(off_targets.run)
 app.command(name="index")(risearch.index)
 app.command(name="search")(risearch.search)
+
+
+def _version_callback(value: bool) -> None:
+    """Print the version and exit, before any other option is processed."""
+    if value:
+        typer.echo(f"riot {__version__}")
+        raise typer.Exit()
 
 
 @app.callback(invoke_without_command=True)
@@ -37,6 +45,16 @@ def main(
         "--verbose",
         "-v",
         help="Enable verbose logging (DEBUG level).",
+    ),
+    # Long form only: -v is taken by --verbose. `is_eager` makes this answer
+    # before --config is validated, so `riot --version` works even when a config
+    # elsewhere on the command line would fail.
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show the installed RIOT version and exit.",
+        callback=_version_callback,
+        is_eager=True,
     ),
 ) -> None:
     """
