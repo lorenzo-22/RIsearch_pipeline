@@ -8,6 +8,7 @@ import typer
 
 from riot._logging import setup_logging
 from riot.core import risearch as core
+from riot.services.risearch_service import RIsearchError
 
 
 def index(
@@ -50,7 +51,37 @@ def search(
             help="Output TSV file. Defaults to stdout.",
         ),
     ] = None,
-    seed_length: Annotated[int, typer.Option("--seed", "-s", help="Seed length.")] = 6,
+    seed: Annotated[
+        str,
+        typer.Option(
+            "--seed",
+            "-s",
+            help=(
+                "Seed spec, RIsearch2 syntax: 'l' (length only), 'n:m' or 'n:m/l' "
+                "(seed must lie in 1-based query positions n..m and be l nt). "
+                "E.g. '7', '2:8/7'."
+            ),
+        ),
+    ] = "6",
+    no_gu_seed: Annotated[
+        bool,
+        typer.Option(
+            "--no-gu-seed",
+            help=(
+                "Forbid G:U wobble pairs inside the seed (RIsearch2 --noGUseed). "
+                "Affects seed location only, not the energy model, so this is a "
+                "candidate-generation knob. Removes ~85% of hits on fly 3'UTRs."
+            ),
+        ),
+    ] = False,
+    matrix: Annotated[
+        str,
+        typer.Option(
+            "--matrix",
+            "-z",
+            help="Nearest-neighbour energy parameter set: 't04' or 't99'.",
+        ),
+    ] = "t04",
     max_extension: Annotated[
         int,
         typer.Option(
@@ -71,14 +102,25 @@ def search(
 ) -> pl.DataFrame:
     """Run a RIsearch search and output hits as TSV."""
     setup_logging(verbose)
-    df = core.run_search(
-        query=query,
-        index=index,
-        target=target,
-        seed_length=seed_length,
-        max_extension=max_extension,
-        energy_threshold=energy_threshold,
-    )
+    # Seed geometry and matrix are validated before the search starts, so a bad
+    # spec is a one-line CLI error rather than a traceback out of the bindings.
+    try:
+        seed_start, seed_end, seed_length = core.parse_seed_spec(seed)
+        df = core.run_search(
+            query=query,
+            index=index,
+            target=target,
+            seed_length=seed_length,
+            seed_start=seed_start,
+            seed_end=seed_end,
+            seed_wobble=not no_gu_seed,
+            matrix=matrix,
+            max_extension=max_extension,
+            energy_threshold=energy_threshold,
+        )
+    except RIsearchError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
     output = Path(output) if isinstance(output, str) else output
     if output is not None:
