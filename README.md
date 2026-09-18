@@ -201,21 +201,19 @@ riot -c example_yaml/off-targets.example.yaml
 
 ### Orchestrated multi-step mode (local)
 
-> `scripts/run_pipeline.py` and `scripts/convert_risearch_to_parquet.py` live in
-> the `scripts/` directory — they are available when you **clone** the repo, but
-> are **not** installed by `pip`/`uv` as console scripts. Run them with
-> `python scripts/<script>.py` from a clone.
+> `scripts/run_pipeline.py` lives in the `scripts/` directory — it is available
+> when you **clone** the repo, but is **not** installed by `pip`/`uv` as a console
+> script. Run it with `python scripts/run_pipeline.py` from a clone.
 
 `scripts/run_pipeline.py` runs all pipeline stages in dependency order:
 
 | Step | Command | Notes |
 |------|---------|-------|
 | `index` | `riot index` | Optional — build RIsearch index |
-| `convert` | `scripts/convert_risearch_to_parquet.py` | Optional — `.out.gz` → Parquet |
 | `accessibility` | `riot accessibility` | Compute RNA accessibility profiles |
 | `off-targets` | `riot off-targets` | Main analysis |
 
-`index`, `convert`, and `accessibility` are independent and run in parallel on Slurm. `off-targets` waits for both `accessibility` and `convert`.
+`index` and `accessibility` are independent and run in parallel on Slurm. `off-targets` waits for `accessibility`.
 
 ```bash
 # Dry-run (print commands without executing)
@@ -262,7 +260,7 @@ Each step gets its own `--output`/`--error` log under `logs/<timestamp>/`. CLI f
 
 ### Multiple transcriptomes (fan-out)
 
-Add a top-level `transcriptomes:` list to analyze several genomes/transcriptomes in one launch — Slurm-native, **one transcriptome per node**, run in parallel. Each entry is an independent run (its own predictions, annotation, and output); groups never mix, so the off-target probability math (`Z_s`) is unchanged. The top-level `off_targets:`/`accessibility:`/`convert:` blocks act as shared defaults; each group overrides its per-group fields. `index` is never fanned out.
+Add a top-level `transcriptomes:` list to analyze several genomes/transcriptomes in one launch — Slurm-native, **one transcriptome per node**, run in parallel. Each entry is an independent run (its own predictions, annotation, and output); groups never mix, so the off-target probability math (`Z_s`) is unchanged. The top-level `off_targets:`/`accessibility:` blocks act as shared defaults; each group overrides its per-group fields. `index` is never fanned out.
 
 ```yaml
 steps: [off-targets]
@@ -286,14 +284,12 @@ transcriptomes:
 
 Each group submits its own Slurm job(s) (`rip_off_targets_human`, `rip_off_targets_mouse`, …); a group's `off-targets` waits only on its own upstream jobs. To compute accessibility per group, add `accessibility` to `steps` and give each group **both** a `fasta:` and an `accessibility_dir:` (the profiles are written there and read back by that group's off-targets; both are required and validated). Omitting a group `output` defaults it to `results/<name>.tsv`.
 
-> `convert` also fans out per group when in `steps`, but its output is **not** auto-wired to that group's `risearch_file` — set each group's `input_dir`/`out_dir` and `risearch_file` explicitly.
-
 ### Orchestrator config format
 
 See `example_yaml/run-pipeline.example.yaml` for the full reference. All paths resolve relative to the config file's directory.
 
 ```yaml
-steps: [accessibility, off-targets]   # default; add index/convert to enable
+steps: [accessibility, off-targets]   # default; add index to enable
 
 slurm:
   partition: batch

@@ -3,10 +3,9 @@
 Orchestrator for the RIOT siRNA off-target discovery pipeline.
 
 Runs pipeline stages in dependency order:
-  1. (optional) index       -- riot index
-  2. (optional) convert     -- scripts/convert_risearch_to_parquet.py
-  3.            accessibility -- riot accessibility
-  4.            off-targets  -- riot off-targets
+  1. (optional) index         -- riot index
+  2.            accessibility -- riot accessibility
+  3.            off-targets   -- riot off-targets
 
 Local mode (default): steps run sequentially; logs go to logs/<timestamp>/<step>.log.
 Slurm mode (--slurm): each step submitted with sbatch, chained via --dependency=afterok.
@@ -14,7 +13,7 @@ Dry-run (--dry-run): prints commands without executing; Slurm dry-run shows full
   commands with <JOBID_stepname> placeholders so the dependency chain is visible.
 
 Config format (YAML):
-  steps: [accessibility, off-targets]   # default; add index/convert to enable them
+  steps: [accessibility, off-targets]   # default; add index to enable it
 
   # Per-step Slurm resource overrides (merged with built-in defaults)
   slurm:
@@ -32,12 +31,6 @@ Config format (YAML):
   index:
     target: data/genome.fa          # required
     output: data/genome.idx         # optional
-
-  convert:
-    input_dir: data/raw_risearch/   # required
-    out_dir: data/parquet/          # optional (default: same as input_dir)
-    ids_file: data/sirna_ids.txt    # optional
-    workers: 32
 
   accessibility:
     fasta: data/genome.fa           # required
@@ -60,7 +53,7 @@ Config format (YAML):
 Multi-transcriptome fan-out (Slurm-native, one transcriptome per node):
   Add a top-level `transcriptomes:` list to analyze several genomes at once.
   Each entry is an independent run: its own risearch_file/transcriptome/output,
-  its own Slurm job(s). The top-level off_targets/accessibility/convert blocks
+  its own Slurm job(s). The top-level off_targets/accessibility blocks
   become shared defaults; each group overrides the per-group fields. `index` is
   never fanned out. Off-targets math (Z_s) is unchanged — groups never mix.
 
@@ -91,12 +84,12 @@ from pathlib import Path
 import yaml
 
 
-STEP_ORDER = ["index", "convert", "accessibility", "off-targets"]
+STEP_ORDER = ["index", "accessibility", "off-targets"]
 DEFAULT_STEPS = ["accessibility", "off-targets"]
 
 # Steps that fan out to one job per transcriptome group. index is genome-index
 # construction and stays a single global job even in fan-out mode.
-FANOUT_STEPS = {"convert", "accessibility", "off-targets"}
+FANOUT_STEPS = {"accessibility", "off-targets"}
 
 
 @dataclass
@@ -117,7 +110,6 @@ class Job:
 # Built-in per-step Slurm resource defaults.
 _DEFAULT_RESOURCES: dict[str, dict] = {
     "index": {"time": "01:00:00", "mem": "8G", "cpus_per_task": 4},
-    "convert": {"time": "02:00:00", "mem": "16G", "cpus_per_task": 16},
     "accessibility": {"time": "08:00:00", "mem": "32G", "cpus_per_task": 8},
     "off-targets": {"time": "04:00:00", "mem": "64G", "cpus_per_task": 16},
 }
@@ -154,25 +146,6 @@ def _build_index(cfg: dict, base: Path) -> list[str]:
         cmd += ["--output", output]
     if cfg.get("verbose"):
         cmd.append("--verbose")
-    return cmd
-
-
-def _build_convert(cfg: dict, base: Path) -> list[str]:
-    script = Path(__file__).parent / "convert_risearch_to_parquet.py"
-    input_dir = _resolve(cfg.get("input_dir"), base)
-    if not input_dir:
-        raise ValueError("'input_dir' is required")
-    cmd = [sys.executable, str(script), input_dir]
-    out_dir = _resolve(cfg.get("out_dir"), base)
-    if out_dir:
-        cmd += ["--out-dir", out_dir]
-    ids_file = _resolve(cfg.get("ids_file"), base)
-    if ids_file:
-        cmd += ["--ids-file", ids_file]
-    if "workers" in cfg:
-        cmd += ["--workers", str(cfg["workers"])]
-    if cfg.get("skip_existing"):
-        cmd.append("--skip-existing")
     return cmd
 
 
@@ -258,25 +231,22 @@ def _build_off_targets(cfg: dict, base: Path) -> list[str]:
 
 _BUILDERS = {
     "index": _build_index,
-    "convert": _build_convert,
     "accessibility": _build_accessibility,
     "off-targets": _build_off_targets,
 }
 
 _CFG_KEYS = {
     "index": "index",
-    "convert": "convert",
     "accessibility": "accessibility",
     "off-targets": "off_targets",
 }
 
-# Dependency graph: index/convert/accessibility are independent of each other.
-# off-targets waits for accessibility (always) and convert (if convert is in the run).
+# Dependency graph: index and accessibility are independent of each other.
+# off-targets waits for accessibility.
 _DEPS: dict[str, list[str]] = {
     "index": [],
-    "convert": [],
     "accessibility": [],
-    "off-targets": ["accessibility", "convert"],
+    "off-targets": ["accessibility"],
 }
 
 
@@ -284,15 +254,15 @@ _DEPS: dict[str, list[str]] = {
 # Job assembly: config → list[Job]  (single-run or transcriptome fan-out)
 # ---------------------------------------------------------------------------
 
-# Group keys that configure the accessibility/convert steps rather than
-# off-targets; excluded when a group entry is merged into the off_targets block.
+# Group keys that configure the accessibility step rather than off-targets;
+# excluded when a group entry is merged into the off_targets block.
 _ACCESSIBILITY_ONLY_GROUP_KEYS = {"name", "fasta"}
 
 
 def _group_step_cfg(step: str, global_cfg: dict, group: dict) -> dict:
     """Assemble the per-group config dict for one step.
 
-    Top-level ``off_targets:`` / ``accessibility:`` / ``convert:`` blocks are
+    Top-level ``off_targets:`` / ``accessibility:`` blocks are
     shared defaults; the group entry overrides them. ``accessibility_dir`` is
     the handoff path: it is the accessibility step's ``output`` (where profiles
     are written) and the off-targets step's ``accessibility_dir`` (where they
@@ -309,10 +279,6 @@ def _group_step_cfg(step: str, global_cfg: dict, group: dict) -> dict:
             merged["fasta"] = group["fasta"]
         if group.get("accessibility_dir"):
             merged["output"] = group["accessibility_dir"]
-    elif step == "convert":
-        for k in ("input_dir", "out_dir", "ids_file", "workers", "skip_existing"):
-            if k in group:
-                merged[k] = group[k]
     return merged
 
 
