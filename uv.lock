@@ -803,7 +803,7 @@ wheels = [
 ]
 
 [[package]]
-name = "riot-sirna"
+name = "riot-rna"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use RIOT, please cite the following reference."
 title: RIOT
 abstract: >-
-  RIOT (riot-sirna) — an siRNA off-target discovery pipeline for analyzing
+  RIOT (riot-rna) — an siRNA off-target discovery pipeline for analyzing
   RIsearch2 predictions.
 type: software
 license: MIT

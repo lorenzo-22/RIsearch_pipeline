@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "riot-sirna"
+name = "riot-rna"
 version = "0.1.0"
 description = "RIOT — siRNA off-target discovery pipeline for analyzing RIsearch2 predictions"
 readme = "README.md"

@@ -124,7 +124,7 @@ in-process `index` / `search` commands (see [The `risearch` dependency](#the-ris
 
 ### Publishing / PyPI
 
-The PyPI distribution name is **`riot-sirna`** (plain `riot` is already taken on
+The PyPI distribution name is **`riot-rna`** (plain `riot` is already taken on
 PyPI).
 
 `risearch` is declared as a [PEP 735](https://peps.python.org/pep-0735/)
@@ -134,13 +134,19 @@ the published `Requires-Dist` metadata, and PyPI rejects distributions carrying 
 direct URL. A dependency group is resolver-only and never reaches that metadata,
 so the core package is publishable to PyPI while `risearch` remains private.
 
-Users installing `riot-sirna` from PyPI get the full `off-targets` /
+Users installing `riot-rna` from PyPI get the full `off-targets` /
 `accessibility` pipeline. The in-process `index` / `search` commands additionally
 need `risearch`, which must be installed from git (see below) — it is not
 available from PyPI.
 
-> **Note:** the import name `riot` could collide with Datadog's PyPI `riot`
-> package if both are installed in the same environment.
+> **Note — import name.** The distribution is `riot-rna`, but the import name is
+> `riot`. PyPI reserves distribution names, not import names, and Datadog's
+> unrelated `riot` distribution (a test-runner) also ships a top-level `riot`
+> package. Installed in the same environment the two write to the same
+> `site-packages/riot/` directory: the last install silently wins, with no
+> warning from `pip` or `uv`, and the `riot` console script flips to whichever
+> was installed last. Neither package is affected on its own — install them in
+> separate environments if you need both.
 
 ### The `risearch` dependency
 
@@ -165,7 +171,7 @@ verified, not automatically.
 
 > **PyPI:** this direct URL no longer blocks publication — `risearch` is declared
 > as a PEP 735 dependency group, which never reaches published metadata, so
-> `riot-sirna` is publishable with its core dependencies. `risearch` itself still
+> `riot-rna` is publishable with its core dependencies. `risearch` itself still
 > has to be installed from git; if it is ever released to PyPI, swap this for a
 > normal version pin.
 
@@ -426,7 +432,7 @@ see [License](#license).
 
 ## License
 
-RIOT (`riot-sirna`) is released under the **MIT License** — see [LICENSE](LICENSE).
+RIOT (`riot-rna`) is released under the **MIT License** — see [LICENSE](LICENSE).
 
 **The optional `risearch` dependency is licensed differently.** `risearch` is
 distributed under the **Business Source License 1.1 (BUSL-1.1)**, which is
