@@ -21,14 +21,13 @@ authors:
   - family-names: Gorodkin
     given-names: Jan
     orcid: "https://orcid.org/0000-0001-5823-4000"
+# Kept in sync with saiden89/risearch's CITATION.cff — the two describe the same
+# manuscript and must not disagree. Add `year:`, `volume:`, `pages:` and `doi:`
+# here and there together on acceptance.
 preferred-citation:
   type: article
-  title: >-
-    RIsearch and RIOT: An integrated, high-performance framework for RNA-RNA
-    interaction and siRNA off-target prediction
-  # Venue and DOI are deliberately omitted: the manuscript is not yet accepted.
-  # Add `journal:`, `year:`, `volume:`, `pages:` and `doi:` on acceptance.
-  notes: Submission pending.
+  title: "RIsearch and RIOT: An integrated, high-performance framework for RNA-RNA interaction and siRNA off-target prediction"
+  journal: Bioinformatics
   authors:
     - family-names: Roncelli
       given-names: Stefano

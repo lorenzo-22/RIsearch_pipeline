@@ -416,7 +416,7 @@ If you use RIOT in published work, please cite:
 
 > Roncelli S, Favaro L, Anthon C, Gorodkin J. *RIsearch and RIOT: An integrated,
 > high-performance framework for RNA-RNA interaction and siRNA off-target
-> prediction.* Submission pending.
+> prediction.* Bioinformatics.
 
 Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
 
