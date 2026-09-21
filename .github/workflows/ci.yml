@@ -26,9 +26,9 @@ jobs:
       # CI does not have). --frozen installs exactly what uv.lock pins.
       - run: uv sync --frozen --no-group risearch
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/
+        run: uv run --no-sync ruff check src/ tests/ scripts/
       - name: Ruff format check
-        run: uv run ruff format --check src/ tests/ scripts/
+        run: uv run --no-sync ruff format --check src/ tests/ scripts/
 
   types:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
       # pyrefly config lives in [tool.pyrefly] (checks src/, treats the
       # `risearch` group as Any so this passes without it installed).
       - name: Pyrefly type check
-        run: uv run pyrefly check
+        run: uv run --no-sync pyrefly check
 
   test:
     runs-on: ubuntu-latest
@@ -64,4 +64,4 @@ jobs:
       # risearch-dependent tests auto-skip (pytest.importorskip) since the
       # `risearch` group is not installed here (no SSH key in CI).
       - name: Pytest
-        run: uv run pytest -q
+        run: uv run --no-sync pytest -q
