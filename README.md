@@ -123,14 +123,15 @@ cd RIsearch_pipeline
 
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
-uv sync                       # core: off-targets + accessibility
-uv sync --group risearch      # add the in-process index/search commands (needs the private risearch repo)
+uv sync    # full pipeline, including the in-process index/search commands
 ```
 
-`risearch` is an **optional dependency group**. Plain `uv sync` installs everything
-needed for `off-targets` and `accessibility` on pre-computed predictions — no SSH
-access or Rust toolchain required. Add `--group risearch` only if you need the
-in-process `index` / `search` commands (see [The `risearch` dependency](#the-risearch-dependency)).
+Plain `uv sync` installs the complete pipeline: the `risearch` dependency group
+is part of `tool.uv.default-groups`, so the in-process `index` / `search`
+commands work out of the box. Installing it requires SSH access to the private
+`risearch` repository (see [The `risearch` dependency](#the-risearch-dependency));
+without that access, `uv sync --no-group risearch` installs the core
+`off-targets` / `accessibility` pipeline, which runs on pre-computed predictions.
 
 ### Publishing / PyPI
 
@@ -138,16 +139,19 @@ The PyPI distribution name is **`riot-rna`** (plain `riot` is already taken on
 PyPI).
 
 `risearch` is declared as a [PEP 735](https://peps.python.org/pep-0735/)
-dependency group rather than an optional extra, and deliberately so: a `git+ssh`
-direct reference inside `[project.optional-dependencies]` is copied verbatim into
-the published `Requires-Dist` metadata, and PyPI rejects distributions carrying a
-direct URL. A dependency group is resolver-only and never reaches that metadata,
-so the core package is publishable to PyPI while `risearch` remains private.
+dependency group rather than a normal dependency only because it is not yet on
+PyPI: a `git+ssh` direct reference inside `[project.dependencies]` is copied
+verbatim into the published `Requires-Dist` metadata, and PyPI rejects
+distributions carrying a direct URL. A dependency group is resolver-only and
+never reaches that metadata, so the package stays publishable while `risearch`
+remains a private git repository. Once `risearch` is published on PyPI, it moves
+into `[project.dependencies]` as a normal version pin so that
+`pip install riot-rna` brings in the full pipeline, in-process `index` / `search`
+included.
 
-Users installing `riot-rna` from PyPI get the full `off-targets` /
-`accessibility` pipeline. The in-process `index` / `search` commands additionally
-need `risearch`, which must be installed from git (see below) — it is not
-available from PyPI.
+Until then, users installing `riot-rna` from PyPI get the `off-targets` /
+`accessibility` pipeline; the in-process `index` / `search` commands additionally
+need `risearch` installed from git (see below).
 
 > **Note — import name.** The distribution is `riot-rna`, but the import name is
 > `riot`. PyPI reserves distribution names, not import names, and Datadog's
@@ -160,15 +164,15 @@ available from PyPI.
 
 ### The `risearch` dependency
 
-The `risearch` PyO3 bindings are only required for the **in-process `index` and
-`search`** commands (computing RNA-RNA interaction predictions in-process). The
-core off-target analysis — `off-targets` and `accessibility` running on
-**pre-computed** RIsearch output (TSV / `.out.gz` / Parquet) — works **without**
-`risearch` installed; it is imported lazily.
+The `risearch` PyO3 bindings power the **in-process `index` and `search`**
+commands (computing RNA-RNA interaction predictions in-process) and are part of
+the default install. The core off-target analysis — `off-targets` and
+`accessibility` running on **pre-computed** RIsearch output (TSV / `.out.gz` /
+Parquet) — works **without** `risearch` installed; it is imported lazily.
 
 `risearch` is currently fetched from a **private** repository over SSH and is
-**not on PyPI**, so installing the group (`uv sync --group risearch`) requires
-SSH access to that repo (plain `uv sync` does not):
+**not on PyPI**, so the default `uv sync` requires SSH access to that repo
+(use `uv sync --no-group risearch` without it):
 
 ```
 git+ssh://git@github.com/saiden89/risearch.git@1a03a47…#subdirectory=bindings/python
@@ -430,22 +434,20 @@ If you use RIOT in published work, please cite:
 
 Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
 
-Note that if you install the optional `risearch` dependency, citation is not
-merely requested but a **term of its BUSL-1.1 licence** for any production use —
-see [License](#license).
+Note that citation is not merely requested but a **term of the BUSL-1.1
+licence** for any production use of RIOT or `risearch` — see [License](#license).
 
 ---
 
 ## License
 
-RIOT (`riot-rna`) is released under the **MIT License** — see [LICENSE](LICENSE).
+RIOT (`riot-rna`) is released under the **Business Source License 1.1
+(BUSL-1.1)** — see [LICENSE](LICENSE) — the same licence as its `risearch`
+dependency. BUSL-1.1 is *source-available, not open source* and is not
+OSI-approved. In brief:
 
-**The optional `risearch` dependency is licensed differently.** `risearch` is
-distributed under the **Business Source License 1.1 (BUSL-1.1)**, which is
-*source-available, not open source* and is not OSI-approved. If you install it
-(`uv sync --group risearch`) to use the in-process `index` / `search` commands,
-that code is governed by BUSL-1.1, not by RIOT's MIT licence:
-
+- **Research and production use are free**, including commercial use, with one
+  exception below.
 - **No hosted services.** You may not use it to provide SaaS, PaaS or any other
   hosted or cloud-based service to third parties — commercial *or*
   non-commercial — except where such services are provided exclusively to
@@ -457,10 +459,5 @@ that code is governed by BUSL-1.1, not by RIOT's MIT licence:
 - Licensor: RTH, University of Copenhagen. Commercial licensing enquiries:
   <software@rth.dk>.
 
-RIOT's core `off-targets` and `accessibility` commands run on **pre-computed**
-RIsearch output and do **not** require `risearch`. Used that way — which is the
-default `uv sync` install, and what you get from PyPI — RIOT is purely MIT and
-none of the above applies.
-
-Refer to the `risearch` repository for the authoritative licence text; the
-summary above is provided for orientation only.
+The summary above is provided for orientation only; [LICENSE](LICENSE) is the
+authoritative text.

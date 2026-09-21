@@ -12,7 +12,6 @@ license = { file = "LICENSE" }
 authors = [{ name = "Lorenzo Favaro", email = "lorenzo@rth.dk" }]
 classifiers = [
   "Development Status :: 4 - Beta",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -44,22 +43,19 @@ Issues = "https://github.com/lorenzo-22/RIsearch_pipeline/issues"
 riot = "riot.cli:entrypoint"
 
 [dependency-groups]
-# The `risearch` PyO3 bindings are only needed for the in-process `index` /
-# `search` commands. Core off-targets/accessibility work without them.
+# The `risearch` PyO3 bindings power the in-process `index` / `search` commands
+# and are part of the intended default install (see tool.uv.default-groups
+# below, which makes plain `uv sync` include them).
 #
-# This is a PEP 735 dependency group, NOT an optional extra, and deliberately so:
-# a `git+ssh` direct reference inside `[project.optional-dependencies]` is copied
-# verbatim into the wheel/sdist `Requires-Dist`, and PyPI rejects distributions
-# whose metadata carries a direct URL. A dependency group is resolver-only — it
-# never reaches published metadata — so the core package stays PyPI-publishable
-# while this dependency remains a private git repo.
+# They live in a PEP 735 dependency group, NOT [project.dependencies], only
+# because `risearch` is not yet on PyPI: a `git+ssh` direct reference in
+# published metadata is rejected by PyPI, whereas a dependency group is
+# resolver-only and never reaches the wheel/sdist `Requires-Dist`. Once
+# `risearch` is published on PyPI, move it into [project.dependencies] as a
+# normal version pin so `pip install riot-rna` pulls it in.
 #
-#   uv sync                   -> core only (no SSH key, no Rust toolchain)
-#   uv sync --group risearch  -> adds the in-process index/search bindings
-#
-# `risearch` is licensed BUSL-1.1 (source-available, not open source) — see the
-# License section of README.md. Swap this for a normal PyPI version pin if it is
-# ever published there.
+# Both RIOT and `risearch` are licensed BUSL-1.1 — see the License section of
+# README.md.
 #
 # The commit is pinned rather than tracking a branch so installs are
 # reproducible; bump it deliberately, after verifying the bindings still match
@@ -96,7 +92,7 @@ testpaths = ["tests"]
 project-includes = ["src", "scripts"]
 # Type-check against the lowest supported version to catch newer-stdlib usage.
 python-version = "3.11"
-# `risearch` is an optional dependency group (`uv sync --group risearch`), imported lazily.
+# `risearch` comes from a dependency group (not published metadata), imported lazily.
 # Treat it as `Any` so type-checking passes whether or not it is installed.
 replace-imports-with-any = ["risearch"]
 
@@ -105,3 +101,7 @@ packages = ["src/riot"]
 
 [tool.uv]
 package = true
+# Plain `uv sync` installs the risearch bindings alongside dev tooling, so the
+# in-process index/search commands work out of the box for repo users. (PyPI
+# users get them once risearch is published there — see the note above.)
+default-groups = ["dev", "risearch"]

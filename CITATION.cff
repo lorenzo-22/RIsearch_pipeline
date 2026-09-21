@@ -5,7 +5,7 @@ abstract: >-
   RIOT (riot-rna) — an siRNA off-target discovery pipeline for analyzing
   RIsearch2 predictions.
 type: software
-license: MIT
+license: BUSL-1.1
 version: 0.1.0
 repository-code: "https://github.com/lorenzo-22/RIsearch_pipeline"
 authors:
