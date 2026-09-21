@@ -176,7 +176,7 @@ class RIsearchService:
         try:
             import risearch
 
-            store = risearch.TargetStore.open(index_path)
+            store = risearch.TargetRegistry.open(index_path)
             raw = risearch.search(
                 query_path,
                 store,

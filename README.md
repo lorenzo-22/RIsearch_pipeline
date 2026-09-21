@@ -171,7 +171,7 @@ core off-target analysis — `off-targets` and `accessibility` running on
 SSH access to that repo (plain `uv sync` does not):
 
 ```
-git+ssh://git@github.com/saiden89/risearch.git@5242668c…#subdirectory=risearch-python
+git+ssh://git@github.com/saiden89/risearch.git@1a03a47…#subdirectory=bindings/python
 ```
 
 The commit is pinned rather than tracking a branch so that installs are

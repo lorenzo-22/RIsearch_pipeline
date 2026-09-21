@@ -63,9 +63,16 @@ riot = "riot.cli:entrypoint"
 #
 # The commit is pinned rather than tracking a branch so installs are
 # reproducible; bump it deliberately, after verifying the bindings still match
-# and that search results have not changed.
+# and checking what search results do.
+#
+# NOTE on `penalty`: RIOT does not pass it, so it inherits upstream's default.
+# That default changed 3.5 -> 0.0 in 3.0.0a2, and 0.0.0a1 applied it with the
+# wrong sign (a flat -2x penalty that *improved* the energy). Net effect of the
+# 0.0.0a1 -> 3.0.0a2 bump on our fixtures: E_min -40.2956 -> -33.2956, 800 ->
+# 700 hits. At penalty=0 the two versions are bit-identical, so this is a
+# correctness fix, not drift. See saiden89/risearch#27.
 risearch = [
-  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@5242668c1ef48c6cd817bc5272233e60cc8c83bc#subdirectory=risearch-python",
+  "risearch @ git+ssh://git@github.com/saiden89/risearch.git@1a03a473c58047dbb3895ec3fd6734968e2e979a#subdirectory=bindings/python",
 ]
 dev = [
   "pre-commit",
