@@ -187,6 +187,14 @@ class RIsearchService:
                 energy_threshold=energy_threshold,
                 seed_wobble=seed_wobble,
                 matrix=matrix,
+                # Pinned, not inherited. `penalty`'s upstream default changed
+                # 3.5 -> 0.0 between pins, and 0.0.0a1 applied it with the wrong
+                # sign, so simply omitting it moved our E_min by 7 kcal/mol on a
+                # pin bump with no RIOT change. 0.0 matches the original C
+                # default (`extPen = 0`). Not exposed as a flag: its semantics
+                # differ across versions (units, sign, and whether it reaches
+                # the reported energy at all) — see saiden89/risearch#27.
+                penalty=0.0,
             )
         except Exception as e:
             raise RIsearchError(f"RIsearch search failed: {e}") from e
