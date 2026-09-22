@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from riot.services.accessibility import _reverse_complement, fold_sequence
-from riot.services.helpers import read_fasta
+from sioff.services.accessibility import _reverse_complement, fold_sequence
+from sioff.services.helpers import read_fasta
 
 
 def _profile_to_df(

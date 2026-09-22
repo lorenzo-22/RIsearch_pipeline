@@ -21,7 +21,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from riot.services.probability import ProbabilityService
+from sioff.services.probability import ProbabilityService
 
 # ---------------------------------------------------------------------------
 # Fixtures

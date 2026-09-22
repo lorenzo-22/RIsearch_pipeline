@@ -1,9 +1,9 @@
-"""RIOT must pin `penalty` explicitly rather than inherit upstream's default.
+"""siOFF must pin `penalty` explicitly rather than inherit upstream's default.
 
 Inheriting it is exactly how a pin bump silently changed our numbers once:
-`penalty` defaulted to 3.5 in risearch 0.0.0a1 and 0.0 in 3.0.0a2, and RIOT
+`penalty` defaulted to 3.5 in risearch 0.0.0a1 and 0.0 in 3.0.0a2, and siOFF
 never passed it, so bumping the pin moved E_min from -40.2956 to -33.2956
-without a line of RIOT changing.
+without a line of siOFF changing.
 
 Pinning it means a future upstream default change is a no-op for us, and any
 deliberate change is a visible diff in this repo. See saiden89/risearch#27 for
@@ -19,7 +19,7 @@ pytest.importorskip("risearch")
 
 import risearch  # noqa: E402
 
-from riot.services.risearch_service import RIsearchService  # noqa: E402
+from sioff.services.risearch_service import RIsearchService  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
 
@@ -50,7 +50,7 @@ def captured_kwargs(monkeypatch, tmp_path):
 def test_penalty_is_passed_explicitly(captured_kwargs):
     """The whole point: never let upstream's default decide our energies."""
     assert "penalty" in captured_kwargs, (
-        "risearch.search was called without `penalty` — RIOT would inherit "
+        "risearch.search was called without `penalty` — siOFF would inherit "
         "whatever upstream defaults to, which has already changed once (3.5 -> 0.0)"
     )
 

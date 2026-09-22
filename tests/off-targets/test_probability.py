@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock
 import polars as pl
 import numpy as np
-from riot.services.probability import ProbabilityService, RT, R
+from sioff.services.probability import ProbabilityService, RT, R
 
 
 class TestProbabilityService(unittest.TestCase):

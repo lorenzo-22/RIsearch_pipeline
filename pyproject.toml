@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "riot-rna"
+name = "sioff"
 version = "0.1.0"
-description = "RIOT — siRNA off-target discovery pipeline for analyzing RIsearch2 predictions"
+description = "siOFF — siRNA off-target discovery pipeline for analyzing RIsearch2 predictions"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -35,12 +35,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lorenzo-22/RIsearch_pipeline"
-Repository = "https://github.com/lorenzo-22/RIsearch_pipeline"
-Issues = "https://github.com/lorenzo-22/RIsearch_pipeline/issues"
+Homepage = "https://github.com/lorenzo-22/siOFF"
+Repository = "https://github.com/lorenzo-22/siOFF"
+Issues = "https://github.com/lorenzo-22/siOFF/issues"
 
 [project.scripts]
-riot = "riot.cli:entrypoint"
+sioff = "sioff.cli:entrypoint"
 
 [dependency-groups]
 # The `risearch` PyO3 bindings power the in-process `index` / `search` commands
@@ -52,16 +52,16 @@ riot = "riot.cli:entrypoint"
 # published metadata is rejected by PyPI, whereas a dependency group is
 # resolver-only and never reaches the wheel/sdist `Requires-Dist`. Once
 # `risearch` is published on PyPI, move it into [project.dependencies] as a
-# normal version pin so `pip install riot-rna` pulls it in.
+# normal version pin so `pip install sioff` pulls it in.
 #
-# Both RIOT and `risearch` are licensed BUSL-1.1 — see the License section of
+# Both siOFF and `risearch` are licensed BUSL-1.1 — see the License section of
 # README.md.
 #
 # The commit is pinned rather than tracking a branch so installs are
 # reproducible; bump it deliberately, after verifying the bindings still match
 # and checking what search results do.
 #
-# NOTE on `penalty`: RIOT does not pass it, so it inherits upstream's default.
+# NOTE on `penalty`: siOFF does not pass it, so it inherits upstream's default.
 # That default changed 3.5 -> 0.0 in 3.0.0a2, and 0.0.0a1 applied it with the
 # wrong sign (a flat -2x penalty that *improved* the energy). Net effect of the
 # 0.0.0a1 -> 3.0.0a2 bump on our fixtures: E_min -40.2956 -> -33.2956, 800 ->
@@ -97,7 +97,7 @@ python-version = "3.11"
 replace-imports-with-any = ["risearch"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/riot"]
+packages = ["src/sioff"]
 
 [tool.uv]
 package = true

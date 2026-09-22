@@ -1,33 +1,33 @@
-"""Public Python API for RIOT.
+"""Public Python API for siOFF.
 
 Importable functions that return results **in memory** and raise ordinary Python
 exceptions — no files are written, nothing is printed, and no ``typer.Exit`` /
-Click exceptions leak out. These wrap the pure :mod:`riot.core` layer; the
-``riot`` CLI is a separate, file-writing wrapper over the same core.
+Click exceptions leak out. These wrap the pure :mod:`sioff.core` layer; the
+``sioff`` CLI is a separate, file-writing wrapper over the same core.
 
 Examples::
 
-    import riot, polars as pl
+    import sioff, polars as pl
 
     # Single predictions file -> one DataFrame
-    df = riot.off_targets(risearch_file="predictions.tsv", gtf_file="ann.gtf")
+    df = sioff.off_targets(risearch_file="predictions.tsv", gtf_file="ann.gtf")
 
     # A *directory* of per-siRNA files -> a generator of per-siRNA DataFrames
-    for sirna_df in riot.off_targets(risearch_file="preds_dir/"):
+    for sirna_df in sioff.off_targets(risearch_file="preds_dir/"):
         ...
-    everything = pl.concat(list(riot.off_targets(risearch_file="preds_dir/")))
+    everything = pl.concat(list(sioff.off_targets(risearch_file="preds_dir/")))
 
     # Accessibility profiles in memory, keyed by chromosome
-    profiles = riot.accessibility(genome="genome.fa")   # dict[str, pl.DataFrame]
+    profiles = sioff.accessibility(genome="genome.fa")   # dict[str, pl.DataFrame]
 
     # RIsearch index / search
-    idx = riot.index("target.fa")                       # Path (binary artifact)
-    hits = riot.search("query.fa", idx, target="target.fa")   # pl.DataFrame
+    idx = sioff.index("target.fa")                       # Path (binary artifact)
+    hits = sioff.search("query.fa", idx, target="target.fa")   # pl.DataFrame
 
 Notes:
 - ``index`` returns a :class:`~pathlib.Path`: a RIsearch index is a binary on-disk
   artifact, so the path (not in-memory data) is the natural result.
-- ``riot.index`` / ``riot.search`` require the external ``risearch`` package, the
+- ``sioff.index`` / ``sioff.search`` require the external ``risearch`` package, the
   same dependency the CLI's index/search commands need.
 """
 
@@ -36,9 +36,9 @@ from typing import Iterator, Optional, Union, cast
 
 import polars as pl
 
-from riot.core import accessibility as _accessibility
-from riot.core import off_targets as _off_targets
-from riot.core import risearch as _risearch
+from sioff.core import accessibility as _accessibility
+from sioff.core import off_targets as _off_targets
+from sioff.core import risearch as _risearch
 
 __all__ = ["off_targets", "accessibility", "index", "search"]
 
@@ -190,8 +190,8 @@ def search(
     ``seed_start``/``seed_end``/``seed_length`` are the ``-s n:m/l`` seed spec and
     ``seed_wobble=False`` is ``--noGUseed``; both affect where seeds may be placed,
     not the energy model. ``matrix`` (``-z``) selects the nearest-neighbour
-    parameter set — see :data:`riot.services.risearch_service.VALID_DSM_IDS` for
-    the models risearch ships. These mirror the ``riot search`` CLI options; the
+    parameter set — see :data:`sioff.services.risearch_service.VALID_DSM_IDS` for
+    the models risearch ships. These mirror the ``sioff search`` CLI options; the
     defaults reproduce its behaviour.
     """
     return _risearch.run_search(

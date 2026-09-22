@@ -1,5 +1,5 @@
 # =============================================================================
-# RIOT — Orchestrator Configuration
+# siOFF — Orchestrator Configuration
 # =============================================================================
 # Usage:
 #   python scripts/run_pipeline.py --config path/to/this/config.yaml          # local
@@ -51,7 +51,7 @@ slurm:
 # =============================================================================
 accessibility:
   fasta: ../tests/off-targets/data/genome.fa
-  output: ./riot_example_out/accessibility/
+  output: ./sioff_example_out/accessibility/
   window: 80
   span: 40
   unpaired: 30
@@ -68,8 +68,8 @@ off_targets:
   feature: exon
   expression_metric: RPKM
   # accessibility_dir populated by the accessibility step above
-  accessibility_dir: ./riot_example_out/accessibility/
-  output: ./riot_example_out/off_targets.tsv
+  accessibility_dir: ./sioff_example_out/accessibility/
+  output: ./sioff_example_out/off_targets.tsv
   type: gw
   alpha: "1.0"
   gamma: "1.0"

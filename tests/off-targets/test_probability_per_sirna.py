@@ -12,7 +12,7 @@ external data files.
 import math
 import polars as pl
 
-from riot.services.probability import ProbabilityService, RT
+from sioff.services.probability import ProbabilityService, RT
 
 # ---------------------------------------------------------------------------
 # Helpers

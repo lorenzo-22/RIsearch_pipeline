@@ -3,10 +3,10 @@ import unittest
 from pathlib import Path
 import numpy as np
 import polars as pl
-from riot.services.accessibility import (
+from sioff.services.accessibility import (
     GenomeAccessibilityService,
 )
-from riot.services.helpers import read_fasta
+from sioff.services.helpers import read_fasta
 
 # Dummy FASTA content
 DUMMY_FASTA = """>chr1

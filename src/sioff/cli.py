@@ -5,14 +5,14 @@ from typing import Optional
 
 import typer
 
-from riot import __version__
-from riot._logging import setup_logging
-from riot.commands import accessibility, off_targets, risearch
-from riot.config import load_config, config_to_kwargs
+from sioff import __version__
+from sioff._logging import setup_logging
+from sioff.commands import accessibility, off_targets, risearch
+from sioff.config import load_config, config_to_kwargs
 
 
 app = typer.Typer(
-    name="riot",
+    name="sioff",
     help="siRNA off-target discovery pipeline — analyze RIsearch2 predictions.",
     add_completion=False,
 )
@@ -25,7 +25,7 @@ app.command(name="search")(risearch.search)
 def _version_callback(value: bool) -> None:
     """Print the version and exit, before any other option is processed."""
     if value:
-        typer.echo(f"riot {__version__}")
+        typer.echo(f"sioff {__version__}")
         raise typer.Exit()
 
 
@@ -47,12 +47,12 @@ def main(
         help="Enable verbose logging (DEBUG level).",
     ),
     # Long form only: -v is taken by --verbose. `is_eager` makes this answer
-    # before --config is validated, so `riot --version` works even when a config
+    # before --config is validated, so `sioff --version` works even when a config
     # elsewhere on the command line would fail.
     version: bool = typer.Option(
         False,
         "--version",
-        help="Show the installed RIOT version and exit.",
+        help="Show the installed siOFF version and exit.",
         callback=_version_callback,
         is_eager=True,
     ),

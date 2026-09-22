@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Orchestrator for the RIOT siRNA off-target discovery pipeline.
+Orchestrator for the siOFF siRNA off-target discovery pipeline.
 
 Runs pipeline stages in dependency order:
-  1. (optional) index         -- riot index
-  2.            accessibility -- riot accessibility
-  3.            off-targets   -- riot off-targets
+  1. (optional) index         -- sioff index
+  2.            accessibility -- sioff accessibility
+  3.            off-targets   -- sioff off-targets
 
 Local mode (default): steps run sequentially; logs go to logs/<timestamp>/<step>.log.
 Slurm mode (--slurm): each step submitted with sbatch, chained via --dependency=afterok.
@@ -140,7 +140,7 @@ def _build_index(cfg: dict, base: Path) -> list[str]:
     target = _resolve(cfg.get("target"), base)
     if not target:
         raise ValueError("'target' is required")
-    cmd = ["riot", "index", target]
+    cmd = ["sioff", "index", target]
     output = _resolve(cfg.get("output"), base)
     if output:
         cmd += ["--output", output]
@@ -156,7 +156,7 @@ def _build_accessibility(cfg: dict, base: Path) -> list[str]:
     output = _resolve(cfg.get("output"), base)
     if not output:
         raise ValueError("'output' is required")
-    cmd = ["riot", "accessibility", "--fasta", fasta, "--output", output]
+    cmd = ["sioff", "accessibility", "--fasta", fasta, "--output", output]
     for key, flag in [
         ("window", "--window"),
         ("span", "--span"),
@@ -172,7 +172,7 @@ def _build_accessibility(cfg: dict, base: Path) -> list[str]:
 
 
 def _build_off_targets(cfg: dict, base: Path) -> list[str]:
-    cmd = ["riot", "off-targets"]
+    cmd = ["sioff", "off-targets"]
 
     # Path options
     for key, flag in [

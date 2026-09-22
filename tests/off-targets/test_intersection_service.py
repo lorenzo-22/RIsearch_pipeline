@@ -3,7 +3,7 @@
 import polars as pl
 import pytest
 
-from riot.services.intersection_service import IntersectionService
+from sioff.services.intersection_service import IntersectionService
 
 
 @pytest.fixture

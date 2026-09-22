@@ -6,9 +6,9 @@ from typing import Annotated, Optional
 import polars as pl
 import typer
 
-from riot._logging import setup_logging
-from riot.core import risearch as core
-from riot.services.risearch_service import RIsearchError
+from sioff._logging import setup_logging
+from sioff.core import risearch as core
+from sioff.services.risearch_service import RIsearchError
 
 
 def index(

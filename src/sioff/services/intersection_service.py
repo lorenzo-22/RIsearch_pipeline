@@ -9,7 +9,7 @@ import polars as pl
 from loguru import logger
 from ncls import NCLS
 
-from riot.models import PredictionsMode
+from sioff.models import PredictionsMode
 
 _BATCH_SIZE = 50_000
 

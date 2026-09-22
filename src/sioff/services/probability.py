@@ -6,11 +6,11 @@ import numpy as np
 import polars as pl
 from loguru import logger
 
-from riot.services.accessibility import (
+from sioff.services.accessibility import (
     GenomeAccessibilityService,
 )
-from riot.services.helpers import read_fasta
-from riot.services.risearch_service import RIsearchService
+from sioff.services.helpers import read_fasta
+from sioff.services.risearch_service import RIsearchService
 
 # Gas constant in kcal/mol*K
 R = 0.001987
