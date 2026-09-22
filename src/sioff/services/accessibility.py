@@ -226,7 +226,7 @@ class GenomeAccessibilityService:
             Dictionary mapping 'chrom' to the output Parquet path.
         """
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        from riot.services.helpers import read_fasta
+        from sioff.services.helpers import read_fasta
 
         # Read all chromosomes; longest-job-first to minimise tail latency.
         chromosomes = sorted(

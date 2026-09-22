@@ -4,9 +4,9 @@ import inspect
 
 import pytest
 from omegaconf import MissingMandatoryValue
-from riot.commands.accessibility import run as accessibility_run
-from riot.commands.off_targets import run as off_targets_run
-from riot.config import load_config, config_to_kwargs
+from sioff.commands.accessibility import run as accessibility_run
+from sioff.commands.off_targets import run as off_targets_run
+from sioff.config import load_config, config_to_kwargs
 
 
 class TestLoadConfig:
@@ -110,7 +110,7 @@ accessibility:
 
         Regression guard: this previously asserted on the returned dict only, so a
         mapping of `output` -> `output_dir` passed the test while making
-        `riot -c <accessibility config>` fail with TypeError on every run. Binding
+        `sioff -c <accessibility config>` fail with TypeError on every run. Binding
         against the real signature is what actually catches that.
         """
         config_file = tmp_path / "config.yaml"

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from riot.cli import app
+from sioff.cli import app
 
 runner = CliRunner()
 

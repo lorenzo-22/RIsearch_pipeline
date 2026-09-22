@@ -18,16 +18,16 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from riot.core.off_targets import (
+from sioff.core.off_targets import (
     _build_alpha_gamma_pairs,
     _downcast_schema,
     _parse_theta,
     compute_off_targets_directory,
     compute_off_targets_single,
 )
-from riot.services.probability import ProbabilityService
-from riot.services.profiling import PipelineProfiler
-from riot.services.risearch_parser import RIsearchParser
+from sioff.services.probability import ProbabilityService
+from sioff.services.profiling import PipelineProfiler
+from sioff.services.risearch_parser import RIsearchParser
 
 console = Console()
 
@@ -123,7 +123,7 @@ def run(
         typer.Option(
             "-a",
             "--accessibility-dir",
-            help="Directory of per-chromosome accessibility Parquet files (from 'riot accessibility').",
+            help="Directory of per-chromosome accessibility Parquet files (from 'sioff accessibility').",
             exists=True,
             file_okay=False,
         ),
@@ -318,7 +318,7 @@ def run(
     on_target_accessibility = _as_path(on_target_accessibility)
     on_target_ids_file = _as_path(on_target_ids_file)
 
-    console.print(Panel("RIOT", style="bold cyan"))
+    console.print(Panel("siOFF", style="bold cyan"))
 
     profiler = PipelineProfiler(enabled=profile)
     n_workers: int = workers if workers is not None else os.cpu_count() or 1

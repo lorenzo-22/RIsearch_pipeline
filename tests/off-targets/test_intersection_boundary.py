@@ -8,7 +8,7 @@ Focuses on the specific behaviours that were fixed:
 
 import polars as pl
 
-from riot.services.intersection_service import IntersectionService
+from sioff.services.intersection_service import IntersectionService
 
 
 # ---------------------------------------------------------------------------

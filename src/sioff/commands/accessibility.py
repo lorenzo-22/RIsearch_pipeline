@@ -14,7 +14,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from riot.services.accessibility import GenomeAccessibilityService
+from sioff.services.accessibility import GenomeAccessibilityService
 
 
 def _make_progress(console):

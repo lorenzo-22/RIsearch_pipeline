@@ -58,7 +58,7 @@ def off_targets_config(tmp_path: Path) -> Path:
 
 def test_shipped_off_targets_example_produces_rows(off_targets_config, tmp_path):
     result = subprocess.run(
-        [sys.executable, "-m", "riot.cli", "-c", str(off_targets_config)],
+        [sys.executable, "-m", "sioff.cli", "-c", str(off_targets_config)],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -84,7 +84,7 @@ def test_shipped_example_output_carries_a_usable_probability_model(
     zeroes ``W_i = Expression_i * exp(-dG/RT)`` and collapses every probability.
     """
     subprocess.run(
-        [sys.executable, "-m", "riot.cli", "-c", str(off_targets_config)],
+        [sys.executable, "-m", "sioff.cli", "-c", str(off_targets_config)],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,

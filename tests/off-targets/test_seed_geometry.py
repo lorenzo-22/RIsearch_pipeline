@@ -1,4 +1,4 @@
-"""Seed-geometry and energy-model options on `riot search`.
+"""Seed-geometry and energy-model options on `sioff search`.
 
 These expose the RIsearch2 knobs the CLI previously hid: the `-s n:m/l` seed
 specification, `--noGUseed` and `-z`. They exist so a seed-geometry ablation can be
@@ -7,8 +7,8 @@ run from the CLI rather than by calling the PyO3 bindings directly.
 
 import pytest
 
-from riot.core.risearch import parse_seed_spec
-from riot.services.risearch_service import RIsearchError, RIsearchService
+from sioff.core.risearch import parse_seed_spec
+from sioff.services.risearch_service import RIsearchError, RIsearchService
 
 
 class TestParseSeedSpec:

@@ -1,13 +1,13 @@
 cff-version: 1.2.0
-message: "If you use RIOT, please cite the following reference."
-title: RIOT
+message: "If you use siOFF, please cite the following reference."
+title: siOFF
 abstract: >-
-  RIOT (riot-rna) — an siRNA off-target discovery pipeline for analyzing
+  siOFF (sioff) — an siRNA off-target discovery pipeline for analyzing
   RIsearch2 predictions.
 type: software
 license: BUSL-1.1
 version: 0.1.0
-repository-code: "https://github.com/lorenzo-22/RIsearch_pipeline"
+repository-code: "https://github.com/lorenzo-22/siOFF"
 authors:
   - family-names: Roncelli
     given-names: Stefano
@@ -26,7 +26,7 @@ authors:
 # here and there together on acceptance.
 preferred-citation:
   type: article
-  title: "RIsearch and RIOT: An integrated, high-performance framework for RNA-RNA interaction and siRNA off-target prediction"
+  title: "RIsearch and siOFF: An integrated, high-performance framework for RNA-RNA interaction and siRNA off-target prediction"
   journal: Bioinformatics
   authors:
     - family-names: Roncelli

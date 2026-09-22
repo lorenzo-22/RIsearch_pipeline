@@ -1,6 +1,6 @@
-# RIOT
+# siOFF
 
-RIOT — siRNA off-target discovery pipeline.
+siOFF — siRNA off-target discovery pipeline.
 
 A bioinformatics pipeline for **siRNA off-target discovery and probability quantification**. Integrates RNA-RNA interaction predictions with transcriptome annotations, RNA accessibility profiling, and thermodynamic modeling to rank off-target binding sites.
 
@@ -46,11 +46,11 @@ flowchart TD
 
 ### Global options
 
-Available on `riot` itself, before any subcommand.
+Available on `sioff` itself, before any subcommand.
 
 | Flag | Description |
 |------|-------------|
-| `-c / --config` | Path to a YAML config file; runs the command named in it. Top-level only — `riot -c cfg.yaml`, not `riot off-targets -c cfg.yaml` |
+| `-c / --config` | Path to a YAML config file; runs the command named in it. Top-level only — `sioff -c cfg.yaml`, not `sioff off-targets -c cfg.yaml` |
 | `-v / --verbose` | Enable DEBUG-level logging |
 | `--version` | Print the installed version and exit (long form only — `-v` is `--verbose`) |
 
@@ -86,30 +86,30 @@ Available on `riot` itself, before any subcommand.
 
 ## Python API
 
-RIOT can be used as a library — `import riot`, then call the commands as plain functions; they return their results in-memory.
+siOFF can be used as a library — `import sioff`, then call the commands as plain functions; they return their results in-memory.
 
 ```python
-import riot
+import sioff
 
 # Off-target analysis on a pre-computed predictions file → polars.DataFrame
-df = riot.off_targets(risearch_file="predictions.tsv", gtf_file="annotations.gtf")
+df = sioff.off_targets(risearch_file="predictions.tsv", gtf_file="annotations.gtf")
 
 # Pre-compute per-chromosome accessibility profiles → dict[chrom -> polars.DataFrame]
-profiles = riot.accessibility(genome="genome.fa")
+profiles = sioff.accessibility(genome="genome.fa")
 
 # Build a RIsearch index → Path (needs the external 'risearch' package)
-idx = riot.index("target.fa")
+idx = sioff.index("target.fa")
 
 # Run a RIsearch search → polars.DataFrame (needs the external 'risearch' package)
-hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
+hits = sioff.search("query.fa", "target.fa.idx", target="target.fa")
 ```
 
 **Notes**
 
-- `riot.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it returns a **generator** yielding one `polars.DataFrame` per siRNA; iterate it to consume the results. Neither form writes files — the API layer returns results in memory, and writing output is the CLI's job.
-- `riot.accessibility` likewise writes nothing: it returns `dict[chrom -> polars.DataFrame]`. Use the `accessibility` CLI command (or `riot -c <config>`) if you want `{chrom}.accessibility.parquet` files on disk.
+- `sioff.off_targets` returns a `polars.DataFrame` when given a single predictions file. With a **directory** of per-siRNA Parquet files it returns a **generator** yielding one `polars.DataFrame` per siRNA; iterate it to consume the results. Neither form writes files — the API layer returns results in memory, and writing output is the CLI's job.
+- `sioff.accessibility` likewise writes nothing: it returns `dict[chrom -> polars.DataFrame]`. Use the `accessibility` CLI command (or `sioff -c <config>`) if you want `{chrom}.accessibility.parquet` files on disk.
 - On bad input the API functions raise ordinary Python exceptions — `FileNotFoundError` or `ValueError` — not `typer.Exit`. `typer.Exit` is raised only by the CLI layer for its own argument validation.
-- `riot.index` / `riot.search` require the external `risearch` package — the same dependency the CLI's `index`/`search` commands need.
+- `sioff.index` / `sioff.search` require the external `risearch` package — the same dependency the CLI's `index`/`search` commands need.
 
 ---
 
@@ -118,8 +118,8 @@ hits = riot.search("query.fa", "target.fa.idx", target="target.fa")
 Requires **Python ≥ 3.11** (tested on 3.11–3.14) and **ViennaRNA 2.7.2**.
 
 ```bash
-git clone git@github.com:lorenzo-22/RIsearch_pipeline.git
-cd RIsearch_pipeline
+git clone git@github.com:lorenzo-22/siOFF.git
+cd siOFF
 
 # Create virtual environment and install dependencies
 uv venv && source .venv/bin/activate
@@ -135,8 +135,8 @@ without that access, `uv sync --no-group risearch` installs the core
 
 ### Publishing / PyPI
 
-The PyPI distribution name is **`riot-rna`** (plain `riot` is already taken on
-PyPI).
+The PyPI distribution name and the import name are both **`sioff`**
+(`pip install sioff`, `import sioff`).
 
 `risearch` is declared as a [PEP 735](https://peps.python.org/pep-0735/)
 dependency group rather than a normal dependency only because it is not yet on
@@ -146,21 +146,12 @@ distributions carrying a direct URL. A dependency group is resolver-only and
 never reaches that metadata, so the package stays publishable while `risearch`
 remains a private git repository. Once `risearch` is published on PyPI, it moves
 into `[project.dependencies]` as a normal version pin so that
-`pip install riot-rna` brings in the full pipeline, in-process `index` / `search`
+`pip install sioff` brings in the full pipeline, in-process `index` / `search`
 included.
 
-Until then, users installing `riot-rna` from PyPI get the `off-targets` /
+Until then, users installing `sioff` from PyPI get the `off-targets` /
 `accessibility` pipeline; the in-process `index` / `search` commands additionally
 need `risearch` installed from git (see below).
-
-> **Note — import name.** The distribution is `riot-rna`, but the import name is
-> `riot`. PyPI reserves distribution names, not import names, and Datadog's
-> unrelated `riot` distribution (a test-runner) also ships a top-level `riot`
-> package. Installed in the same environment the two write to the same
-> `site-packages/riot/` directory: the last install silently wins, with no
-> warning from `pip` or `uv`, and the `riot` console script flips to whichever
-> was installed last. Neither package is affected on its own — install them in
-> separate environments if you need both.
 
 ### The `risearch` dependency
 
@@ -185,13 +176,13 @@ verified, not automatically.
 
 > **PyPI:** this direct URL no longer blocks publication — `risearch` is declared
 > as a PEP 735 dependency group, which never reaches published metadata, so
-> `riot-rna` is publishable with its core dependencies. `risearch` itself still
+> `sioff` is publishable with its core dependencies. `risearch` itself still
 > has to be installed from git; if it is ever released to PyPI, swap this for a
 > normal version pin.
 
 ```bash
 # Verify
-riot --help
+sioff --help
 ```
 
 ---
@@ -202,7 +193,7 @@ riot --help
 
 ```bash
 # Pre-computed predictions file
-riot off-targets \
+sioff off-targets \
   -r predictions.tsv \
   -t annotation.gtf \
   -a accessibility_profiles/ \
@@ -210,7 +201,7 @@ riot off-targets \
   -o results.tsv
 
 # Via YAML config (paths relative to config file)
-riot -c example_yaml/off-targets.example.yaml
+sioff -c example_yaml/off-targets.example.yaml
 ```
 
 ### Orchestrated multi-step mode (local)
@@ -223,9 +214,9 @@ riot -c example_yaml/off-targets.example.yaml
 
 | Step | Command | Notes |
 |------|---------|-------|
-| `index` | `riot index` | Optional — build RIsearch index |
-| `accessibility` | `riot accessibility` | Compute RNA accessibility profiles |
-| `off-targets` | `riot off-targets` | Main analysis |
+| `index` | `sioff index` | Optional — build RIsearch index |
+| `accessibility` | `sioff accessibility` | Compute RNA accessibility profiles |
+| `off-targets` | `sioff off-targets` | Main analysis |
 
 `index` and `accessibility` are independent and run in parallel on Slurm. `off-targets` waits for `accessibility`.
 
@@ -340,7 +331,7 @@ Z_s  = Σ W_i  (all off-targets of siRNA s)  +  W_on-target
 P(off-target_i | siRNA_s) = W_i / Z_s
 ```
 
-- **ΔG_hybridization**: duplex interaction energy from RIsearch. The nearest-neighbour parameter set is selectable with `riot search -z/--matrix` (default Turner 2004).
+- **ΔG_hybridization**: duplex interaction energy from RIsearch. The nearest-neighbour parameter set is selectable with `sioff search -z/--matrix` (default Turner 2004).
 - **ΔG_opening**: Accessibility penalty — cost to unfold the target region, retrieved from pre-computed `RNA.pfl_fold_up` profiles.
 - **Expression weighting**: annotation-derived RPKM/TPM values scale each site's contribution.
 - **Per-siRNA normalization**: Partition functions are computed independently per siRNA; mixing them is biologically incorrect.
@@ -426,22 +417,22 @@ no subprocess, no intermediate TSV. Features:
 
 ## Citation
 
-If you use RIOT in published work, please cite:
+If you use siOFF in published work, please cite:
 
-> Roncelli S, Favaro L, Anthon C, Gorodkin J. *RIsearch and RIOT: An integrated,
+> Roncelli S, Favaro L, Anthon C, Gorodkin J. *RIsearch and siOFF: An integrated,
 > high-performance framework for RNA-RNA interaction and siRNA off-target
 > prediction.* Bioinformatics.
 
 Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
 
 Note that citation is not merely requested but a **term of the BUSL-1.1
-licence** for any production use of RIOT or `risearch` — see [License](#license).
+licence** for any production use of siOFF or `risearch` — see [License](#license).
 
 ---
 
 ## License
 
-RIOT (`riot-rna`) is released under the **Business Source License 1.1
+siOFF (`sioff`) is released under the **Business Source License 1.1
 (BUSL-1.1)** — see [LICENSE](LICENSE) — the same licence as its `risearch`
 dependency. BUSL-1.1 is *source-available, not open source* and is not
 OSI-approved. In brief:

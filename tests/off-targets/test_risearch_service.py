@@ -10,7 +10,7 @@ import pytest
 # When absent — e.g. in CI, which installs core only — skip this whole module.
 pytest.importorskip("risearch")
 
-from riot.services.risearch_service import RIsearchService  # noqa: E402
+from sioff.services.risearch_service import RIsearchService  # noqa: E402
 
 
 @pytest.fixture

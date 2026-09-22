@@ -9,7 +9,7 @@ installed bindings:
     s95-rna-dna  Sugimoto 1995          (RNA query / DNA target)
     s95-dna-rna  Sugimoto 1995          (DNA query / RNA target)
 
-RIOT previously hard-rejected everything but t04 and t99, which put the two
+siOFF previously hard-rejected everything but t04 and t99, which put the two
 Sugimoto hybrid tables out of reach — the ones that apply to DNA-based oligos.
 The choice is not cosmetic: on the shipped fixtures t04 and t99 return different
 hit counts, so it changes which off-targets are found and their energies.
@@ -17,7 +17,11 @@ hit counts, so it changes which off-targets are found and their energies.
 
 import pytest
 
-from riot.services.risearch_service import VALID_DSM_IDS, RIsearchError, RIsearchService
+from sioff.services.risearch_service import (
+    VALID_DSM_IDS,
+    RIsearchError,
+    RIsearchService,
+)
 
 
 class TestValidDsmIds:
@@ -93,7 +97,7 @@ class TestValidDsmIds:
 
 
 class TestPublicApiExposesTheSearchKnobs:
-    """`riot.search` must offer what the CLI offers.
+    """`sioff.search` must offer what the CLI offers.
 
     `--matrix`/`-z` and the seed-geometry flags existed on the CLI while the
     Python API silently pinned every library user to the defaults.
@@ -105,17 +109,17 @@ class TestPublicApiExposesTheSearchKnobs:
     def test_parameter_is_present(self, parameter):
         import inspect
 
-        import riot
+        import sioff
 
-        assert parameter in inspect.signature(riot.search).parameters
+        assert parameter in inspect.signature(sioff.search).parameters
 
     def test_defaults_match_the_core_layer(self):
         import inspect
 
-        import riot
-        from riot.core.risearch import run_search as core_search
+        import sioff
+        from sioff.core.risearch import run_search as core_search
 
-        api = inspect.signature(riot.search).parameters
+        api = inspect.signature(sioff.search).parameters
         core = inspect.signature(core_search).parameters
 
         for name in ("matrix", "seed_start", "seed_end", "seed_wobble"):

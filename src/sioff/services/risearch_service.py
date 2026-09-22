@@ -14,7 +14,7 @@ from Bio import SeqIO
 from loguru import logger
 
 # NOTE: `risearch` (the PyO3 bindings) is imported lazily inside the methods that
-# use it (index_target / run_search), not at module top. This keeps `import riot`
+# use it (index_target / run_search), not at module top. This keeps `import sioff`
 # and all non-RIsearch code paths (off-targets, accessibility) working when the
 # optional `risearch` extra is not installed.
 
@@ -190,7 +190,7 @@ class RIsearchService:
                 # Pinned, not inherited. `penalty`'s upstream default changed
                 # 3.5 -> 0.0 between pins, and 0.0.0a1 applied it with the wrong
                 # sign, so simply omitting it moved our E_min by 7 kcal/mol on a
-                # pin bump with no RIOT change. 0.0 matches the original C
+                # pin bump with no siOFF change. 0.0 matches the original C
                 # default (`extPen = 0`). Not exposed as a flag: its semantics
                 # differ across versions (units, sign, and whether it reaches
                 # the reported energy at all) — see saiden89/risearch#27.

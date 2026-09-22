@@ -50,9 +50,11 @@ class TestRunSlurmDryRun:
     def test_emits_one_sbatch_per_job(self, tmp_path, capsys):
         jobs = [
             rp.Job(
-                key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+                key="accessibility",
+                step="accessibility",
+                cmd=["sioff", "accessibility"],
             ),
-            rp.Job(key="off-targets", step="off-targets", cmd=["riot", "off-targets"]),
+            rp.Job(key="off-targets", step="off-targets", cmd=["sioff", "off-targets"]),
         ]
         resources = {
             s: dict(rp._DEFAULT_RESOURCES[s]) for s in ("accessibility", "off-targets")
@@ -63,7 +65,9 @@ class TestRunSlurmDryRun:
         assert len(_sbatch_lines(capsys)) == 2
 
     def test_resource_flags_come_from_the_step_defaults(self, tmp_path, capsys):
-        job = rp.Job(key="off-targets", step="off-targets", cmd=["riot", "off-targets"])
+        job = rp.Job(
+            key="off-targets", step="off-targets", cmd=["sioff", "off-targets"]
+        )
 
         rp._run_slurm(
             [job],
@@ -88,7 +92,7 @@ class TestRunSlurmDryRun:
         Every step in _DEFAULT_RESOURCES sets all three keys, so these fallbacks are
         unreachable via the normal path and would otherwise go untested.
         """
-        job = rp.Job(key="custom", step="custom", cmd=["riot", "off-targets"])
+        job = rp.Job(key="custom", step="custom", cmd=["sioff", "off-targets"])
 
         rp._run_slurm([job], {}, {"custom": {}}, tmp_path / "logs", dry_run=True)
 
@@ -99,7 +103,7 @@ class TestRunSlurmDryRun:
 
     def test_per_step_resource_overrides_win(self, tmp_path, capsys):
         job = rp.Job(
-            key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+            key="accessibility", step="accessibility", cmd=["sioff", "accessibility"]
         )
 
         rp._run_slurm(
@@ -118,7 +122,7 @@ class TestRunSlurmDryRun:
     def test_log_paths_carry_the_slurm_jobid_pattern(self, tmp_path, capsys):
         log_dir = tmp_path / "logs"
         job = rp.Job(
-            key="off-targets:human", step="off-targets", cmd=["riot", "off-targets"]
+            key="off-targets:human", step="off-targets", cmd=["sioff", "off-targets"]
         )
 
         rp._run_slurm(
@@ -136,7 +140,7 @@ class TestRunSlurmDryRun:
 
     def test_partition_and_account_are_passed_through_when_set(self, tmp_path, capsys):
         job = rp.Job(
-            key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+            key="accessibility", step="accessibility", cmd=["sioff", "accessibility"]
         )
         resources = {"accessibility": dict(rp._DEFAULT_RESOURCES["accessibility"])}
 
@@ -157,7 +161,7 @@ class TestRunSlurmDryRun:
         self, tmp_path, capsys, slurm_cfg
     ):
         job = rp.Job(
-            key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+            key="accessibility", step="accessibility", cmd=["sioff", "accessibility"]
         )
         resources = {"accessibility": dict(rp._DEFAULT_RESOURCES["accessibility"])}
 
@@ -171,7 +175,7 @@ class TestRunSlurmDryRun:
         job = rp.Job(
             key="off-targets",
             step="off-targets",
-            cmd=["riot", "off-targets", "-o", "/out/has space.tsv"],
+            cmd=["sioff", "off-targets", "-o", "/out/has space.tsv"],
         )
 
         rp._run_slurm(
@@ -187,7 +191,7 @@ class TestRunSlurmDryRun:
         # with its spaces intact.
         assert argv[-2] == "--wrap"
         assert shlex.split(argv[-1]) == [
-            "riot",
+            "sioff",
             "off-targets",
             "-o",
             "/out/has space.tsv",
@@ -198,12 +202,14 @@ class TestDependencyChaining:
     def test_first_job_has_no_dependency(self, tmp_path, capsys):
         jobs = [
             rp.Job(
-                key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+                key="accessibility",
+                step="accessibility",
+                cmd=["sioff", "accessibility"],
             ),
             rp.Job(
                 key="off-targets",
                 step="off-targets",
-                cmd=["riot", "off-targets"],
+                cmd=["sioff", "off-targets"],
                 dep_keys=["accessibility"],
             ),
         ]
@@ -219,14 +225,16 @@ class TestDependencyChaining:
 
     def test_multiple_dependencies_are_colon_joined(self, tmp_path, capsys):
         jobs = [
-            rp.Job(key="index", step="index", cmd=["riot", "index"]),
+            rp.Job(key="index", step="index", cmd=["sioff", "index"]),
             rp.Job(
-                key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+                key="accessibility",
+                step="accessibility",
+                cmd=["sioff", "accessibility"],
             ),
             rp.Job(
                 key="off-targets",
                 step="off-targets",
-                cmd=["riot", "off-targets"],
+                cmd=["sioff", "off-targets"],
                 dep_keys=["index", "accessibility"],
             ),
         ]
@@ -248,23 +256,23 @@ class TestDependencyChaining:
             rp.Job(
                 key="accessibility:human",
                 step="accessibility",
-                cmd=["riot", "accessibility"],
+                cmd=["sioff", "accessibility"],
             ),
             rp.Job(
                 key="accessibility:mouse",
                 step="accessibility",
-                cmd=["riot", "accessibility"],
+                cmd=["sioff", "accessibility"],
             ),
             rp.Job(
                 key="off-targets:human",
                 step="off-targets",
-                cmd=["riot", "off-targets"],
+                cmd=["sioff", "off-targets"],
                 dep_keys=["accessibility:human"],
             ),
             rp.Job(
                 key="off-targets:mouse",
                 step="off-targets",
-                cmd=["riot", "off-targets"],
+                cmd=["sioff", "off-targets"],
                 dep_keys=["accessibility:mouse"],
             ),
         ]
@@ -288,7 +296,7 @@ class TestDryRunSubmitsNothing:
 
         monkeypatch.setattr(rp.subprocess, "run", _fail)
         job = rp.Job(
-            key="accessibility", step="accessibility", cmd=["riot", "accessibility"]
+            key="accessibility", step="accessibility", cmd=["sioff", "accessibility"]
         )
 
         rp._run_slurm(

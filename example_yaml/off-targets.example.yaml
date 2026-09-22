@@ -1,8 +1,8 @@
 # =============================================================================
-# RIOT — Complete Configuration Reference
+# siOFF — Complete Configuration Reference
 # =============================================================================
 # Usage:
-#   riot --config path/to/this/config.yaml
+#   sioff --config path/to/this/config.yaml
 #
 # All relative paths are resolved relative to this file's directory.
 # Parameters marked [CLI-ONLY] cannot be set here; pass them on the command
@@ -55,7 +55,7 @@ off_targets:
   # ---------------------------------------------------------------------------
 
   # Directory of per-chromosome accessibility Parquet files produced by the
-  # "riot accessibility" command ({chrom}.accessibility.parquet).
+  # "sioff accessibility" command ({chrom}.accessibility.parquet).
   # accessibility_dir: ../tests/off-targets/data/accessibility
 
   # FASTA file for computing accessibility on-the-fly via ViennaRNA.
@@ -125,7 +125,7 @@ off_targets:
   # ---------------------------------------------------------------------------
 
   # Path for the main output file (TSV by default; extension depends on output_format).
-  output: ./riot_example_out/off_targets.tsv
+  output: ./sioff_example_out/off_targets.tsv
 
   # Write in legacy .results format aggregated by transcript (old pipeline). Default: false
   legacy_format: false
@@ -175,7 +175,7 @@ accessibility:
   fasta: ../tests/off-targets/data/genome.fa
 
   # [REQUIRED] Output directory for accessibility profiles
-  output: ./riot_example_out/accessibility
+  output: ./sioff_example_out/accessibility
 
   # ViennaRNA RNAplfold window size (W). Default: 80
   window: 80

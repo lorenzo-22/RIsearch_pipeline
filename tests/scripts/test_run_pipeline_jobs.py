@@ -69,7 +69,7 @@ class TestBuildIndex:
     def test_builds_the_expected_command(self, tmp_path):
         cmd = rp._build_index({"target": "g.fa", "output": "g.idx"}, tmp_path)
 
-        assert cmd[:2] == ["riot", "index"]
+        assert cmd[:2] == ["sioff", "index"]
         assert cmd[2] == str(tmp_path / "g.fa")
         assert _flag(cmd, "--output") == str(tmp_path / "g.idx")
 

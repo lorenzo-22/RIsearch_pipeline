@@ -1,4 +1,4 @@
-"""Tests for the public Python API (``import riot``).
+"""Tests for the public Python API (``import sioff``).
 
 These guard the Annotated-Typer refactor that makes the CLI command functions
 directly callable from plain Python. The key regression is that parameter
@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-import riot
+import sioff
 
 DATA_DIR = Path(__file__).parent / "data"
 RISEARCH_FILE = DATA_DIR / "risearch_siRNAID.out"
@@ -21,14 +21,14 @@ GENOME_FASTA = DATA_DIR / "genome.fa"
 
 
 def test_public_api_exposes_callables() -> None:
-    """``import riot`` exposes off_targets, accessibility, index, search as callables."""
+    """``import sioff`` exposes off_targets, accessibility, index, search as callables."""
     for name in ("off_targets", "accessibility", "index", "search"):
-        assert hasattr(riot, name), f"riot is missing public attribute {name!r}"
-        assert callable(getattr(riot, name)), f"riot.{name} is not callable"
+        assert hasattr(sioff, name), f"sioff is missing public attribute {name!r}"
+        assert callable(getattr(sioff, name)), f"sioff.{name} is not callable"
 
 
 def test_off_targets_returns_dataframe_with_probabilities() -> None:
-    """riot.off_targets(...) on a real single-file fixture returns a non-empty
+    """sioff.off_targets(...) on a real single-file fixture returns a non-empty
     Polars DataFrame containing the probability column.
 
     This is the load-bearing regression: if any parameter default were still a
@@ -42,7 +42,7 @@ def test_off_targets_returns_dataframe_with_probabilities() -> None:
     """
     assert RISEARCH_FILE.exists(), f"Fixture not found: {RISEARCH_FILE}"
 
-    df = riot.off_targets(risearch_file=RISEARCH_FILE)
+    df = sioff.off_targets(risearch_file=RISEARCH_FILE)
 
     assert isinstance(df, pl.DataFrame), f"Expected pl.DataFrame, got {type(df)!r}"
     assert df.height > 0, "Expected a non-empty result DataFrame"
@@ -52,7 +52,7 @@ def test_off_targets_returns_dataframe_with_probabilities() -> None:
 
 
 def test_off_targets_signature_has_no_typer_placeholder_defaults() -> None:
-    """No parameter default of riot.off_targets is a Typer OptionInfo/ArgumentInfo.
+    """No parameter default of sioff.off_targets is a Typer OptionInfo/ArgumentInfo.
 
     With the modern Annotated idiom, the typer.Option(...) metadata lives in the
     annotation, and the parameter default is the real value. This guards against
@@ -60,7 +60,7 @@ def test_off_targets_signature_has_no_typer_placeholder_defaults() -> None:
     """
     from typer.models import ArgumentInfo, OptionInfo
 
-    sig = inspect.signature(riot.off_targets)
+    sig = inspect.signature(sioff.off_targets)
     offenders = []
     for name, param in sig.parameters.items():
         if param.default is inspect.Parameter.empty:
@@ -75,7 +75,7 @@ def test_off_targets_signature_has_no_typer_placeholder_defaults() -> None:
 
 
 def test_accessibility_returns_chrom_to_dataframe(tmp_path: Path) -> None:
-    """riot.accessibility(...) returns a dict mapping chromosome -> in-memory
+    """sioff.accessibility(...) returns a dict mapping chromosome -> in-memory
     DataFrame (schema [position, strand, u1..u{u}]) and writes NO files.
 
     Uses small RNAplfold parameters (W=10, L=5, u=3) suited to the short
@@ -85,7 +85,7 @@ def test_accessibility_returns_chrom_to_dataframe(tmp_path: Path) -> None:
         pytest.skip(f"Genome FASTA fixture not found: {GENOME_FASTA}")
 
     files_before = set(tmp_path.iterdir())
-    result = riot.accessibility(
+    result = sioff.accessibility(
         genome=GENOME_FASTA,
         window_size=10,
         max_span=5,
@@ -115,7 +115,7 @@ def test_off_targets_accepts_str_path() -> None:
     ``Path``. A direct Python call bypasses Typer's str->Path coercion, so the
     command body coerces str paths itself.
     """
-    df = riot.off_targets(risearch_file=str(RISEARCH_FILE))
+    df = sioff.off_targets(risearch_file=str(RISEARCH_FILE))
     assert isinstance(df, pl.DataFrame), f"Expected pl.DataFrame, got {type(df)!r}"
     assert df.height > 0, "Expected a non-empty result DataFrame"
 
@@ -132,7 +132,7 @@ def test_off_targets_directory_mode_yields_dataframes(tmp_path: Path) -> None:
     (in_dir / RISEARCH_FILE.name).write_bytes(RISEARCH_FILE.read_bytes())
 
     files_before = set(tmp_path.rglob("*"))
-    gen = riot.off_targets(risearch_file=str(in_dir))
+    gen = sioff.off_targets(risearch_file=str(in_dir))
 
     import collections.abc
 
@@ -156,11 +156,11 @@ def test_off_targets_no_input_raises_value_error() -> None:
     import typer
 
     with pytest.raises(ValueError):
-        riot.off_targets()
+        sioff.off_targets()
 
     # Defensive: the raised exception must not be a Typer/Click Exit.
     try:
-        riot.off_targets()
+        sioff.off_targets()
     except typer.Exit:  # pragma: no cover - should never hit
         pytest.fail("API leaked a typer.Exit instead of a plain exception")
     except ValueError:
@@ -170,4 +170,4 @@ def test_off_targets_no_input_raises_value_error() -> None:
 def test_accessibility_missing_genome_raises(tmp_path: Path) -> None:
     """A missing genome raises FileNotFoundError (not typer.Exit)."""
     with pytest.raises(FileNotFoundError):
-        riot.accessibility(genome=tmp_path / "does_not_exist.fa")
+        sioff.accessibility(genome=tmp_path / "does_not_exist.fa")

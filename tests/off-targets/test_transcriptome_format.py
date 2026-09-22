@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from riot.services.annotation_parser import AnnotationParser
+from sioff.services.annotation_parser import AnnotationParser
 
 
 @pytest.fixture

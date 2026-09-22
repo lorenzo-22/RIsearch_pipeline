@@ -32,13 +32,13 @@ from typing import Generator, Optional, cast
 import polars as pl
 from loguru import logger
 
-from riot.services.accessibility import GenomeAccessibilityService
-from riot.services.annotation_parser import AnnotationParser
-from riot.services.intersection_service import IntersectionService
-from riot.services.probability import ProbabilityService
-from riot.services.profiling import PipelineProfiler
-from riot.services.risearch_parser import RIsearchParser
-from riot.services.risearch_service import RIsearchService
+from sioff.services.accessibility import GenomeAccessibilityService
+from sioff.services.annotation_parser import AnnotationParser
+from sioff.services.intersection_service import IntersectionService
+from sioff.services.probability import ProbabilityService
+from sioff.services.profiling import PipelineProfiler
+from sioff.services.risearch_parser import RIsearchParser
+from sioff.services.risearch_service import RIsearchService
 
 # ---------------------------------------------------------------------------
 # Per-worker state for directory-mode parallel processing (spawn-safe).

@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 import polars as pl
 
-from riot.services.risearch_service import RIsearchError, RIsearchService
+from sioff.services.risearch_service import RIsearchError, RIsearchService
 
 _SEED_SPEC = re.compile(r"^\s*(?:(\d+):(\d+))?(?:/?(\d+))?\s*$")
 

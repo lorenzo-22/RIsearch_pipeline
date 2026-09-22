@@ -6,7 +6,7 @@ from typing import Any, Optional, cast
 
 from omegaconf import MISSING, OmegaConf, DictConfig
 
-from riot.models import PredictionsMode
+from sioff.models import PredictionsMode
 
 
 @dataclass
@@ -165,7 +165,7 @@ def config_to_kwargs(cfg: DictConfig, command: str) -> dict:
         # NOTE: keys here must match the *parameter names* of the target command
         # function, not the CLI flag names. `output` is deliberately absent —
         # accessibility.run() takes `output`, so remapping it to `output_dir`
-        # raised TypeError on every `riot -c <accessibility config>` invocation.
+        # raised TypeError on every `sioff -c <accessibility config>` invocation.
         # test_config_to_kwargs_binds_to_command_signature guards this.
         key_mapping.update(
             {
