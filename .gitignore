@@ -226,3 +226,6 @@ CLAUDE.md
 # everything under one directory so a run leaves nothing loose beside them —
 # .summary files land next to the output file, which is why it has its own dir.
 example_yaml/sioff_example_out/
+
+# Output directory used by the README quick-start / full-example commands
+example_run/

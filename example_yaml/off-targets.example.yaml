@@ -28,7 +28,7 @@ off_targets:
 
   # [REQUIRED] Pre-computed RIsearch2 output: a single .tsv/.out.gz file, or a
   # directory of per-siRNA .parquet files (auto-detected; enables parallel mode).
-  risearch_file: ../tests/off-targets/data/risearch_genome_example.out
+  risearch_file: ../examples/data/predictions.out
 
   # ---------------------------------------------------------------------------
   # Transcriptome annotation (optional)
@@ -36,7 +36,7 @@ off_targets:
 
   # Transcriptome annotation file: GTF, GFF3, BED6, or BED7.
   # Join predictions to gene/transcript features and expression values.
-  transcriptome: ../tests/off-targets/data/expression_data.gtf
+  transcriptome: ../examples/data/annotation.gtf
 
   # File format for the transcriptome file. Default: "auto".
   # Options: "auto" | "gtf" | "gff3" | "bed6" | "bed7"
@@ -56,11 +56,11 @@ off_targets:
 
   # Directory of per-chromosome accessibility Parquet files produced by the
   # "sioff accessibility" command ({chrom}.accessibility.parquet).
-  # accessibility_dir: ../tests/off-targets/data/accessibility
+  accessibility_dir: ../examples/data/accessibility
 
   # FASTA file for computing accessibility on-the-fly via ViennaRNA.
   # Slower than pre-computed profiles; uses window/span/unpaired parameters below.
-  # fasta: ../tests/off-targets/data/genome.fa
+  # fasta: ../examples/data/genome.fa
 
   # ViennaRNA RNAplfold window size (W). Default: 80
   window: 80
@@ -80,7 +80,7 @@ off_targets:
   # on_target: ../tests/off-targets/data/onTarget.fa
 
   # siRNA FASTA (required when on_target is set for in-process RIsearch).
-  # query: ../tests/off-targets/data/sirna.fa
+  # query: ../examples/data/sirnas.fa
 
   # Expression level for the on-target gene. Default: 1000.0
   on_target_expression: 1000.0
@@ -172,7 +172,7 @@ accessibility:
 
   # [REQUIRED for full-genome and binding-site modes]
   # Path to genome or transcriptome FASTA file.
-  fasta: ../tests/off-targets/data/genome.fa
+  fasta: ../examples/data/genome.fa
 
   # [REQUIRED] Output directory for accessibility profiles
   output: ./sioff_example_out/accessibility

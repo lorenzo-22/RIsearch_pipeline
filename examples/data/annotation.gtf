@@ -1,0 +1,14 @@
+chr1	example	transcript	201	800	.	+	.	gene_id "gene_1"; transcript_id "transcript_1"; RPKM "1500";
+chr1	example	exon	201	800	.	+	0	gene_id "gene_1"; transcript_id "transcript_1"; RPKM "1500";
+chr1	example	transcript	1001	1600	.	+	.	gene_id "gene_2"; transcript_id "transcript_2"; RPKM "300";
+chr1	example	exon	1001	1600	.	+	0	gene_id "gene_2"; transcript_id "transcript_2"; RPKM "300";
+chr1	example	transcript	1801	2400	.	+	.	gene_id "gene_3"; transcript_id "transcript_3"; RPKM "800";
+chr1	example	exon	1801	2400	.	+	0	gene_id "gene_3"; transcript_id "transcript_3"; RPKM "800";
+chr1	example	transcript	2601	3200	.	+	.	gene_id "gene_4"; transcript_id "transcript_4"; RPKM "2000";
+chr1	example	exon	2601	3200	.	+	0	gene_id "gene_4"; transcript_id "transcript_4"; RPKM "2000";
+chr1	example	transcript	3401	4000	.	+	.	gene_id "gene_5"; transcript_id "transcript_5"; RPKM "100";
+chr1	example	exon	3401	4000	.	+	0	gene_id "gene_5"; transcript_id "transcript_5"; RPKM "100";
+chr1	example	transcript	4201	4800	.	+	.	gene_id "gene_6"; transcript_id "transcript_6"; RPKM "600";
+chr1	example	exon	4201	4800	.	+	0	gene_id "gene_6"; transcript_id "transcript_6"; RPKM "600";
+chr1	example	transcript	5001	5600	.	+	.	gene_id "gene_7"; transcript_id "transcript_7"; RPKM "1200";
+chr1	example	exon	5001	5600	.	+	0	gene_id "gene_7"; transcript_id "transcript_7"; RPKM "1200";

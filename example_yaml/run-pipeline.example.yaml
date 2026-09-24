@@ -50,7 +50,7 @@ slurm:
 # Step: accessibility  (pre-compute per-chromosome accessibility profiles)
 # =============================================================================
 accessibility:
-  fasta: ../tests/off-targets/data/genome.fa
+  fasta: ../examples/data/genome.fa
   output: ./sioff_example_out/accessibility/
   window: 80
   span: 40
@@ -62,8 +62,8 @@ accessibility:
 # Step: off-targets  (main off-target analysis)
 # =============================================================================
 off_targets:
-  risearch_file: ../tests/off-targets/data/risearch_genome_example.out
-  transcriptome: ../tests/off-targets/data/expression_data.gtf
+  risearch_file: ../examples/data/predictions.out
+  transcriptome: ../examples/data/annotation.gtf
   transcriptome_format: gtf
   feature: exon
   expression_metric: RPKM
